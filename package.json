@@ -1,0 +1,30 @@
+{
+  "name": "meamus",
+  "version": "1.0.0",
+  "private": true,
+  "description": "meamus - prompt-to-playable-game SaaS. Natural language in, complete Phaser 3 HTML5 games out.",
+  "type": "commonjs",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "build:demos": "node scripts/build-demos.js",
+    "check": "node scripts/check.js",
+    "test": "node scripts/smoke-test.js",
+    "postinstall": "node scripts/build-demos.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "keywords": [
+    "phaser",
+    "game-generator",
+    "saas",
+    "claude",
+    "html5-games"
+  ],
+  "license": "MIT"
+}

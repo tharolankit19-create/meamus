@@ -1,0 +1,65 @@
+{
+  "id": "endless-runner",
+  "slug": "neon-dash",
+  "featured": true,
+  "keywords": ["runner", "endless", "infinite", "flappy", "jump", "dash", "run", "auto-scroll", "obstacle", "parkour", "temple", "subway", "slide", "one-tap", "neon"],
+  "runtime": { "kit": true, "phaserVersion": "3.60.0" },
+  "gameConfig": {
+    "title": "Neon Dash",
+    "genre": "endless runner",
+    "description": "A one-thumb neon runner: jump the pink spikes, slide under the amber beams, and grab coin arcs while the world accelerates under you.",
+    "difficulty": "easy",
+    "estimatedPlayTime": "1-3 minutes per run"
+  },
+  "assets": {
+    "sprites": [
+      { "name": "runner", "type": "player", "description": "34x46 neon cyan sprinter silhouette with a white outline and a trailing light streak", "size": "34x46", "style": "minimalist" },
+      { "name": "runner-slide", "type": "player", "description": "44x24 crouched version of the runner, same cyan body, used during the slide", "size": "44x24", "style": "minimalist" },
+      { "name": "spike", "type": "obstacle", "description": "40x44 magenta hazard prism, sharp triangular point, white edge highlight", "size": "40x44", "style": "minimalist" },
+      { "name": "spike-wide", "type": "obstacle", "description": "64x30 low magenta block that must be cleared with a single long jump", "size": "64x30", "style": "minimalist" },
+      { "name": "barrier", "type": "obstacle", "description": "54x30 amber overhead beam suspended at head height; must be slid under", "size": "54x30", "style": "minimalist" },
+      { "name": "coin", "type": "collectible", "description": "22px gold coin with a white specular highlight", "size": "22x22", "style": "minimalist" },
+      { "name": "shield-pu", "type": "collectible", "description": "26px indigo shield orb with a soft outer halo", "size": "26x26", "style": "minimalist" },
+      { "name": "hill", "type": "background", "description": "260x160 flat violet mountain triangle for the near parallax layer", "size": "260x160", "style": "minimalist" },
+      { "name": "hill-far", "type": "background", "description": "340x210 darker violet mountain triangle for the far parallax layer", "size": "340x210", "style": "minimalist" },
+      { "name": "sky", "type": "background", "description": "Vertical gradient from purple at the top to near-black at the bottom, synthwave palette", "size": "800x600", "style": "minimalist" }
+    ],
+    "audio": [
+      { "name": "jump", "type": "sfx", "description": "Rising square-wave blip, 0.14s" },
+      { "name": "coin", "type": "sfx", "description": "Bright rising triangle chime, 0.12s" },
+      { "name": "crash", "type": "sfx", "description": "Falling sawtooth thud with a hard cutoff, 0.28s" },
+      { "name": "synthwave", "type": "bgm", "description": "Driving 110 BPM synthwave loop with an arpeggiated bass and gated pad" }
+    ]
+  },
+  "controls": {
+    "keyboard": ["Space, Up or W to jump (press again for a double jump)", "Down or S to slide", "P or Esc to pause"],
+    "touch": ["Tap anywhere to jump", "Swipe down to slide", "On-screen JUMP and SLIDE buttons in the bottom corners"],
+    "mouse": ["Click to jump", "Click-drag downward to slide"]
+  },
+  "mechanics": [
+    { "name": "Double jump", "description": "Two jumps are available before touching the ground; the second is slightly weaker.", "implementation": "jumps counter reset by the floor collider callback, capped at MAX_JUMPS." },
+    { "name": "Timed slide", "description": "Sliding shrinks the hitbox for 520ms to pass under beams; sliding mid-air becomes a fast drop instead.", "implementation": "Texture swap plus body.setSize, auto-ended by a delayedCall timer." },
+    { "name": "Speed ramp", "description": "Scroll speed grows by 7 px/s every second, from 300 up to a 720 px/s ceiling.", "implementation": "speed += SPEED_RAMP_PER_SEC * dt inside update(), clamped by Math.min." },
+    { "name": "Reactive spacing", "description": "Obstacle gaps shrink as speed rises so reaction time stays challenging instead of impossible.", "implementation": "Gap range scaled by GAP_TIGHTEN raised to the current speed factor." },
+    { "name": "Parallax scrolling", "description": "Four tileSprite layers scroll at 0.12x, 0.28x, 1x and 1.4x world speed for depth.", "implementation": "tilePositionX advanced by travel * layerFactor each frame." },
+    { "name": "Coin arcs", "description": "Coins spawn in three-coin arcs positioned to reward a well-timed jump.", "implementation": "addCoinArc() places three pickups with a raised centre coin." },
+    { "name": "One-hit shield", "description": "Blue orbs absorb the next collision instead of ending the run.", "implementation": "shield boolean consumed in the obstacle overlap handler before the death path." }
+  ],
+  "monetizationHooks": [
+    "Rewarded video to continue the run from the crash point",
+    "Interstitial ad every 3rd run on the game-over screen",
+    "320x50 banner slot reserved on the game-over screen",
+    "Coins bank into the shared meamus wallet for a runner-skin shop",
+    "Starter-pack IAP placeholder: permanent double-coin multiplier"
+  ],
+  "mobileOptimizations": [
+    "Phaser.Scale.FIT with CENTER_BOTH for any aspect ratio",
+    "Tap-anywhere jump so the game is playable with no on-screen chrome",
+    "Swipe-down gesture detection with a 40px / 400ms threshold",
+    "96px JUMP and SLIDE buttons in the thumb zones",
+    "tileSprite parallax instead of per-sprite scrolling to keep draw calls low",
+    "Obstacle and pickup pooling caps live bodies at 40",
+    "Loop sleeps and audio suspends when the app is backgrounded"
+  ],
+  "apkReady": false
+}
