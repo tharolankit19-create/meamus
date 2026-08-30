@@ -52,13 +52,35 @@ it does not make anything durable. Two consequences:
   single request; not durable. Moving them to Supabase Storage is the fix, and
   it is not built yet.
 
+### Leave a variable out rather than adding it blank
+
+An environment variable that exists but is empty is **not** the same as absent
+in most platforms' UIs — and it used to be fatal here. `Number('')` is `0`, so
+an empty `RATE_LIMIT_MAX` configured the limiter to allow zero requests and the
+whole site answered 429, including its own `/api/status`. The UI just said it
+could not reach the API.
+
+Empty and whitespace now fall back to the default, and a value that is
+explicitly `0` or negative is refused, corrected, and reported in
+`/api/status.warnings`. Still: if you do not have a value, delete the row
+instead of saving it blank.
+
 ### After deploying
 
 ```bash
-curl -s https://<your-app>/api/status | jq
+curl -s https://<your-app>/api/status
 ```
 
-Check `storage` is `"supabase"`, `mode` is `"ai"`, and `warnings` is empty.
+Check that:
+
+| Field | Should be |
+|---|---|
+| `storage` | `"supabase"` — anything else and accounts will not persist |
+| `mode` | `"ai"` — `"template"` means the model key is missing |
+| `warnings` | `[]` |
+
+A `429` here means the rate limit is misconfigured, not that you are sending
+too much traffic — check `x-ratelimit-limit` in the response headers.
 
 ---
 

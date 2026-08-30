@@ -244,11 +244,12 @@ npm run db:check      # verify storage: connect, write, read, update, delete
 npm run db:persist-check  # prove an account survives a restart (needs Supabase)
 npm run build:demos   # re-render public/demos/*.html from templates/
 npm run check         # static checks: syntax, template rules, config surface
-npm test              # all four suites (67 checks, no network or keys needed)
+npm test              # all five suites (81 checks, no network or keys needed)
 npm run test:api      # API suite
 npm run test:provider # OpenRouter wire-format suite
 npm run test:store    # Supabase backend suite
 npm run test:serverless   # loads api/index.js the way Vercel does
+npm run test:config   # env-var parsing, where an empty value must not mean 0
 ```
 
 `npm run check` enforces the game rules on every template: five scenes, all
