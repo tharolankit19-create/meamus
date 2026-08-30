@@ -126,6 +126,23 @@ substitute for generation.
 
 ---
 
+## Deploying
+
+Two entry points from the same code: `server/index.js` for a long-running host
+(Render, Railway, Fly, a VPS) and `api/index.js` for serverless (Vercel,
+Netlify, Lambda). `vercel.json` is included.
+
+On a serverless host the project directory is read-only and `/tmp` is discarded
+between invocations. meamus moves its writable paths to `/tmp` automatically,
+but **you must set `SUPABASE_URL` there or signup will silently fail** — the
+account is written and then thrown away. `GET /api/status` warns when it detects
+that combination.
+
+Full walkthrough, including the exact environment variables:
+[docs/DEPLOY.md](docs/DEPLOY.md).
+
+---
+
 ## Storage — read this before deploying
 
 The default backend writes to a JSON file under `server/data/`. On a serverless
@@ -227,10 +244,11 @@ npm run db:check      # verify storage: connect, write, read, update, delete
 npm run db:persist-check  # prove an account survives a restart (needs Supabase)
 npm run build:demos   # re-render public/demos/*.html from templates/
 npm run check         # static checks: syntax, template rules, config surface
-npm test              # all three suites (55 checks, no network or keys needed)
+npm test              # all four suites (67 checks, no network or keys needed)
 npm run test:api      # API suite
 npm run test:provider # OpenRouter wire-format suite
 npm run test:store    # Supabase backend suite
+npm run test:serverless   # loads api/index.js the way Vercel does
 ```
 
 `npm run check` enforces the game rules on every template: five scenes, all
@@ -266,6 +284,7 @@ Everything lives in `.env` (see `.env.example`). The values worth knowing:
 ## Documentation
 
 - [docs/API.md](docs/API.md) — every endpoint, with request and response shapes
+- [docs/DEPLOY.md](docs/DEPLOY.md) — Vercel and long-running hosts, with the env vars
 - [docs/SUPABASE.md](docs/SUPABASE.md) — moving storage to Postgres
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how a prompt becomes a game
 - [docs/APK.md](docs/APK.md) — building and signing the Android export

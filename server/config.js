@@ -80,13 +80,28 @@ function buildLlmConfig() {
   };
 }
 
+/**
+ * Serverless platforms give you a read-only filesystem apart from /tmp, and no
+ * boot hook. Detecting that up front lets the writable paths and the lazy
+ * storage init pick sane defaults instead of crashing on the first upload.
+ */
+const SERVERLESS = Boolean(
+  process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY
+);
+
+function defaultDataDir() {
+  if (process.env.DATA_DIR) return process.env.DATA_DIR;
+  return SERVERLESS ? '/tmp/meamus-data' : './server/data';
+}
+
 const config = {
   root: ROOT,
   env: process.env.NODE_ENV || 'development',
+  serverless: SERVERLESS,
   port: num(process.env.PORT, 3000),
   host: process.env.HOST || '0.0.0.0',
 
-  dataDir: path.resolve(ROOT, process.env.DATA_DIR || './server/data'),
+  dataDir: path.resolve(ROOT, defaultDataDir()),
   templatesDir: path.join(ROOT, 'templates'),
 
   /**

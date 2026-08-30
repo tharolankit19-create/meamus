@@ -35,6 +35,24 @@ app.use((req, res, next) => {
   next();
 });
 
+/**
+ * Storage has to be ready before any handler reads it. A long-running server
+ * does that in start(); a serverless invocation never calls start(), so the
+ * first request through does it here. The promise is memoised, so concurrent
+ * cold-start requests share one hydrate rather than racing.
+ */
+let storageReady = null;
+app.use((req, res, next) => {
+  if (!db.init) return next();
+  if (!storageReady) {
+    storageReady = db.init().catch((err) => {
+      storageReady = null;          // let the next request retry
+      throw err;
+    });
+  }
+  storageReady.then(() => next(), next);
+});
+
 app.use(middleware.optionalAuth);
 app.use('/api', middleware.rateLimit());
 
@@ -51,12 +69,20 @@ app.get('/api/status', (req, res) => {
     testMode: config.testMode,
     templates: templates.list().length,
     showcase: config.showcaseTemplate,
+    storage: db.kind,
+    serverless: config.serverless,
     quotas: config.quotas,
     billingProvider: config.billing.provider,
     plans: PLANS.map((p) => ({ id: p.id, name: p.name, price: p.price })),
     warnings: [
       ...(config.aiEnabled ? [] : ['OPENROUTER_API_KEY is not set - generation runs in template mode.']),
       ...(config.testMode ? ['TEST_MODE is on - anyone can generate without signing up.'] : []),
+      // The failure mode this catches: on a serverless host the JSON store
+      // writes to /tmp, which is discarded between invocations, so accounts
+      // are created and then vanish.
+      ...(config.serverless && db.kind === 'json'
+        ? ['Running serverless with the local JSON store - accounts will not persist. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.']
+        : []),
       ...(config.auth.secretIsEphemeral ? ['JWT_SECRET is not set - sessions reset when the server restarts.'] : [])
     ]
   });
@@ -104,6 +130,9 @@ app.use(middleware.errorHandler);
  */
 function ensureDemos() {
   const fs = require('fs');
+  // public/ is read-only on serverless hosts; the demos are built at deploy
+  // time instead, and /api/templates/:id/play renders them anyway.
+  if (config.serverless) return;
   const demoDir = path.join(config.publicDir, 'demos');
   const expected = templates.list().length;
   const present = fs.existsSync(demoDir)
