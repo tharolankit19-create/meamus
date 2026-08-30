@@ -22,6 +22,7 @@ process.env.JWT_SECRET = 'test-secret-not-for-production-use-0123456789';
 process.env.NODE_ENV = 'test';
 process.env.RATE_LIMIT_MAX = '10000';
 process.env.TEST_MODE = 'true';
+process.env.OPEN_ACCESS = 'true';   // the guest-path checks below need it on
 
 // The suite must be hermetic: it creates and deletes accounts freely, so it
 // runs against the local JSON store and never a shared project. Set
@@ -410,11 +411,13 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     }
   });
 
-  await check('generation is unlimited by default', async () => {
+  await check('a signed-in account generates without a daily cap', async () => {
     const config = require('../server/config');
     assert.strictEqual(config.quotas.unlimited, true, 'unlimited should be the default');
 
-    const fresh = await request('/api/auth/guest', { method: 'POST' });
+    const fresh = await request('/api/auth/register', {
+      method: 'POST', body: { email: `unlimited-${Date.now()}@meamus.test`, password: 'supersecret123' }
+    });
     const t = fresh.body.token;
     assert.strictEqual(fresh.body.user.quota, null, 'an unlimited plan should report a null cap');
     // Comfortably past the old free cap of 5.
@@ -425,16 +428,39 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     }
   });
 
-  await check('every template plays without an account', async () => {
-    const list = await request('/api/templates');
-    assert.strictEqual(list.body.gated, false, 'templates are still gated');
-    assert.ok(list.body.templates.every((t) => t.playable), 'some templates are not playable');
+  await check('signed-in users can play every template', async () => {
+    const list = await request('/api/templates', { token });
+    assert.ok(list.body.templates.every((t) => t.playable), 'some templates are locked for a member');
 
     for (const template of list.body.templates) {
-      const res = await request(`/api/templates/${template.id}/play`, { raw: true });
-      assert.strictEqual(res.status, 200, `${template.id} answered ${res.status} to an anonymous viewer`);
+      const res = await request(`/api/templates/${template.id}/play?token=${token}`, { raw: true });
+      assert.strictEqual(res.status, 200, `${template.id} answered ${res.status} to a member`);
       const html = await res.text();
       assert.ok(html.includes('MEAMUS.boot'), `${template.id} did not return a runnable game`);
+    }
+  });
+
+  await check('the library is gated but the showcase stays public', async () => {
+    // The showcase runs the landing page's demo loop, so it has to load with
+    // no session at all; the rest is the reason to sign up.
+    const config = require('../server/config');
+    const previous = config.templateAccess;
+    config.templateAccess = 'gated';
+    try {
+      const anon = await request('/api/templates');
+      const showcase = anon.body.templates.find((t) => t.showcase);
+      const gatedOne = anon.body.templates.find((t) => !t.showcase);
+      assert.strictEqual(showcase.playable, true, 'the landing demo must stay public');
+      assert.strictEqual(gatedOne.playable, false, 'the library should need an account');
+
+      const open = await request(`/api/templates/${showcase.id}/play`, { raw: true });
+      assert.strictEqual(open.status, 200);
+
+      const locked = await request(`/api/templates/${gatedOne.id}/play`, { raw: true });
+      assert.strictEqual(locked.status, 401);
+      assert.ok((await locked.text()).includes('Sign up free'), 'no sign-up panel in the gated frame');
+    } finally {
+      config.templateAccess = previous;
     }
   });
 

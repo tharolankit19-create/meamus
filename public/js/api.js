@@ -83,7 +83,9 @@ export const auth = {
  * cased; registering later upgrades it in place and keeps the games.
  */
 export async function ensureGuestSession() {
-  const open = state.status && (state.status.openAccess || state.status.testMode);
+  // Off by default: an account is required to build. Only OPEN_ACCESS=true
+  // brings the anonymous path back.
+  const open = state.status && state.status.openAccess;
   if (state.user || !open) return state.user;
   try {
     const payload = await auth.guest();

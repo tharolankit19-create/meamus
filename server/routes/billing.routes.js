@@ -24,7 +24,10 @@ const PLANS = [
     currency: 'USD',
     interval: 'month',
     features: [
-      `${config.quotas.free} generations per day`,
+      config.quotas.unlimited
+        ? 'Unlimited game generations'
+        : `${config.quotas.free} generations per day`,
+      'The full template library, playable and remixable',
       'Unlimited plays and edits of saved games',
       'Standalone HTML export',
       'GameSpec JSON export'
@@ -37,7 +40,9 @@ const PLANS = [
     currency: 'USD',
     interval: 'month',
     features: [
-      `${config.quotas.pro} generations per day`,
+      config.quotas.unlimited
+        ? 'Everything in Free'
+        : `${config.quotas.pro} generations per day`,
       'Android APK export (signed Cordova project)',
       'Priority generation queue',
       'Commercial use licence'
