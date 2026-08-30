@@ -1,0 +1,65 @@
+{
+  "id": "space-shooter",
+  "slug": "astro-salvage",
+  "featured": true,
+  "keywords": ["space", "shooter", "shoot", "asteroid", "spaceship", "ship", "bullet", "laser", "shmup", "arcade", "blast", "alien", "galaxy", "sci-fi", "power-up"],
+  "runtime": { "kit": true, "phaserVersion": "3.60.0" },
+  "gameConfig": {
+    "title": "Astro Salvage",
+    "genre": "shooter",
+    "description": "Fly a salvage ship through an asteroid belt, blast rocks into smaller rocks, and chain kills for combo multipliers before your three hulls run out.",
+    "difficulty": "medium",
+    "estimatedPlayTime": "2-4 minutes per run"
+  },
+  "assets": {
+    "sprites": [
+      { "name": "ship", "type": "player", "description": "34x40 pixel-art salvage ship, cyan hull with white trim, narrow nose, twin rear fins, facing up", "size": "34x40", "style": "pixel-art" },
+      { "name": "thruster", "type": "effect", "description": "14x18 orange-to-yellow flame triangle, flickers behind the ship", "size": "14x18", "style": "pixel-art" },
+      { "name": "bullet", "type": "effect", "description": "6x18 pale cyan plasma bolt with rounded caps and a soft glow", "size": "6x18", "style": "pixel-art" },
+      { "name": "rock-big", "type": "obstacle", "description": "56x56 grey irregular asteroid, ten sides, three shadowed craters, dark outline", "size": "56x56", "style": "pixel-art" },
+      { "name": "rock-small", "type": "obstacle", "description": "28x28 lighter grey asteroid shard, eight sides, one crater", "size": "28x28", "style": "pixel-art" },
+      { "name": "pu-spread", "type": "collectible", "description": "26px glowing green orb with a bright highlight and soft outer halo", "size": "26x26", "style": "pixel-art" },
+      { "name": "pu-shield", "type": "collectible", "description": "26px glowing indigo orb with a bright highlight and soft outer halo", "size": "26x26", "style": "pixel-art" },
+      { "name": "pu-rapid", "type": "collectible", "description": "26px glowing amber orb with a bright highlight and soft outer halo", "size": "26x26", "style": "pixel-art" },
+      { "name": "space-bg", "type": "background", "description": "Vertical gradient from deep indigo at the top to near-black at the bottom", "size": "800x600", "style": "minimalist" }
+    ],
+    "audio": [
+      { "name": "laserShoot", "type": "sfx", "description": "Short descending sawtooth laser blast, 0.16s" },
+      { "name": "explosion", "type": "sfx", "description": "Filtered white-noise burst with a fast decay, 0.35s" },
+      { "name": "pickup", "type": "sfx", "description": "Rising triangle-wave chime, 0.12s" },
+      { "name": "hurt", "type": "sfx", "description": "Falling sawtooth thud, 0.28s" },
+      { "name": "beltDrone", "type": "bgm", "description": "Slow ambient synth pad with a low pulsing bassline, loops seamlessly" }
+    ]
+  },
+  "controls": {
+    "keyboard": ["Arrow keys or WASD to fly", "Hold Space to auto-fire", "P or Esc to pause", "Enter to start"],
+    "touch": ["Left-thumb virtual joystick to fly", "Hold the right FIRE button to auto-fire", "Tap buttons to navigate menus"],
+    "mouse": ["Hold and drag to steer the ship toward the cursor", "Holding the button also fires"]
+  },
+  "mechanics": [
+    { "name": "Auto-fire with cooldown", "description": "Holding fire shoots continuously on a 220ms cooldown, dropping to 110ms under rapid fire.", "implementation": "Timestamp gate (nextShotAt) checked in update() rather than a setInterval." },
+    { "name": "Splitting asteroids", "description": "Big rocks take two hits and split into two small rocks flung left and right; small rocks die in one hit.", "implementation": "Per-sprite hp data value; on death spawnRock({big:false}) twice with opposing x velocities." },
+    { "name": "Combo multiplier", "description": "Kills chained within 1.4 seconds raise a multiplier capped at 5x.", "implementation": "lastKillAt timestamp compared against COMBO_WINDOW_MS on each kill." },
+    { "name": "Power-up system", "description": "Small rocks drop spread shot, shield, or rapid fire with a 16% chance; each lasts 7 seconds.", "implementation": "Enum-style kind stored on the sprite; expiry via scene.time.delayedCall timers cleared on pickup." },
+    { "name": "Object pooling", "description": "Bullets, rocks, and power-ups are recycled instead of created and destroyed.", "implementation": "physics.add.group with maxSize; recycle() disables the body and parks the sprite off-screen." },
+    { "name": "Wave escalation", "description": "Every 18 seconds the wave increments and the spawn interval tightens by 6% down to a 380ms floor.", "implementation": "Looping wave timer that rebuilds the spawn timer with the shorter delay." },
+    { "name": "Invulnerability window", "description": "Losing a hull grants 1.5s of blinking invulnerability so you cannot be chain-killed.", "implementation": "invulnUntil timestamp checked in the player/rock overlap handler." }
+  ],
+  "monetizationHooks": [
+    "Interstitial ad every 3rd wave boundary (MEAMUS.ads.showInterstitial)",
+    "Interstitial ad every 3rd run on the game-over screen",
+    "Rewarded video for a +1 life revive after death",
+    "320x50 banner slot reserved on the menu and game-over screens",
+    "Coin drip every 500 points plus 2 coins per power-up, feeding a skin shop"
+  ],
+  "mobileOptimizations": [
+    "Phaser.Scale.FIT with CENTER_BOTH so the canvas fills any viewport",
+    "Left virtual joystick with an 18% dead zone",
+    "Right FIRE button at a 92px diameter, well over the 44px touch minimum",
+    "Multi-touch enabled (input.addPointer) so move and fire work together",
+    "Game loop sleeps and audio suspends on visibilitychange",
+    "Object pooling keeps active sprites under the 50-sprite budget",
+    "High score and coins persisted to localStorage with an in-memory fallback"
+  ],
+  "apkReady": false
+}

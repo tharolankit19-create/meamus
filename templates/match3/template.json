@@ -1,0 +1,66 @@
+{
+  "id": "match3",
+  "slug": "gem-cascade",
+  "featured": true,
+  "keywords": ["puzzle", "match", "match-3", "match3", "gem", "jewel", "candy", "swap", "tile", "grid", "cascade", "casual", "bejeweled", "crush", "combo"],
+  "runtime": { "kit": true, "phaserVersion": "3.60.0" },
+  "gameConfig": {
+    "title": "Gem Cascade",
+    "genre": "puzzle",
+    "description": "An 8x8 match-3 puzzle with chained cascades, a move limit and a rising score target each level. Illegal swaps snap back and cost nothing.",
+    "difficulty": "easy",
+    "estimatedPlayTime": "3-6 minutes per level"
+  },
+  "assets": {
+    "sprites": [
+      { "name": "gem0", "type": "collectible", "description": "46x46 red pentagon gem with a white bevel edge", "size": "46x46", "style": "vector" },
+      { "name": "gem1", "type": "collectible", "description": "46x46 green round gem with a specular highlight", "size": "46x46", "style": "vector" },
+      { "name": "gem2", "type": "collectible", "description": "46x46 blue rounded-square gem with a white bevel", "size": "46x46", "style": "vector" },
+      { "name": "gem3", "type": "collectible", "description": "46x46 amber diamond gem with a white bevel", "size": "46x46", "style": "vector" },
+      { "name": "gem4", "type": "collectible", "description": "46x46 violet five-point star gem", "size": "46x46", "style": "vector" },
+      { "name": "gem5", "type": "collectible", "description": "46x46 cyan elongated hexagon gem with a white bevel", "size": "46x46", "style": "vector" },
+      { "name": "cell", "type": "ui", "description": "54x54 rounded translucent board cell for the checkerboard backing", "size": "54x54", "style": "minimalist" },
+      { "name": "selector", "type": "ui", "description": "56x56 white rounded highlight drawn under the selected gem", "size": "56x56", "style": "minimalist" },
+      { "name": "puzzle-bg", "type": "background", "description": "Vertical gradient from deep navy at the top to near-black at the bottom", "size": "800x600", "style": "minimalist" }
+    ],
+    "audio": [
+      { "name": "swap", "type": "ui", "description": "Soft square-wave tick, 0.05s" },
+      { "name": "match", "type": "sfx", "description": "Rising triangle chime that pitches up with each cascade step" },
+      { "name": "invalid", "type": "sfx", "description": "Short falling sawtooth buzz, 0.28s" },
+      { "name": "levelClear", "type": "sfx", "description": "Four-note ascending major arpeggio fanfare" },
+      { "name": "puzzleLoop", "type": "bgm", "description": "Relaxed 90 BPM marimba and pad loop, unobtrusive under long sessions" }
+    ]
+  },
+  "controls": {
+    "keyboard": ["Arrow keys move the cursor", "Space or Enter picks up and drops a gem", "P or Esc to pause"],
+    "touch": ["Tap a gem then tap a neighbour to swap", "Or drag a gem toward the neighbour you want it swapped with"],
+    "mouse": ["Click a gem then click a neighbour", "Or click-drag a gem in the swap direction"]
+  },
+  "mechanics": [
+    { "name": "Adjacent swap with rollback", "description": "Only orthogonal neighbours can swap; a swap that produces no match animates back and does not consume a move.", "implementation": "Cells swap in the model first, findMatches() decides, and the inverse tween runs on failure." },
+    { "name": "Run detection", "description": "Any horizontal or vertical run of three or more identical gems clears, and overlapping runs clear as one set.", "implementation": "Two linear passes over rows and columns collecting runs into a de-duplicated set keyed by r:c." },
+    { "name": "Cascades", "description": "Gems fall into the gaps and new ones drop in from above; any resulting match chains, and each chain step is worth 50% more.", "implementation": "resolveBoard -> collapse -> resolveBoard recursion with a cascade counter driving the multiplier." },
+    { "name": "Long-match bonus", "description": "Every gem beyond the third in a single clear is worth an extra 60 points.", "implementation": "extra = max(0, matched - MIN_MATCH) * LONG_MATCH_BONUS applied before the cascade multiplier." },
+    { "name": "Move budget and score target", "description": "25 moves per level against a target that grows 45% each level; hitting the target advances, running out ends the run.", "implementation": "Checked in afterSettle() once the board is stable, never mid-cascade." },
+    { "name": "Deadlock reshuffle", "description": "If no legal swap exists the same gems are redealt until the board has a move and no free matches.", "implementation": "hasValidMove() brute-forces every adjacent swap; shuffleBoard() retries up to 50 deals." },
+    { "name": "Idle hint", "description": "After 6 seconds without input a legal swap pulses to unstick the player.", "implementation": "findHint() returns the first solvable pair; a looping scale tween marks it until the next input." },
+    { "name": "Fair deal", "description": "The starting board never contains a pre-made match and always has at least one legal move.", "implementation": "safeType() bans the type that would complete a run while dealing, then the board is validated before sprites are created." }
+  ],
+  "monetizationHooks": [
+    "Interstitial ad on every level complete",
+    "Interstitial ad every 3rd run on the game-over screen",
+    "Rewarded video for +5 moves to continue the current level",
+    "320x50 banner slot reserved on the menu",
+    "10 coins per level clear, feeding a booster shop (bomb, colour-blast, extra moves)"
+  ],
+  "mobileOptimizations": [
+    "Phaser.Scale.FIT with CENTER_BOTH; the 448px board centres on any screen",
+    "56px cells, comfortably above the 44px touch-target minimum",
+    "Both tap-tap and drag-swipe swap gestures with a 45%-of-a-cell drag threshold",
+    "Input locked behind a busy flag during animations so fast taps cannot corrupt the board",
+    "No physics simulation - tween-driven, so the board is cheap on low-end devices",
+    "Loop sleeps and audio suspends when the app is backgrounded",
+    "Best score and coins persisted to localStorage"
+  ],
+  "apkReady": false
+}

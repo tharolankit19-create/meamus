@@ -1,0 +1,65 @@
+{
+  "id": "platformer",
+  "slug": "crystal-caves",
+  "featured": true,
+  "keywords": ["platformer", "platform", "jump", "mario", "cave", "collect", "coins", "gems", "levels", "enemy", "stomp", "adventure", "side-scroller", "2d", "explorer"],
+  "runtime": { "kit": true, "phaserVersion": "3.60.0" },
+  "gameConfig": {
+    "title": "Crystal Caves",
+    "genre": "platformer",
+    "description": "A three-cave collect-a-thon platformer: gather every crystal, stomp the crawlers, dodge the spikes, and reach the golden door before the timer runs out.",
+    "difficulty": "medium",
+    "estimatedPlayTime": "5-8 minutes for all three caves"
+  },
+  "assets": {
+    "sprites": [
+      { "name": "hero", "type": "player", "description": "24x30 green cave explorer with a rounded body, dark outline and a lit helmet band", "size": "24x30", "style": "pixel-art" },
+      { "name": "crawler", "type": "enemy", "description": "28x22 red slime crawler, rounded rectangle body, dark outline, two eye dots", "size": "28x22", "style": "pixel-art" },
+      { "name": "gem", "type": "collectible", "description": "22x24 cyan faceted crystal in a diamond silhouette with a white edge highlight", "size": "22x24", "style": "pixel-art" },
+      { "name": "tile-solid", "type": "obstacle", "description": "32x32 blue-grey cave stone tile with a lighter lit top edge and a dark seam border", "size": "32x32", "style": "pixel-art" },
+      { "name": "tile-platform", "type": "obstacle", "description": "32x12 violet one-way ledge with a bright top lip", "size": "32x12", "style": "pixel-art" },
+      { "name": "spike", "type": "obstacle", "description": "32x18 red hazard spike triangle rising from the cave floor", "size": "32x18", "style": "pixel-art" },
+      { "name": "door", "type": "ui", "description": "34x46 golden exit door with a dark bronze frame, glowing when unlocked", "size": "34x46", "style": "pixel-art" },
+      { "name": "cave-bg", "type": "background", "description": "Vertical gradient from slate blue at the top to near-black at the bottom", "size": "800x576", "style": "minimalist" }
+    ],
+    "audio": [
+      { "name": "jump", "type": "sfx", "description": "Rising square-wave hop, 0.14s" },
+      { "name": "gemPickup", "type": "sfx", "description": "Crystalline rising triangle chime, 0.12s" },
+      { "name": "stomp", "type": "sfx", "description": "Short noise burst with a fast decay, 0.35s" },
+      { "name": "levelClear", "type": "sfx", "description": "Four-note ascending major arpeggio fanfare" },
+      { "name": "caveAmbience", "type": "bgm", "description": "Slow echoing pad with occasional water drips, loops seamlessly" }
+    ]
+  },
+  "controls": {
+    "keyboard": ["Arrow keys or A/D to run", "Space, Up or W to jump", "P or Esc to pause", "Enter to start"],
+    "touch": ["Left-thumb virtual joystick to run", "Right JUMP button to jump", "Tap the level buttons on the menu to pick a cave"],
+    "mouse": ["Hold near the bottom-left or bottom-right to walk that way", "Click the upper area to jump"]
+  },
+  "mechanics": [
+    { "name": "ASCII level maps", "description": "Each cave is a 25x18 character grid where # is stone, = a one-way ledge, ^ a spike, g a crystal, e a crawler, P the start and D the exit.", "implementation": "buildLevel() walks the grid and instantiates static/physics bodies per character." },
+    { "name": "Coyote time + jump buffering", "description": "You can still jump 110ms after leaving a ledge, and a jump pressed 130ms before landing fires on touchdown.", "implementation": "lastGroundedAt and jumpBufferedAt timestamps compared in tryJump() each frame." },
+    { "name": "One-way platforms", "description": "Violet ledges can be jumped through from below but land on from above.", "implementation": "Collider process callback allowing the collision only when falling and the player's feet are above the ledge top." },
+    { "name": "Stomp combat", "description": "Landing on a crawler squashes it for 150 points and bounces you; side contact costs a life.", "implementation": "Overlap handler comparing player velocity.y and body.bottom against the enemy's body.top." },
+    { "name": "Ledge-aware enemy AI", "description": "Crawlers reverse at walls and stop before walking off the edge of their platform.", "implementation": "wouldFall() probes the level grid one tile ahead and below the enemy each frame." },
+    { "name": "Gated exit", "description": "The door only opens once every crystal in the cave is collected, then it pulses.", "implementation": "gemsLeft counter checked in the door overlap handler; a looping tween signals the unlock." },
+    { "name": "Time bonus", "description": "Each cave has a 90 second limit; leftover seconds are worth 5 points each on clear.", "implementation": "Looping 1s timer decrements timeLeft; completeLevel() converts the remainder to score." },
+    { "name": "Persistent level unlocks", "description": "Clearing a cave permanently unlocks the next one on the menu's level select.", "implementation": "Unlock index written to localStorage through MEAMUS.storage." }
+  ],
+  "monetizationHooks": [
+    "Interstitial ad on every level complete",
+    "Interstitial ad every 3rd run on the game-over screen",
+    "Rewarded video to retry the current cave with the score preserved",
+    "Crystals bank into the shared meamus wallet for a hero-skin shop",
+    "Level-pack IAP placeholder: the level array is data, so new packs are a content drop"
+  ],
+  "mobileOptimizations": [
+    "Phaser.Scale.FIT with CENTER_BOTH; the 800x576 grid scales to any screen",
+    "108px virtual joystick with a dead zone plus a 96px JUMP button",
+    "Coyote time and jump buffering absorb touch latency",
+    "Static physics groups for terrain so only the player and crawlers are dynamic",
+    "Level select means a session can be resumed instead of replayed",
+    "Loop sleeps and audio suspends when the app is backgrounded",
+    "Progress and best score persisted to localStorage"
+  ],
+  "apkReady": false
+}
