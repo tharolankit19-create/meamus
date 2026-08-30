@@ -107,13 +107,15 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.strictEqual(status, 401);
   });
 
-  await check('test mode mints a guest session with no signup', async () => {
+  await check('open access mints a guest session with no signup', async () => {
     const { status, body } = await request('/api/auth/guest', { method: 'POST' });
     assert.strictEqual(status, 201);
     assert.ok(body.token);
     assert.strictEqual(body.user.isGuest, true);
     assert.strictEqual(body.user.plan, 'guest');
-    assert.ok(body.user.quota >= 1, 'a guest needs a usable quota');
+    // null means no cap; a number means a real one. Zero would be a lockout.
+    assert.ok(body.user.quota === null || body.user.quota >= 1,
+      `a guest cannot generate with quota ${body.user.quota}`);
     guestToken = body.token;
   });
 
@@ -360,17 +362,38 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.ok(buffer.length > 20000, 'apk project is too small');
   });
 
-  await check('guest sessions are refused when test mode is off', async () => {
-    // The route reads config at call time, so flipping the flag is enough.
+  await check('guest sessions are refused when open access is off', async () => {
+    // The route reads config at call time, so flipping the flags is enough.
     const config = require('../server/config');
-    const previous = config.testMode;
+    const previous = { open: config.openAccess, test: config.testMode };
+    config.openAccess = false;
     config.testMode = false;
     try {
       const { status, body } = await request('/api/auth/guest', { method: 'POST' });
       assert.strictEqual(status, 403);
       assert.strictEqual(body.code, 'guest_disabled');
     } finally {
-      config.testMode = previous;
+      config.openAccess = previous.open;
+      config.testMode = previous.test;
+    }
+  });
+
+  await check('signup is refused when storage cannot keep the account', async () => {
+    // Better a clear refusal than a token for an account that evaporates and
+    // leaves the user told they never signed up.
+    const db = require('../server/db');
+    const original = Object.getOwnPropertyDescriptor(db, 'durable');
+    Object.defineProperty(db, 'durable', { value: false, configurable: true });
+    try {
+      const { status, body } = await request('/api/auth/register', {
+        method: 'POST', body: { email: `nodurable-${Date.now()}@meamus.test`, password: 'supersecret123' }
+      });
+      assert.strictEqual(status, 503);
+      assert.strictEqual(body.code, 'storage_not_durable');
+      assert.match(body.error, /without an account/i, 'the message should say the app still works');
+    } finally {
+      if (original) Object.defineProperty(db, 'durable', original);
+      else delete db.durable;
     }
   });
 
@@ -387,19 +410,54 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     }
   });
 
-  await check('the daily quota is enforced', async () => {
-    const quotaUser = await request('/api/auth/register', {
-      method: 'POST', body: { email: 'quota@meamus.test', password: 'supersecret123' }
-    });
-    const t = quotaUser.body.token;
-    const limit = quotaUser.body.user.quota;
-    for (let i = 0; i < limit; i += 1) {
+  await check('generation is unlimited by default', async () => {
+    const config = require('../server/config');
+    assert.strictEqual(config.quotas.unlimited, true, 'unlimited should be the default');
+
+    const fresh = await request('/api/auth/guest', { method: 'POST' });
+    const t = fresh.body.token;
+    assert.strictEqual(fresh.body.user.quota, null, 'an unlimited plan should report a null cap');
+    // Comfortably past the old free cap of 5.
+    for (let i = 0; i < 8; i += 1) {
       const r = await request('/api/generate', { method: 'POST', token: t, body: { prompt: 'a platformer with gems' } });
-      assert.strictEqual(r.status, 201, `generation ${i + 1} failed`);
+      assert.strictEqual(r.status, 201, `generation ${i + 1} was blocked with ${r.status}`);
+      assert.strictEqual(r.body.quota.limit, null);
     }
-    const over = await request('/api/generate', { method: 'POST', token: t, body: { prompt: 'a platformer with gems' } });
-    assert.strictEqual(over.status, 429);
-    assert.strictEqual(over.body.code, 'quota_exceeded');
+  });
+
+  await check('every template plays without an account', async () => {
+    const list = await request('/api/templates');
+    assert.strictEqual(list.body.gated, false, 'templates are still gated');
+    assert.ok(list.body.templates.every((t) => t.playable), 'some templates are not playable');
+
+    for (const template of list.body.templates) {
+      const res = await request(`/api/templates/${template.id}/play`, { raw: true });
+      assert.strictEqual(res.status, 200, `${template.id} answered ${res.status} to an anonymous viewer`);
+      const html = await res.text();
+      assert.ok(html.includes('MEAMUS.boot'), `${template.id} did not return a runnable game`);
+    }
+  });
+
+  await check('the daily quota is enforced when limits are switched on', async () => {
+    const config = require('../server/config');
+    const previous = config.quotas.unlimited;
+    config.quotas.unlimited = false;
+    try {
+      const quotaUser = await request('/api/auth/register', {
+        method: 'POST', body: { email: 'quota@meamus.test', password: 'supersecret123' }
+      });
+      const t = quotaUser.body.token;
+      const limit = config.quotas.free;
+      for (let i = 0; i < limit; i += 1) {
+        const r = await request('/api/generate', { method: 'POST', token: t, body: { prompt: 'a platformer with gems' } });
+        assert.strictEqual(r.status, 201, `generation ${i + 1} failed`);
+      }
+      const over = await request('/api/generate', { method: 'POST', token: t, body: { prompt: 'a platformer with gems' } });
+      assert.strictEqual(over.status, 429);
+      assert.strictEqual(over.body.code, 'quota_exceeded');
+    } finally {
+      config.quotas.unlimited = previous;
+    }
   });
 
   await check('DELETE /api/games/:id removes the game', async () => {

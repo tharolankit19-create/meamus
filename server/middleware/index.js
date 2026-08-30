@@ -15,7 +15,8 @@ function publicUser(user) {
     isGuest: user.isGuest === true,
     createdAt: user.createdAt,
     usage: usageToday(user),
-    quota: config.quotas[user.plan] || config.quotas.free
+    // null means no cap. The UI renders that as "unlimited".
+    quota: config.quotas.unlimited ? null : (config.quotas[user.plan] || config.quotas.free)
   };
 }
 
@@ -87,6 +88,7 @@ function requirePlan(plan) {
 }
 
 function enforceQuota(req, res, next) {
+  if (config.quotas.unlimited) return next();
   const quota = config.quotas[req.user.plan] || config.quotas.free;
   const used = usageToday(req.user);
   if (used >= quota) {

@@ -13,6 +13,7 @@
 
 const config = require('../config');
 const llm = require('./llm');
+const research = require('./research');
 const templates = require('./templates');
 const { extractJson, normaliseSpec, SpecError } = require('./validator');
 
@@ -118,7 +119,7 @@ function templateGenerate(prompt, { reason = 'no-api-key', attachments = [] } = 
 /* AI mode                                                                   */
 /* ------------------------------------------------------------------------ */
 
-function buildUserMessage(prompt, analysis) {
+function buildUserMessage(prompt, analysis, researchBlock = '') {
   return [
     `Game request: ${prompt}`,
     '',
@@ -126,6 +127,7 @@ function buildUserMessage(prompt, analysis) {
     `- difficulty: ${analysis.difficulty}`,
     `- visual style: ${analysis.style}`,
     `- control emphasis: ${analysis.controls.length ? analysis.controls.join(', ') : 'keyboard + mouse + touch equally'}`,
+    researchBlock,
     '',
     'Produce the complete GameSpec JSON now. The game must be fully playable',
     'from the returned gameCode.javascript alone, using only procedural',
@@ -198,15 +200,31 @@ async function generate(prompt, opts = {}) {
   const attachments = opts.attachments || [];
   try {
     const caps = await llm.capabilities();
+
+    // Ground the brief in real games from the same genre. Never fatal: a slow
+    // or unreachable catalogue just means the model works from the prompt.
+    const refs = opts.research === false
+      ? { used: false, references: [], categories: [] }
+      : await research.referencesFor(prompt);
+
     const { message, ignoredImages } = llm.buildUserMessage(
-      buildUserMessage(prompt, analysis), attachments, caps
+      buildUserMessage(prompt, analysis, research.toPromptBlock(refs)), attachments, caps
     );
     // Never drop a user's reference art silently - say the model cannot see it.
     const issues = ignoredImages.length
       ? [`${config.llm.model} cannot read images, so ${ignoredImages.join(', ')} ` +
          'informed the prompt only. Set OPENROUTER_MODEL to a vision model to use them.']
       : [];
-    return await aiGenerate([message], issues);
+    const result = await aiGenerate([message], issues);
+    result.meta.research = {
+      used: refs.used,
+      categories: refs.categories,
+      count: refs.references.length,
+      titles: refs.references.map((r) => r.title),
+      source: 'FreeToGame',
+      sourceUrl: 'https://www.freetogame.com'
+    };
+    return result;
   } catch (err) {
     if (!allowFallback) throw err;
     console.error('[generator] AI generation failed, serving a template:', err.message);

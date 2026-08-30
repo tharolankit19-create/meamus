@@ -119,7 +119,7 @@ router.post('/generate', requireAuth, enforceQuota, asyncRoute(async (req, res) 
     spec,
     meta,
     messages: game.messages,
-    quota: { used, limit: config.quotas[req.user.plan] || config.quotas.free }
+    quota: { used, limit: config.quotas.unlimited ? null : (config.quotas[req.user.plan] || config.quotas.free) }
   });
 }));
 
@@ -196,7 +196,7 @@ router.post('/games/:id/modify', requireAuth, enforceQuota, asyncRoute(async (re
     spec,
     meta: updated.meta,
     messages: updated.messages,
-    quota: { used, limit: config.quotas[req.user.plan] || config.quotas.free }
+    quota: { used, limit: config.quotas.unlimited ? null : (config.quotas[req.user.plan] || config.quotas.free) }
   });
 }));
 

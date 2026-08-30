@@ -23,7 +23,7 @@ function issue(user) {
  * second code path to keep in sync.
  */
 router.post('/guest', asyncRoute(async (req, res) => {
-  if (!config.testMode) {
+  if (!config.openAccess && !config.testMode) {
     return res.status(403).json({
       error: 'Guest sessions are disabled. Create an account to continue.',
       code: 'guest_disabled'
@@ -51,6 +51,18 @@ router.post('/register', asyncRoute(async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
   const password = String(req.body.password || '');
   const name = String(req.body.name || '').trim().slice(0, 60);
+
+  // Issuing a token for an account that is about to evaporate is worse than
+  // refusing: the user signs up, the next request lands on a different
+  // instance, and the app tells them they never signed up.
+  if (!db.durable) {
+    return res.status(503).json({
+      error: 'Accounts cannot be saved on this deployment yet, so signing up would not stick. ' +
+        'You can keep building without an account - everything works. ' +
+        '(Operator: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.)',
+      code: 'storage_not_durable'
+    });
+  }
 
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Enter a valid email address', code: 'invalid_email' });
   if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters', code: 'weak_password' });

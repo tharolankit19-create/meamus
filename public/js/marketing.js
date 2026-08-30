@@ -48,7 +48,12 @@ export function siteNav(active) {
 export function siteFooter() {
   return el('footer', { class: 'site-foot' },
     el('div', { class: 'spread' },
-      el('span', {}, `© ${new Date().getFullYear()} meamus · Built on Phaser 3`),
+      el('span', {},
+        `© ${new Date().getFullYear()} meamus · Built on Phaser 3 · Game design data from `,
+        el('a', {
+          href: 'https://www.freetogame.com', target: '_blank', rel: 'noopener',
+          style: { color: 'var(--orange)' }
+        }, 'FreeToGame')),
       el('span', { class: 'row', style: { gap: '16px' } },
         el('a', { href: '#/templates' }, 'Templates'),
         el('a', { href: '#/pricing' }, 'Pricing'),

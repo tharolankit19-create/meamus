@@ -68,6 +68,10 @@ function persist(collection) {
 const store = {
   kind: 'json',
 
+  // A local file survives a restart on a normal host, but on a serverless
+  // platform it lives in /tmp and is discarded between invocations.
+  get durable() { return !config.serverless; },
+
   async init() { /* files are read lazily; nothing to warm up */ },
 
   /** Drop the cache so the next read comes off disk. */

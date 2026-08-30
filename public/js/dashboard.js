@@ -2,7 +2,7 @@
  * Signed-in home: sidebar + greeting + composer + project grid.
  * ========================================================================== */
 
-import { el, icon, toast, clear, playModal, confirmModal, relativeTime } from './ui.js';
+import { el, icon, toast, clear, playModal, confirmModal, relativeTime, quotaLabel } from './ui.js';
 import { state, projects, templatesApi, playUrl, setSession, billing, templatePlayUrl } from './api.js';
 import { createComposer } from './composer.js';
 import { startProject } from './generate.js';
@@ -60,7 +60,7 @@ export function renderDashboard(root, { tab = 'projects' } = {}) {
     el('div', { class: 'spread', style: { margin: '38px 0 16px' } },
       tabs,
       el('span', { class: 'faint small' },
-        `${state.user.usage}/${state.user.quota} generations today`)),
+        quotaLabel(state.user))),
     listHost);
 
   loadTab(tab, listHost);
