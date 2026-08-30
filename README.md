@@ -140,7 +140,9 @@ SUPABASE_SERVICE_ROLE_KEY=eyJhbGci...
 ```
 
 Run [`supabase/schema.sql`](supabase/schema.sql) in the SQL editor first, then
-`npm run db:check` to confirm. Full walkthrough in
+`npm run db:check` and `npm run db:persist-check` to confirm — the second boots
+the server, signs up, discards the data directory, reboots, and proves the
+account survived. Full walkthrough in
 [docs/SUPABASE.md](docs/SUPABASE.md). The server prints a warning at boot if it
 is storing to local disk in production.
 
@@ -222,9 +224,10 @@ npm start             # run the server
 npm run dev           # run with --watch
 npm run llm:check     # verify the model key end to end (needs a key)
 npm run db:check      # verify storage: connect, write, read, update, delete
+npm run db:persist-check  # prove an account survives a restart (needs Supabase)
 npm run build:demos   # re-render public/demos/*.html from templates/
 npm run check         # static checks: syntax, template rules, config surface
-npm test              # all three suites (52 checks, no network or keys needed)
+npm test              # all three suites (55 checks, no network or keys needed)
 npm run test:api      # API suite
 npm run test:provider # OpenRouter wire-format suite
 npm run test:store    # Supabase backend suite

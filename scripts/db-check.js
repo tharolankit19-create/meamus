@@ -63,7 +63,13 @@ const bad = (m) => console.log(`  FAIL  ${m}`);
 
     if (!db.remove('users', id)) throw new Error('delete reported no row');
     await db.flush();
-    ok('delete applied');
+    // Confirm from the server, not the cache - a dropped DELETE would leave
+    // the probe row behind and still look fine locally.
+    if (db.reload) {
+      await db.reload();
+      if (db.find('users', (u) => u.id === id)) throw new Error('the probe row survived the delete');
+    }
+    ok('delete applied and confirmed');
   } catch (err) {
     bad(err.message);
     try { db.remove('users', id); } catch { /* best effort */ }

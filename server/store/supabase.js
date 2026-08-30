@@ -40,6 +40,13 @@ function createSupabaseStore(config) {
   const cache = new Map();
   let loaded = false;
 
+  /**
+   * Writes are issued without blocking the caller, so flush() has to be able
+   * to wait for them. Without this a process that exits straight after a write
+   * - a script, or a serverless host freezing after the response - loses it.
+   */
+  const inFlight = new Set();
+
   async function request(path, options = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
@@ -82,18 +89,22 @@ function createSupabaseStore(config) {
     return cache.get(collection) || [];
   }
 
-  /** Fire-and-log: a failed write must surface, not corrupt the cache. */
+  /** Track the write so flush() can await it, and log rather than crash. */
   function write(promise, description) {
-    return promise.catch((err) => {
-      console.error(`[store] ${description} failed: ${err.message}`);
-      throw err;
-    });
+    const tracked = promise
+      .catch((err) => { console.error(`[store] ${description} failed: ${err.message}`); })
+      .finally(() => inFlight.delete(tracked));
+    inFlight.add(tracked);
+    return tracked;
   }
 
   return {
     kind: 'supabase',
 
     async init() { await hydrate(); },
+
+    /** Re-read everything from Postgres, discarding the cache. */
+    async reload() { await hydrate(); },
 
     id(prefix = 'id') {
       return `${prefix}_${Date.now().toString(36)}${crypto.randomBytes(6).toString('hex')}`;
@@ -139,7 +150,13 @@ function createSupabaseStore(config) {
       return true;
     },
 
-    async flush() { /* writes are already in flight; nothing is buffered */ },
+    /** Wait for every outstanding write. Call before exiting the process. */
+    async flush() {
+      while (inFlight.size) await Promise.all([...inFlight]);
+    },
+
+    /** Number of writes still in the air - used by the tests. */
+    get pendingWrites() { return inFlight.size; },
 
     /** Connectivity probe used by `npm run db:check`. */
     async ping() {
