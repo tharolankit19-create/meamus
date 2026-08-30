@@ -4,6 +4,7 @@ const express = require('express');
 const db = require('../db');
 const config = require('../config');
 const generator = require('../services/generator');
+const uploads = require('../services/uploads');
 const bundler = require('../services/bundler');
 const apk = require('../services/apk');
 const { requireAuth, requirePlan, enforceQuota, recordUsage, asyncRoute } = require('../middleware');
@@ -12,6 +13,26 @@ const router = express.Router();
 
 const MAX_PROMPT = 2000;
 const MAX_VERSIONS = 10;
+const MAX_MESSAGES = 60;
+
+/**
+ * One turn in a project's chat thread. Assistant turns carry a snapshot of the
+ * spec summary so the UI can label each card without re-reading the game.
+ */
+function message(role, text, extra = {}) {
+  return {
+    id: db.id('msg'),
+    role,
+    text,
+    createdAt: new Date().toISOString(),
+    ...extra
+  };
+}
+
+function appendMessages(game, ...entries) {
+  const messages = [...(game.messages || []), ...entries].slice(-MAX_MESSAGES);
+  return messages;
+}
 
 /** List view - the full spec is heavy, so summaries omit gameCode. */
 function summarise(game) {
@@ -26,11 +47,24 @@ function summarise(game) {
     mode: game.meta.mode,
     isPublic: game.isPublic === true,
     versionCount: (game.versions || []).length + 1,
+    messageCount: (game.messages || []).length,
     codeLines: game.spec.gameCode.javascript.split('\n').length,
     spriteCount: game.spec.assets.sprites.length,
     createdAt: game.createdAt,
     updatedAt: game.updatedAt
   };
+}
+
+/** The one-line summary an assistant turn shows in the chat thread. */
+function describeBuild(spec, meta) {
+  const bits = [
+    `${spec.gameConfig.genre} · ${spec.gameConfig.difficulty}`,
+    `${spec.gameCode.javascript.split('\n').length} lines`,
+    `${spec.assets.sprites.length} sprites`,
+    `${spec.mechanics.length} mechanics`
+  ];
+  if (meta.mode === 'template') bits.push(`from the ${meta.templateId} template`);
+  return bits.join(' · ');
 }
 
 function ownedGame(req, res) {
@@ -50,8 +84,11 @@ router.post('/generate', requireAuth, enforceQuota, asyncRoute(async (req, res) 
     return res.status(400).json({ error: `Prompt is too long (max ${MAX_PROMPT} characters)`, code: 'prompt_too_long' });
   }
 
+  const attachments = uploads.resolve(req.body.attachmentIds, req.user.id);
+
   const { spec, meta } = await generator.generate(prompt, {
-    forceTemplate: req.body.forceTemplate === true
+    forceTemplate: req.body.forceTemplate === true,
+    attachments
   });
 
   const now = new Date().toISOString();
@@ -62,6 +99,14 @@ router.post('/generate', requireAuth, enforceQuota, asyncRoute(async (req, res) 
     spec,
     meta,
     versions: [],
+    messages: [
+      message('user', prompt, { attachments: attachments.map(uploads.publicView) }),
+      message('assistant', describeBuild(spec, meta), {
+        title: spec.gameConfig.title,
+        kind: 'build',
+        mode: meta.mode
+      })
+    ],
     isPublic: false,
     createdAt: now,
     updatedAt: now
@@ -73,6 +118,7 @@ router.post('/generate', requireAuth, enforceQuota, asyncRoute(async (req, res) 
     game: summarise(game),
     spec,
     meta,
+    messages: game.messages,
     quota: { used, limit: config.quotas[req.user.plan] || config.quotas.free }
   });
 }));
@@ -88,7 +134,7 @@ router.get('/games', requireAuth, (req, res) => {
 router.get('/games/:id', requireAuth, (req, res) => {
   const game = ownedGame(req, res);
   if (!game) return;
-  res.json({ game: summarise(game), spec: game.spec, meta: game.meta });
+  res.json({ game: summarise(game), spec: game.spec, meta: game.meta, messages: game.messages || [] });
 });
 
 router.patch('/games/:id', requireAuth, asyncRoute(async (req, res) => {
@@ -122,7 +168,8 @@ router.post('/games/:id/modify', requireAuth, enforceQuota, asyncRoute(async (re
     return res.status(400).json({ error: 'Describe the change you want', code: 'instruction_too_short' });
   }
 
-  const { spec, meta } = await generator.modify(instruction, game.spec);
+  const attachments = uploads.resolve(req.body.attachmentIds, req.user.id);
+  const { spec, meta } = await generator.modify(instruction, game.spec, { attachments });
 
   // Keep a bounded history so a bad edit can be rolled back.
   const versions = [
@@ -133,7 +180,14 @@ router.post('/games/:id/modify', requireAuth, enforceQuota, asyncRoute(async (re
   const updated = db.update('games', game.id, {
     spec,
     meta: { ...meta, lastInstruction: instruction },
-    versions
+    versions,
+    messages: appendMessages(game,
+      message('user', instruction, { attachments: attachments.map(uploads.publicView) }),
+      message('assistant', describeBuild(spec, meta), {
+        title: spec.gameConfig.title,
+        kind: 'edit',
+        mode: meta.mode
+      }))
   });
   const used = recordUsage(req.user);
 
@@ -141,9 +195,17 @@ router.post('/games/:id/modify', requireAuth, enforceQuota, asyncRoute(async (re
     game: summarise(updated),
     spec,
     meta: updated.meta,
+    messages: updated.messages,
     quota: { used, limit: config.quotas[req.user.plan] || config.quotas.free }
   });
 }));
+
+/** The chat thread for a project. */
+router.get('/games/:id/messages', requireAuth, (req, res) => {
+  const game = ownedGame(req, res);
+  if (!game) return;
+  res.json({ messages: game.messages || [] });
+});
 
 router.post('/games/:id/revert', requireAuth, asyncRoute(async (req, res) => {
   const game = ownedGame(req, res);

@@ -3,17 +3,41 @@
 **Describe a game in a sentence. Get a complete, playable HTML5 game.**
 
 meamus is a working SaaS: accounts, quotas, a prompt-to-game pipeline backed by
-Claude, an in-browser preview, a library, HTML export, a paid tier, and an
-Android (Cordova) export that builds without touching a line of code.
+Claude, a chat workspace with a live preview, image and file attachments, a
+project library, HTML export, a paid tier, and an Android (Cordova) export that
+builds without touching a line of code.
 
 Every generated game is a single self-contained HTML file — Phaser 3 from a
 pinned CDN, procedural sprites, synthesised audio, keyboard + mouse + touch
 controls, a full menu → game → game-over loop, and ad hooks already wired in.
 
 ```
-prompt ──▶ Claude ──▶ GameSpec JSON ──▶ validator ──▶ bundler ──▶ playable .html
-                                                             └──▶ Cordova project (.zip)
+prompt + images/files ──▶ Claude ──▶ GameSpec JSON ──▶ validator ──▶ bundler ──▶ playable .html
+        ▲                                                                  └──▶ Cordova project (.zip)
+        └── chat: "make it harder", "add a boss" ── each turn rebuilds the game
 ```
+
+## The interface
+
+Three screens, white and orange, no dark mode:
+
+- **Landing** — hero prompt box. Type an idea, sign up, and you land straight in
+  the workspace with the game already built.
+- **Dashboard** — sidebar, greeting, the same prompt box, and a grid of your
+  games. Every tile is a **live thumbnail**: the real game running in an iframe,
+  not a screenshot.
+- **Workspace** — chat thread on the left, the running game on the right.
+  Each build appears as a card with Details and Preview. Keep talking to it:
+  *"make it harder"*, *"add a boss every 5 waves"*, *"use this palette"* with an
+  image attached. Tabs switch the right pane between the live game, its source,
+  and the full spec. Publish gives you a share link, the standalone HTML, or the
+  Android project.
+
+**Attachments** work everywhere the composer does — click `+`, drag files onto
+the box, or paste a screenshot. Images (png/jpg/webp/gif, 5 MB) are sent to
+Claude as vision input so the generated art matches your reference; text files
+(md/txt/json/csv/js/html/css, 512 KB) are folded into the prompt as design
+notes. Six per message.
 
 ---
 
@@ -72,6 +96,9 @@ runtime.
 
 - Email/password accounts (scrypt hashing, HMAC-SHA256 session tokens via
   `node:crypto` — no auth library)
+- Attachment store with type and size validation; images become Claude vision
+  blocks, text files become prompt context (no multipart parser needed)
+- A chat thread per project, bounded at 60 turns, with a 10-deep version history
 - JSON document store with atomic writes (`server/db.js`; swap it for Postgres
   by reimplementing eight methods)
 - Claude Messages API client over `fetch`, with a forgiving JSON extractor for
@@ -80,11 +107,13 @@ runtime.
 - Per-day generation quotas and a fixed-window rate limiter
 - HTML bundler, and a ZIP writer built on `node:zlib` for the APK export
 
-**Frontend** (`public/`) — vanilla ES modules, no build step.
+**Frontend** (`public/`) — vanilla ES modules, no build step, no framework.
 
-Hash-routed SPA: prompt composer with progress, sandboxed preview iframe,
-spec browser (code / assets / mechanics / shipping), library, template gallery,
-pricing, and an iterate box that sends follow-up instructions to the model.
+`js/composer.js` is the one prompt control used by all three screens (upload
+batching, drag-drop, paste, chips, autosize). `js/workspace.js` is the chat +
+preview split view. `js/dashboard.js`, `js/landing.js` and `js/app.js` cover the
+rest. The design system lives entirely in `styles.css` as custom properties —
+change `--orange` and the whole product follows.
 
 **Games** (`templates/`) — four complete games plus `_shared/kit.js`, the
 runtime they all use: procedural texture bakery, Web Audio synth, virtual
@@ -105,7 +134,8 @@ npm test            # end-to-end smoke test (24 checks, no network needed)
 `npm run check` enforces the game rules on every template: five scenes, all
 three input methods, no `eval`, no `setInterval` game loops, no `alert`, score
 persistence, monetization hooks, and **no external asset beyond the pinned
-Phaser CDN**.
+Phaser CDN**. It parses the ES-module frontend and the CommonJS backend with
+the right parser for each.
 
 ---
 
@@ -149,7 +179,10 @@ The parts that are deliberately simple, and what to do about them:
    generation to the public.
 4. **No email verification or password reset.** Both are account-lifecycle
    features this build does not have.
-5. **APKs are not compiled here.** The export is a Cordova project that builds
+5. **Attachments are stored on local disk** under `server/data/uploads/` and
+   never cleaned up. Move them to object storage and add a retention policy
+   before real traffic.
+6. **APKs are not compiled here.** The export is a Cordova project that builds
    with two commands; compiling needs the Android SDK and your signing key,
    neither of which belongs on a web server.
 

@@ -20,7 +20,7 @@ const app = express();
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '44mb' }));
 app.use(express.urlencoded({ extended: false }));
 
 /* --- security headers ---------------------------------------------------- */
@@ -61,6 +61,7 @@ app.get('/api/status', (req, res) => {
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api', require('./routes/templates.routes'));
 app.use('/api', require('./routes/games.routes'));
+app.use('/api', require('./routes/uploads.routes'));
 app.use('/api', require('./routes/billing.routes').router);
 
 /* --- shareable play route ------------------------------------------------ */

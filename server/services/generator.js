@@ -71,7 +71,7 @@ function titleFromPrompt(prompt, fallback) {
 /* Template mode (no API key required)                                       */
 /* ------------------------------------------------------------------------ */
 
-function templateGenerate(prompt, { reason = 'no-api-key' } = {}) {
+function templateGenerate(prompt, { reason = 'no-api-key', attachments = [] } = {}) {
   const ranked = templates.rank(prompt);
   const best = ranked[0];
   const analysis = analysePrompt(prompt);
@@ -101,9 +101,15 @@ function templateGenerate(prompt, { reason = 'no-api-key' } = {}) {
       alternatives: ranked.slice(1, 4).map((r) => ({ id: r.template.id, score: r.score })),
       model: null,
       usage: null,
-      issues: chosen.score === 0
-        ? ['No template keywords matched this prompt. Add an ANTHROPIC_API_KEY for original generation.']
-        : []
+      attachmentCount: attachments.length,
+      issues: [
+        ...(chosen.score === 0
+          ? ['No template keywords matched this prompt. Add an ANTHROPIC_API_KEY for original generation.']
+          : []),
+        ...(attachments.length
+          ? [`${attachments.length} attachment(s) ignored - template mode cannot read reference files. Add an ANTHROPIC_API_KEY to use them.`]
+          : [])
+      ]
     }
   };
 }
@@ -174,16 +180,23 @@ async function generate(prompt, opts = {}) {
   const allowFallback = opts.allowFallback !== false;
 
   if (opts.forceTemplate || !config.aiEnabled) {
-    return templateGenerate(prompt, { reason: opts.forceTemplate ? 'forced' : 'no-api-key' });
+    return templateGenerate(prompt, {
+      reason: opts.forceTemplate ? 'forced' : 'no-api-key',
+      attachments: opts.attachments || []
+    });
   }
 
   const analysis = analysePrompt(prompt);
+  const attachments = opts.attachments || [];
   try {
-    return await aiGenerate([{ role: 'user', content: buildUserMessage(prompt, analysis) }]);
+    return await aiGenerate([claude.userMessage(buildUserMessage(prompt, analysis), attachments)]);
   } catch (err) {
     if (!allowFallback) throw err;
     console.error('[generator] AI generation failed, serving a template:', err.message);
-    const result = templateGenerate(prompt, { reason: `ai-failed: ${err.message}` });
+    const result = templateGenerate(prompt, {
+      reason: `ai-failed: ${err.message}`,
+      attachments: opts.attachments || []
+    });
     result.meta.aiError = err.message;
     return result;
   }
@@ -201,7 +214,7 @@ async function modify(instruction, currentSpec, opts = {}) {
     throw err;
   }
   if (opts.forceTemplate) throw new SpecError('Template mode cannot modify generated code');
-  return aiGenerate([{ role: 'user', content: buildModifyMessage(instruction, currentSpec) }]);
+  return aiGenerate([claude.userMessage(buildModifyMessage(instruction, currentSpec), opts.attachments || [])]);
 }
 
 module.exports = { generate, modify, templateGenerate, analysePrompt, titleFromPrompt };

@@ -3,9 +3,14 @@
 ## The pipeline
 
 ```
+POST /api/uploads   images + text files → services/uploads.js → data/uploads/
+       │            (base64 data URLs in the JSON body: no multipart parser)
+       ▼
 POST /api/generate
        │
        ├─ middleware: optionalAuth → rateLimit → requireAuth → enforceQuota
+       │
+       ├─ uploads.resolve(ids)   images → base64 blocks, text → prompt context
        │
        ├─ services/generator.js
        │     ├─ analysePrompt()      difficulty, visual style, control emphasis
@@ -20,8 +25,12 @@ POST /api/generate
        │           services/templates.js rank() → keyword scoring over 4 templates
        │           deep-clone the winner, retitle and restyle from the prompt
        │
-       ├─ db.insert('games', …) + recordUsage(user)
-       └─ 201 { game, spec, meta, quota }
+       ├─ db.insert('games', …) with a seeded chat thread + recordUsage(user)
+       └─ 201 { game, spec, meta, messages, quota }
+
+POST /api/games/:id/modify   the same path, plus the current spec, appending
+                             both turns to the thread and pushing the old spec
+                             onto a 10-deep version history
 
 GET /play/:id  →  services/bundler.js  →  one self-contained HTML document
 GET …/export/apk → services/apk.js → services/zip.js → Cordova project zip
@@ -39,7 +48,9 @@ server/
   middleware/index.js  auth, quota, rate limit, error handler
   routes/              auth · templates · games · billing
   services/
-    claude.js          Messages API over fetch
+    claude.js          Messages API over fetch; userMessage() builds the
+                       multimodal content array (images before text)
+    uploads.js         attachment store: type + size validation, disk-backed
     validator.js       extractJson + normaliseSpec (the trust boundary)
     generator.js       AI path, template path, prompt analysis
     templates.js       loads templates/, ranks them against a prompt
@@ -52,7 +63,17 @@ templates/
   <id>/template.json   metadata: gameConfig, assets, controls, mechanics, hooks
   <id>/game.js         the Phaser code
 
-public/                index.html · styles.css · app.js · demos/ (generated)
+public/
+  index.html           shell; everything else is rendered by the router
+  styles.css           the whole design system as custom properties
+  js/app.js            hash router + boot
+  js/api.js            state, fetch wrapper, session
+  js/ui.js             el() builder, icon set, toasts, modals
+  js/composer.js       the prompt control (attachments, drag-drop, paste)
+  js/landing.js        signed-out marketing page
+  js/dashboard.js      sidebar, project grid, templates, pricing
+  js/workspace.js      chat thread + live preview + publish
+  demos/               generated at install time
 scripts/               build-demos · check · smoke-test
 ```
 
@@ -83,13 +104,30 @@ standalone by default, since the model is told to emit self-contained code.
 **Storage is swappable.** `server/db.js` exposes `all/find/filter/insert/update/
 remove/flush`. Nothing else in the codebase touches persistence.
 
+**One composer, three screens.** The landing hero, the dashboard box and the
+workspace chat are the same `createComposer()` control with different padding
+and callbacks. Attachment handling, autosize, drag-drop, paste and the upload
+batching exist once.
+
+**Attachments avoid multipart.** Files arrive as base64 data URLs inside the
+normal JSON body, so there is no parser dependency and no temp-file dance. The
+cost is a 33% size premium on the wire, which is why the body limit is 44 MB
+for a 6 × 5 MB ceiling.
+
 ## Data shapes
 
 **User** — `id`, `email`, `name`, `passwordHash`, `plan`, `usage: {date, count}`,
 timestamps. Quotas reset by date string, so there is no cron to run.
 
 **Game** — `id`, `userId`, `prompt`, `spec`, `meta`, `versions[]` (bounded to 10),
-`isPublic`, timestamps.
+`messages[]` (bounded to 60), `isPublic`, timestamps.
+
+**Message** — `id`, `role` (`user` | `assistant`), `text`, `createdAt`. User turns
+carry `attachments[]`; assistant turns carry `title`, `kind` (`build` | `edit`)
+and `mode`.
+
+**Upload** — `id`, `userId`, `name`, `mime`, `kind` (`image` | `text`), `bytes`,
+`file`. The bytes live on disk; only metadata is in the store.
 
 **GameSpec** — the contract from the system prompt: `gameConfig`, `assets`,
 `gameCode`, `controls`, `mechanics`, `monetizationHooks`, `mobileOptimizations`,
@@ -119,9 +157,13 @@ enforced per template (five scenes, three input methods, no `eval`, no
 external assets beyond Phaser).
 
 `npm test` — end-to-end: boots the real server on an ephemeral port with a
-throwaway data directory and walks register → generate → library → preview →
-exports → billing gate → APK → quota → delete. 24 checks, no network required.
+throwaway data directory and walks register → upload → generate → chat thread →
+library → preview → exports → billing gate → APK → quota → delete. 30 checks,
+no network required.
 
 The four demo games were additionally driven in headless Chromium: each boots,
-transitions scenes, and runs at 47–59 FPS under software rendering with no
-console errors.
+transitions scenes, and runs at 46–59 FPS under software rendering with no
+console errors. The frontend was driven the same way across 17 flows — landing,
+sign-up mid-prompt, workspace tabs, phone toggle, publish popover, attachment
+upload and removal, dashboard, templates, pricing upgrade, and a 390px mobile
+viewport with no horizontal overflow.

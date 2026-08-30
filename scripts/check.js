@@ -8,8 +8,10 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const vm = require('vm');
+const { execFileSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 let failed = 0;
@@ -30,16 +32,31 @@ function walk(dir, out = []) {
 console.log('\nmeamus checks\n');
 
 /* --- 1. syntax ----------------------------------------------------------- */
+/* The frontend is ES modules and the backend is CommonJS, so each half needs
+   its own parser: vm.Script rejects `import`, and `node --check` only treats a
+   file as a module when the path ends in .mjs. */
 const files = walk(ROOT);
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'meamus-syntax-'));
 let syntaxErrors = 0;
+
 for (const file of files) {
+  const source = fs.readFileSync(file, 'utf8');
+  const isModule = /^\s*(import|export)\s/m.test(source);
   try {
-    new vm.Script(fs.readFileSync(file, 'utf8'), { filename: file });
+    if (isModule) {
+      const copy = path.join(tmpDir, `${path.basename(file, '.js')}.mjs`);
+      fs.writeFileSync(copy, source);
+      execFileSync(process.execPath, ['--check', copy], { stdio: 'pipe' });
+    } else {
+      new vm.Script(source, { filename: file });
+    }
   } catch (err) {
     syntaxErrors += 1;
-    fail(`syntax: ${path.relative(ROOT, file)} - ${err.message}`);
+    const detail = err.stderr ? String(err.stderr).split('\n').filter(Boolean).slice(-2).join(' ') : err.message;
+    fail(`syntax: ${path.relative(ROOT, file)} - ${detail}`);
   }
 }
+fs.rmSync(tmpDir, { recursive: true, force: true });
 if (!syntaxErrors) ok(`syntax clean across ${files.length} JavaScript files`);
 
 /* --- 2. templates -------------------------------------------------------- */

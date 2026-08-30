@@ -3,93 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>meamus - describe a game, play it in seconds</title>
+<title>meamus — describe a game, play it in seconds</title>
 <meta name="description" content="meamus turns a sentence into a complete, playable HTML5 game. Phaser 3 code, procedural art, mobile controls and an Android export, generated from a prompt.">
-<meta name="theme-color" content="#080b16">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎮</text></svg>">
+<meta name="theme-color" content="#ffffff">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23f1600d'/><path d='M9 18h4M11 16v4M20 17h.01M22.5 19.5h.01' stroke='white' stroke-width='2' stroke-linecap='round'/><path d='M10.5 11h11a5.5 5.5 0 015.4 4.5l.6 3.4A2.7 2.7 0 0124.8 22c-.9 0-1.7-.5-2.2-1.2L21.8 19h-11.6l-.8 1.8A2.5 2.5 0 017.2 22 2.7 2.7 0 014.5 18.9l.6-3.4A5.5 5.5 0 0110.5 11z' fill='none' stroke='white' stroke-width='2'/></svg>">
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-
-<header class="topbar">
-  <a class="brand" href="#/">
-    <span class="brand-mark" aria-hidden="true">◈</span>
-    <span class="brand-name">meamus</span>
-  </a>
-
-  <nav class="topnav">
-    <a href="#/" data-nav="home">Create</a>
-    <a href="#/library" data-nav="library" data-auth-only>Library</a>
-    <a href="#/templates" data-nav="templates">Templates</a>
-    <a href="#/pricing" data-nav="pricing">Pricing</a>
-  </nav>
-
-  <div class="topbar-right">
-    <span id="mode-badge" class="badge" title="Generation mode"></span>
-    <div id="account" class="account"></div>
+<div id="root"></div>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<script type="module" src="/js/app.js"></script>
+<noscript>
+  <div style="padding:40px;text-align:center;font-family:system-ui">
+    meamus needs JavaScript to generate and preview games.
   </div>
-</header>
-
-<main id="view" class="view" aria-live="polite"></main>
-
-<footer class="footer">
-  <span>meamus &middot; Phaser 3 &middot; single-file games</span>
-  <span id="footer-status"></span>
-</footer>
-
-<!-- Auth dialog ------------------------------------------------------------>
-<dialog id="auth-dialog" class="dialog">
-  <form method="dialog" class="dialog-inner" id="auth-form">
-    <h2 id="auth-title">Sign in</h2>
-    <p class="muted" id="auth-sub">Your games are saved to your account.</p>
-
-    <label class="field" id="name-field" hidden>
-      <span>Name</span>
-      <input type="text" name="name" autocomplete="name" maxlength="60">
-    </label>
-    <label class="field">
-      <span>Email</span>
-      <input type="email" name="email" required autocomplete="email" placeholder="you@studio.com">
-    </label>
-    <label class="field">
-      <span>Password</span>
-      <input type="password" name="password" required minlength="8" autocomplete="current-password" placeholder="at least 8 characters">
-    </label>
-
-    <p class="form-error" id="auth-error" role="alert" hidden></p>
-
-    <div class="dialog-actions">
-      <button type="button" class="btn ghost" id="auth-cancel">Cancel</button>
-      <button type="submit" class="btn primary" id="auth-submit">Sign in</button>
-    </div>
-    <p class="muted small">
-      <span id="auth-switch-text">New here?</span>
-      <button type="button" class="linkbtn" id="auth-switch">Create an account</button>
-    </p>
-  </form>
-</dialog>
-
-<!-- Play dialog ------------------------------------------------------------>
-<dialog id="play-dialog" class="dialog wide">
-  <div class="dialog-inner play-shell">
-    <div class="play-head">
-      <h2 id="play-title">Preview</h2>
-      <div class="play-head-actions">
-        <button type="button" class="btn ghost small" id="play-reload">Restart</button>
-        <button type="button" class="btn ghost small" id="play-newtab">Open in a tab</button>
-        <button type="button" class="btn ghost small" id="play-close">Close</button>
-      </div>
-    </div>
-    <div class="play-frame-wrap">
-      <iframe id="play-frame" title="Game preview"
-              sandbox="allow-scripts allow-same-origin allow-pointer-lock"
-              allow="autoplay; fullscreen"></iframe>
-    </div>
-  </div>
-</dialog>
-
-<div id="toasts" class="toasts" aria-live="assertive"></div>
-
-<script src="/app.js" type="module"></script>
+</noscript>
 </body>
 </html>

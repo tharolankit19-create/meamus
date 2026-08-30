@@ -24,9 +24,44 @@ class ClaudeError extends Error {
 }
 
 /**
- * Send one message to Claude and return the raw text of the first content block.
+ * Build a user message from text plus resolved attachments.
+ * Images become image content blocks; text files are folded into the prompt.
+ *
+ * @param {string} text
+ * @param {Array<{kind:string, mime:string, base64:string, text:string, name:string}>} [attachments]
+ */
+function userMessage(text, attachments = []) {
+  const images = attachments.filter((a) => a.kind === 'image' && a.base64);
+  const files = attachments.filter((a) => a.kind === 'text' && a.text);
+
+  let body = text;
+  if (files.length) {
+    body += '\n\nAttached files:\n' + files
+      .map((f) => `--- ${f.name} ---\n${f.text}`)
+      .join('\n\n');
+  }
+  if (images.length) {
+    body += `\n\n${images.length} reference image${images.length === 1 ? '' : 's'} ` +
+      'are attached. Match the art direction, palette, layout and mood they show ' +
+      'in the procedural graphics you generate.';
+  }
+
+  // Anthropic recommends images before the text they relate to.
+  const content = [
+    ...images.map((image) => ({
+      type: 'image',
+      source: { type: 'base64', media_type: image.mime, data: image.base64 }
+    })),
+    { type: 'text', text: body }
+  ];
+
+  return { role: 'user', content };
+}
+
+/**
+ * Send a conversation to Claude and return the text of its reply.
  * @param {object} opts
- * @param {Array<{role:string,content:string}>} opts.messages
+ * @param {Array<{role:string,content:string|Array}>} opts.messages
  * @param {string} [opts.system]
  * @param {number} [opts.maxTokens]
  */
@@ -97,4 +132,4 @@ async function complete({ messages, system = SYSTEM_PROMPT, maxTokens }) {
   };
 }
 
-module.exports = { complete, SYSTEM_PROMPT, ClaudeError };
+module.exports = { complete, userMessage, SYSTEM_PROMPT, ClaudeError };

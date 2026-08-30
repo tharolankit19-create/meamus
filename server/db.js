@@ -12,7 +12,7 @@ const path = require('path');
 const crypto = require('crypto');
 const config = require('./config');
 
-const COLLECTIONS = ['users', 'games', 'events'];
+const COLLECTIONS = ['users', 'games', 'uploads'];
 
 const cache = new Map();
 const writeQueue = new Map();

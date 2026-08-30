@@ -55,6 +55,7 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
 
   let token = null;
   let gameId = null;
+  let uploadIds = [];
 
   await check('GET /api/status reports a usable service', async () => {
     const { status, body } = await request('/api/status');
@@ -154,11 +155,81 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.strictEqual(status, 400);
   });
 
+  await check('POST /api/uploads stores an image and a text file', async () => {
+    // 1x1 transparent PNG - the smallest valid image the store will accept.
+    const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const md = `data:text/markdown;base64,${Buffer.from('# Level plan\n- 3 waves\n- boss at 4\n').toString('base64')}`;
+    const { status, body } = await request('/api/uploads', {
+      method: 'POST', token,
+      body: { files: [{ name: 'ref.png', dataUrl: png }, { name: 'plan.md', dataUrl: md }] }
+    });
+    assert.strictEqual(status, 201, JSON.stringify(body));
+    assert.strictEqual(body.files.length, 2);
+    assert.strictEqual(body.files[0].kind, 'image');
+    assert.strictEqual(body.files[1].kind, 'text');
+    assert.ok(body.files[0].url.startsWith('/api/uploads/'));
+    uploadIds = body.files.map((f) => f.id);
+  });
+
+  await check('an unsupported file type is rejected', async () => {
+    const { status, body } = await request('/api/uploads', {
+      method: 'POST', token,
+      body: { name: 'evil.exe', dataUrl: 'data:application/x-msdownload;base64,TVo=' }
+    });
+    assert.strictEqual(status, 400);
+    assert.match(body.error, /Unsupported file type/);
+  });
+
+  await check('attachments are private to their owner', async () => {
+    const other = await request('/api/auth/register', {
+      method: 'POST', body: { email: `att-${Date.now()}@meamus.test`, password: 'supersecret123' }
+    });
+    const res = await request(`/api/uploads/${uploadIds[0]}`, { token: other.body.token, raw: true });
+    assert.strictEqual(res.status, 404);
+    const mine = await request(`/api/uploads/${uploadIds[0]}`, { token, raw: true });
+    assert.strictEqual(mine.status, 200);
+    assert.strictEqual(mine.headers.get('content-type'), 'image/png');
+  });
+
+  await check('generating with attachments records them on the chat turn', async () => {
+    const { status, body } = await request('/api/generate', {
+      method: 'POST', token,
+      body: { prompt: 'a match 3 puzzle in this art style', attachmentIds: uploadIds }
+    });
+    assert.strictEqual(status, 201, JSON.stringify(body));
+    assert.strictEqual(body.messages.length, 2);
+    assert.strictEqual(body.messages[0].role, 'user');
+    assert.strictEqual(body.messages[0].attachments.length, 2);
+    assert.strictEqual(body.messages[1].role, 'assistant');
+    assert.ok(body.messages[1].text.includes('sprites'), 'assistant turn has no build summary');
+    // Template mode cannot read attachments and must say so rather than pretend.
+    if (body.meta.mode === 'template') {
+      assert.ok(body.meta.issues.some((i) => /attachment/i.test(i)), 'ignored attachments were not reported');
+    }
+  });
+
+  await check('unknown attachment ids are dropped, not fatal', async () => {
+    const { status, body } = await request('/api/generate', {
+      method: 'POST', token,
+      body: { prompt: 'an endless runner', attachmentIds: ['upl_doesnotexist', uploadIds[0]] }
+    });
+    assert.strictEqual(status, 201);
+    assert.strictEqual(body.messages[0].attachments.length, 1);
+  });
+
+  await check('GET /api/games/:id/messages returns the thread', async () => {
+    const { status, body } = await request(`/api/games/${gameId}/messages`, { token });
+    assert.strictEqual(status, 200);
+    assert.ok(body.messages.length >= 2);
+    assert.ok(body.messages.every((m) => m.id && m.role && m.createdAt));
+  });
+
   await check('GET /api/games lists the saved games', async () => {
     const { status, body } = await request('/api/games', { token });
     assert.strictEqual(status, 200);
-    assert.strictEqual(body.count, 2);
+    assert.strictEqual(body.count, 4);
     assert.ok(body.games[0].codeLines > 100);
+    assert.ok(body.games.every((g) => g.messageCount >= 2), 'a game is missing its chat thread');
   });
 
   await check('another account cannot read the first account\'s game', async () => {
