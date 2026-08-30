@@ -88,6 +88,13 @@ const config = {
 
   dataDir: path.resolve(ROOT, process.env.DATA_DIR || './server/data'),
   templatesDir: path.join(ROOT, 'templates'),
+
+  /**
+   * The one template anyone may play without an account. It runs the landing
+   * page's attract loop, so it has to stay public; the rest of the library is
+   * behind sign-in.
+   */
+  showcaseTemplate: process.env.SHOWCASE_TEMPLATE || 'space-shooter',
   publicDir: path.join(ROOT, 'public'),
 
   llm: buildLlmConfig(),
@@ -117,6 +124,17 @@ const config = {
   rateLimit: {
     windowMs: num(process.env.RATE_LIMIT_WINDOW_MS, 60000),
     max: num(process.env.RATE_LIMIT_MAX, 60)
+  },
+
+  /**
+   * Supabase Postgres, used when both values are present. Without it storage
+   * falls back to a JSON file on local disk, which does not survive a restart
+   * on an ephemeral host.
+   */
+  supabase: {
+    url: (process.env.SUPABASE_URL || '').trim().replace(/\/+$/, ''),
+    serviceKey: (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim(),
+    get enabled() { return Boolean(this.url && this.serviceKey); }
   },
 
   billing: {

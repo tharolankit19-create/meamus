@@ -562,6 +562,52 @@
   };
 
   /* ---------------------------------------------------------------------- */
+  /* Attract mode.                                                           */
+  /* With ?attract=1 the game skips its menu, plays itself, and restarts on  */
+  /* game over - the demo loop embedded on the landing page. A real pointer  */
+  /* or key press hands control back to the player.                          */
+  /* ---------------------------------------------------------------------- */
+  MEAMUS.attract = (function () {
+    try {
+      return new URLSearchParams(global.location.search).get('attract') === '1';
+    } catch (e) {
+      return false;
+    }
+  })();
+
+  /** True while the bot should drive. Any real input ends it for good. */
+  MEAMUS.attractActive = MEAMUS.attract;
+
+  /**
+   * Wire the takeover listeners. Call once from a scene that has input.
+   * @param {Phaser.Scene} scene
+   */
+  MEAMUS.watchForTakeover = function (scene) {
+    if (!MEAMUS.attract || scene.__meamusTakeoverBound) return;
+    scene.__meamusTakeoverBound = true;
+    var release = function () {
+      if (!MEAMUS.attractActive) return;
+      MEAMUS.attractActive = false;
+      MEAMUS.sfx.resume();
+      if (MEAMUS.onTakeover) MEAMUS.onTakeover();
+    };
+    scene.input.on('pointerdown', release);
+    if (scene.input.keyboard) scene.input.keyboard.on('keydown', release);
+  };
+
+  /** A small badge so a self-playing game does not look like a video. */
+  MEAMUS.attractBadge = function (scene, label) {
+    if (!MEAMUS.attract) return null;
+    var text = scene.add.text(scene.scale.width / 2, scene.scale.height - 12,
+      label || 'DEMO - click to take over', {
+        fontFamily: MEAMUS.MONO, fontSize: '12px', color: '#ffffff',
+        backgroundColor: 'rgba(0,0,0,0.45)', padding: { x: 8, y: 4 }
+      }).setOrigin(0.5, 1).setDepth(9998).setScrollFactor(0);
+    scene.tweens.add({ targets: text, alpha: 0.45, yoyo: true, repeat: -1, duration: 1400 });
+    return text;
+  };
+
+  /* ---------------------------------------------------------------------- */
   /* Debug overlay (off by default - flip MEAMUS.debug before boot).         */
   /* ---------------------------------------------------------------------- */
   MEAMUS.debug = false;

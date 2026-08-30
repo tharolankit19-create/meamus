@@ -47,7 +47,9 @@ GET …/export/apk → services/apk.js → services/zip.js → Cordova project z
 ```
 server/
   config.js            .env parser + defaults; config.aiEnabled is the mode switch
-  db.js                JSON store, atomic writes, in-memory cache
+  db.js                storage facade: picks a backend once at boot
+  store/json.js        JSON file, atomic writes, in-memory cache (default)
+  store/supabase.js    Postgres over PostgREST, same interface
   auth.js              scrypt hashing, HMAC-SHA256 tokens
   index.js             Express app, security headers, /play, static frontend
   prompts/system.md    the meamus system prompt, editable without touching code
@@ -126,8 +128,10 @@ work as a preview iframe, a download, and a Cordova `www/` payload.
 the bundler pastes `_shared/kit.js` in ahead of the game. AI-generated games are
 standalone by default, since the model is told to emit self-contained code.
 
-**Storage is swappable.** `server/db.js` exposes `all/find/filter/insert/update/
-remove/flush`. Nothing else in the codebase touches persistence.
+**Storage is swappable.** `server/db.js` picks a backend from env and re-exports
+it; both implement the same `all/find/filter/insert/update/remove/flush/ping`
+surface. Nothing else in the codebase touches persistence, which is why moving
+to Postgres is two environment variables rather than a refactor.
 
 **One composer, three screens.** The landing hero, the dashboard box and the
 workspace chat are the same `createComposer()` control with different padding
@@ -189,6 +193,11 @@ with a throwaway data directory and walks guest session → generate → play �
 guest export limits → guest-to-account upgrade → register → upload → generate
 with attachments → chat thread → library → preview → exports → billing gate →
 APK → quota → delete.
+
+*Store* (`scripts/store-test.js`, 9): runs a stand-in PostgREST on localhost and
+asserts the Supabase adapter's wire format — table names, both auth headers,
+the `id=eq.` filter syntax, that a write survives a fresh hydrate, and that a
+missing table fails loudly rather than reading as an empty database.
 
 *Provider* (`scripts/provider-test.js`, 8): runs a stand-in OpenRouter on
 localhost and asserts the exact wire format — endpoint, auth and attribution

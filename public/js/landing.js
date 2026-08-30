@@ -3,10 +3,11 @@
  * ========================================================================== */
 
 import { el, icon, toast, playModal } from './ui.js';
-import { state, templatesApi, projects as projectsApi } from './api.js';
+import { state, templatesApi, templatePlayUrl } from './api.js';
 import { createComposer } from './composer.js';
 import { openAuth } from './auth-dialog.js';
 import { startProject } from './generate.js';
+import { siteNav, siteFooter, promptSignup } from './marketing.js';
 
 const EXAMPLES = [
   'A space shooter where I tap to blast asteroids and grab power-ups',
@@ -56,26 +57,7 @@ export function renderLanding(root) {
   });
 
   root.append(
-    el('nav', { class: 'site-nav' },
-      el('a', { class: 'brand', href: '#/' }, el('span', { class: 'brand-mark' }, icon('gamepad')), 'meamus'),
-      el('div', { class: 'links' },
-        el('a', { href: '#/templates' }, 'Templates'),
-        el('a', { href: '#/pricing' }, 'Pricing'),
-        el('a', { href: '#/docs' }, 'Docs')),
-      el('span', { class: 'grow' }),
-      state.user && state.user.isGuest
-        ? el('button', {
-          class: 'btn ghost', onClick: () => { location.hash = '#/dashboard'; }
-        }, icon('grid', 'sm'), 'My games')
-        : null,
-      el('button', { class: 'btn ghost', onClick: () => openAuth('login') }, 'Log in'),
-      el('button', {
-        class: 'btn primary',
-        onClick: async () => {
-          const user = await openAuth('register');
-          if (user) location.hash = '#/dashboard';
-        }
-      }, state.user && state.user.isGuest ? 'Save my work' : 'Get started')),
+    siteNav('home'),
 
     el('div', { class: 'hero-wrap' },
       el('div', { class: 'hero-glow' }),
@@ -97,6 +79,8 @@ export function renderLanding(root) {
               onClick: () => { composer.setValue(example); composer.focus(); }
             }, example.length > 46 ? `${example.slice(0, 46)}…` : example)))))),
 
+    demoSection(),
+
     el('section', { class: 'section' },
       el('div', { class: 'section-inner' },
         el('div', { class: 'grid c3' },
@@ -107,22 +91,63 @@ export function renderLanding(root) {
 
     el('section', { class: 'section warm' },
       el('div', { class: 'section-inner' },
-        el('div', { class: 'section-head' },
-          el('h2', {}, 'Four games, built and playable right now'),
-          el('p', { class: 'muted' },
-            'These ship with meamus as the reference build for their genre. ' +
-            'Play them here — no account needed.')),
+        el('div', { class: 'spread', style: { marginBottom: '26px' } },
+          el('div', { class: 'section-head', style: { margin: 0 } },
+            el('h2', {}, 'Built with meamus'),
+            el('p', { class: 'muted', style: { margin: 0 } },
+              'Four complete games ship as templates. Remix any of them with a prompt.')),
+          el('a', { class: 'btn', href: '#/templates' }, 'All templates', icon('arrowRight', 'sm'))),
         el('div', { class: 'grid c4', id: 'landing-templates' },
           Array.from({ length: 4 }, () => el('div', { class: 'card' },
             el('div', { class: 'skeleton', style: { height: '92px' } })))))),
 
-    el('footer', { class: 'site-foot' },
-      el('div', { class: 'spread' },
-        el('span', {}, '© ', String(new Date().getFullYear()), ' meamus · Built on Phaser 3'),
-        el('span', {}, state.status ? `${state.status.templates} templates · ${state.status.mode} mode` : '')))
+    siteFooter()
   );
 
   loadTemplateStrip();
+}
+
+/**
+ * The live demo: the showcase game playing itself in a loop. It is the real
+ * game in an iframe, not a video - clicking it hands over the controls.
+ */
+function demoSection() {
+  const showcase = (state.status && state.status.showcase) || 'space-shooter';
+  const frame = el('iframe', {
+    src: templatePlayUrl(showcase, { attract: true }),
+    title: 'Live demo — a meamus game playing itself',
+    loading: 'lazy',
+    sandbox: 'allow-scripts allow-same-origin allow-pointer-lock',
+    allow: 'autoplay'
+  });
+
+  return el('section', { class: 'section', id: 'demo' },
+    el('div', { class: 'section-inner' },
+      el('div', { class: 'demo-split' },
+        el('div', {},
+          el('span', { class: 'tag green dot', style: { marginBottom: '12px' } }, 'Live, not a video'),
+          el('h2', { style: { fontSize: 'clamp(24px, 3.2vw, 32px)' } }, 'This is what one prompt produces'),
+          el('p', { class: 'muted' },
+            'The game on the right is playing itself right now — same code a prompt ' +
+            'gives you, running in your browser. Click it and you take over the ship.'),
+          el('ul', { class: 'ticks', style: { margin: '18px 0 22px' } },
+            el('li', {}, 'Five scenes: boot, preload, menu, game, game over'),
+            el('li', {}, 'Procedural art and synthesised sound — nothing downloaded'),
+            el('li', {}, 'Keyboard, mouse and touch controls on every game'),
+            el('li', {}, 'Ad placements and a coin economy already wired in')),
+          el('div', { class: 'row' },
+            el('button', {
+              class: 'btn primary',
+              onClick: () => {
+                document.querySelector('.composer textarea')?.focus();
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            }, icon('sparkles', 'sm'), 'Build your own'),
+            el('button', {
+              class: 'btn',
+              onClick: () => playModal('Astro Salvage', templatePlayUrl(showcase))
+            }, icon('play', 'sm'), 'Play full screen'))),
+        el('div', { class: 'demo-frame' }, frame))));
 }
 
 async function loadTemplateStrip() {
@@ -132,7 +157,8 @@ async function loadTemplateStrip() {
     const { templates } = await templatesApi.list();
     state.templates = templates;
     if (!document.body.contains(host)) return;
-    host.replaceChildren(...templates.map((template) => el('article', { class: 'card hover' },
+    const ordered = [...templates].sort((a, b) => Number(b.playable) - Number(a.playable));
+    host.replaceChildren(...ordered.map((template) => el('article', { class: 'card hover' },
       el('div', { class: 'row', style: { gap: '8px', marginBottom: '9px' } },
         el('span', { class: 'feature-icon', style: { width: '30px', height: '30px', margin: 0, borderRadius: '8px' } }, icon('gamepad', 'sm')),
         el('span', { class: 'tag orange' }, template.gameConfig.genre)),
@@ -141,8 +167,15 @@ async function loadTemplateStrip() {
         `${template.gameConfig.description.slice(0, 108)}…`),
       el('button', {
         class: 'btn sm block',
-        onClick: () => playModal(template.gameConfig.title, `/api/templates/${template.id}/play`)
-      }, icon('play', 'sm'), 'Play'))));
+        onClick: () => {
+          if (!template.playable) {
+            promptSignup('Create a free account to play the full template library');
+            return;
+          }
+          playModal(template.gameConfig.title, templatePlayUrl(template.id));
+        }
+      }, icon(template.playable ? 'play' : 'user', 'sm'),
+      template.playable ? 'Play' : 'Sign up to play'))));
   } catch {
     host.replaceChildren(el('p', { class: 'muted' }, 'Could not load the demo games.'));
   }

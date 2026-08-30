@@ -118,6 +118,21 @@ export const billing = {
 export const playUrl = (id) =>
   `/play/${id}${state.token ? `?token=${encodeURIComponent(state.token)}` : ''}`;
 
+/**
+ * Template preview URL.
+ *
+ * An iframe navigation carries no Authorization header, so the session token
+ * has to ride in the query string or a gated template answers 401 to a signed-
+ * in viewer.
+ */
+export function templatePlayUrl(id, { attract = false } = {}) {
+  const params = new URLSearchParams();
+  if (attract) params.set('attract', '1');
+  if (state.token) params.set('token', state.token);
+  const query = params.toString();
+  return `/api/templates/${id}/play${query ? `?${query}` : ''}`;
+}
+
 /** Exports are authenticated, so fetch then save from a blob. */
 export async function download(path) {
   const response = await api(path, { raw: true });

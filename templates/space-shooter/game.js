@@ -115,6 +115,9 @@
 
       this.input.keyboard.on('keydown-ENTER', () => this.scene.start('GameScene'));
       this.input.keyboard.on('keydown-SPACE', () => this.scene.start('GameScene'));
+
+      // The landing-page demo drops straight into play rather than a menu.
+      if (MEAMUS.attractActive) this.time.delayedCall(700, () => this.scene.start('GameScene'));
     }
 
     showHelp() {
@@ -213,10 +216,63 @@
       });
 
       this.buildHud();
+      MEAMUS.watchForTakeover(this);
+      this.attractBadge = MEAMUS.attractBadge(this);
+      MEAMUS.onTakeover = () => {
+        if (this.attractBadge) { this.attractBadge.destroy(); this.attractBadge = null; }
+      };
 
       // Scene shutdown must release timers and emitters or they leak on restart.
       this.events.once('shutdown', () => this.cleanup());
       MEAMUS.attachDebug(this);
+    }
+
+    /**
+     * Demo pilot. Slides toward the nearest power-up, steps away from whatever
+     * rock is closest to hitting it, and holds fire. Good enough to look alive
+     * and to keep a run going for a while - not good enough to look scripted.
+     */
+    botInput() {
+      var threat = null;
+      var threatDistance = Infinity;
+      this.rocks.children.each((rock) => {
+        if (!rock.active || rock.y > this.player.y) return;
+        var dx = Math.abs(rock.x - this.player.x);
+        var dy = this.player.y - rock.y;
+        // Only rocks roughly in the ship's column can actually hit it.
+        if (dx > 90) return;
+        var distance = dy + dx * 0.6;
+        if (distance < threatDistance) { threatDistance = distance; threat = rock; }
+      });
+
+      var target = null;
+      this.powerups.children.each((pu) => {
+        if (!pu.active) return;
+        if (!target || pu.y > target.y) target = pu;
+      });
+
+      var vx = 0;
+      var vy = 0;
+
+      if (threat && threatDistance < 260) {
+        // Dodge sideways, toward whichever edge there is more room.
+        var away = threat.x < this.player.x ? 1 : -1;
+        if ((away > 0 && this.player.x > this.scale.width - 70) ||
+            (away < 0 && this.player.x < 70)) away = -away;
+        vx = away;
+      } else if (target) {
+        vx = Phaser.Math.Clamp((target.x - this.player.x) / 70, -1, 1);
+        vy = Phaser.Math.Clamp((target.y - this.player.y) / 90, -1, 1);
+      } else {
+        // Idle drift keeps the demo from looking frozen between waves.
+        vx = Math.sin(this.time.now / 900) * 0.55;
+      }
+
+      // Hold station in the lower third of the screen.
+      var restY = this.scale.height - 90;
+      if (!target) vy = Phaser.Math.Clamp((restY - this.player.y) / 60, -1, 1);
+
+      return { vx: vx, vy: vy, fire: true };
     }
 
     buildHud() {
@@ -460,6 +516,18 @@
 
       var vx = 0;
       var vy = 0;
+
+      if (MEAMUS.attractActive) {
+        var bot = this.botInput();
+        this.player.setVelocity(bot.vx * CFG.PLAYER_SPEED, bot.vy * CFG.PLAYER_SPEED);
+        this.thruster.setPosition(this.player.x, this.player.y + 24)
+          .setAlpha(0.55 + Math.random() * 0.45).setVisible(this.player.visible);
+        this.shieldRing.setPosition(this.player.x, this.player.y);
+        if (bot.fire) this.fire(time);
+        this.sweepOffscreen(delta);
+        return;
+      }
+
       if (this.cursors.left.isDown || this.keys.A.isDown) vx -= 1;
       if (this.cursors.right.isDown || this.keys.D.isDown) vx += 1;
       if (this.cursors.up.isDown || this.keys.W.isDown) vy -= 1;
@@ -497,12 +565,15 @@
         this.refreshHud();
       }
 
-      // Recycle anything that has left the play field.
+      this.sweepOffscreen(delta);
+    }
+
+    /** Recycle anything that has left the play field, and scroll the stars. */
+    sweepOffscreen(delta) {
       var H = this.scale.height;
       this.bullets.children.each((b) => { if (b.active && b.y < -30) this.recycle(b); });
       this.rocks.children.each((r) => { if (r.active && r.y > H + 60) this.recycle(r); });
       this.powerups.children.each((pu) => { if (pu.active && pu.y > H + 40) this.recycle(pu); });
-
       updateStarfield(this.starfield, delta, H);
     }
   }
@@ -570,6 +641,12 @@
       MEAMUS.ui.bannerSlot(this, 'bottom');
 
       this.input.keyboard.on('keydown-SPACE', () => this.scene.start('GameScene'));
+
+      // The demo loops rather than waiting on a click that will never come.
+      MEAMUS.watchForTakeover(this);
+      if (MEAMUS.attractActive) this.time.delayedCall(2600, () => {
+        if (MEAMUS.attractActive) this.scene.start('GameScene');
+      });
     }
 
     update(time, delta) { updateStarfield(this.starfield, delta, this.scale.height); }

@@ -3,7 +3,7 @@
  * ========================================================================== */
 
 import { el, icon, toast, clear, playModal, confirmModal, relativeTime } from './ui.js';
-import { state, projects, templatesApi, playUrl, setSession, billing } from './api.js';
+import { state, projects, templatesApi, playUrl, setSession, billing, templatePlayUrl } from './api.js';
 import { createComposer } from './composer.js';
 import { startProject } from './generate.js';
 import { openAuth } from './auth-dialog.js';
@@ -204,7 +204,7 @@ function templateCard(template) {
   return el('article', { class: 'card hover project-card' },
     el('div', { class: 'project-thumb' },
       el('iframe', {
-        src: `/api/templates/${template.id}/play`, title: `${template.gameConfig.title} thumbnail`,
+        src: templatePlayUrl(template.id), title: `${template.gameConfig.title} thumbnail`,
         loading: 'lazy', sandbox: 'allow-scripts allow-same-origin', tabindex: '-1'
       })),
     el('div', { class: 'project-body' },
@@ -216,7 +216,7 @@ function templateCard(template) {
       el('div', { class: 'row', style: { gap: '6px' } },
         el('button', {
           class: 'btn sm',
-          onClick: () => playModal(template.gameConfig.title, `/api/templates/${template.id}/play`)
+          onClick: () => playModal(template.gameConfig.title, templatePlayUrl(template.id))
         }, icon('play', 'sm'), 'Play'),
         el('button', {
           class: 'btn sm',
