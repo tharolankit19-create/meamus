@@ -13,6 +13,8 @@ Errors are always JSON: `{ "error": "human message", "code": "machine_code" }`.
 | Code | Meaning |
 |---|---|
 | `unauthorized` | No or invalid token |
+| `guest_disabled` | Test mode is off, so guest sessions are refused |
+| `signup_required` | A guest tried something that needs a real account (HTTP 402) |
 | `forbidden` | The resource belongs to another account |
 | `quota_exceeded` | Daily generation limit reached |
 | `rate_limited` | Too many requests in the window |
@@ -31,13 +33,15 @@ No auth. The operator's health check.
 {
   "service": "meamus",
   "version": "1.0.0",
-  "aiEnabled": false,
-  "mode": "template",
-  "model": null,
+  "aiEnabled": true,
+  "mode": "ai",
+  "provider": "openrouter",
+  "model": "nvidia/nemotron-3.5-lightning",
+  "testMode": true,
   "templates": 4,
-  "quotas": { "free": 5, "pro": 200 },
+  "quotas": { "guest": 20, "free": 5, "pro": 200 },
   "billingProvider": "stub",
-  "warnings": ["ANTHROPIC_API_KEY is not set - generation runs in template mode."]
+  "warnings": ["TEST_MODE is on - anyone can generate without signing up."]
 }
 ```
 
@@ -45,7 +49,25 @@ No auth. The operator's health check.
 
 ## Auth
 
+### `POST /auth/guest`
+
+No auth. Only available while `TEST_MODE=true`; otherwise `403` with
+`code: "guest_disabled"`.
+
+Mints a throwaway account so a visitor can prompt, generate and play with no
+signup. It is a real user record, so ownership, quotas and every other route
+behave exactly as they do for a signed-up account.
+
+`201` → `{ "token": "...", "user": { "plan": "guest", "isGuest": true, ... } }`
+
+Guests can generate, play, iterate and export HTML. They cannot export an APK
+or buy a plan — both return `402` with `code: "signup_required"`.
+
 ### `POST /auth/register`
+
+Sending this **with a guest token in the Authorization header** upgrades that
+guest in place: the account keeps its id, so every game made during the test
+session carries over. The response then also carries `"upgradedFromGuest": true`.
 
 ```json
 { "email": "you@studio.com", "password": "at least 8 chars", "name": "optional" }
@@ -93,11 +115,12 @@ Auth required. Counts against the daily quota.
 }
 ```
 
-`attachmentIds` come from `POST /uploads`. Images are sent to Claude as image
-content blocks so the generated art direction matches them; text files are
-folded into the prompt as context. Ids that do not exist, or belong to another
-account, are dropped rather than failing the request. Template mode cannot read
-attachments and reports that in `meta.issues` instead of ignoring them silently.
+`attachmentIds` come from `POST /uploads`. Text files are folded into the prompt
+as context. Images become native vision input **only if the configured model
+accepts images** — otherwise their filenames go into the prompt and
+`meta.issues` says the model could not read them. Ids that do not exist, or
+belong to another account, are dropped rather than failing the request.
+Template mode reports ignored attachments the same way.
 
 `201`:
 
@@ -107,8 +130,9 @@ attachments and reports that in `meta.issues` instead of ignoring them silently.
   "spec": { "gameConfig": {}, "assets": {}, "gameCode": {}, "controls": {},
             "mechanics": [], "monetizationHooks": [], "mobileOptimizations": [],
             "apkReady": false, "runtime": { "kit": true, "phaserVersion": "3.60.0" } },
-  "meta": { "mode": "ai", "model": "claude-sonnet-5", "usage": { "input_tokens": 0, "output_tokens": 0 },
-            "durationMs": 41203, "issues": [] },
+  "meta": { "mode": "ai", "provider": "openrouter", "model": "nvidia/nemotron-3.5-lightning",
+            "structuredOutput": true, "usage": { "prompt_tokens": 0, "completion_tokens": 0 },
+            "stopReason": "stop", "durationMs": 41203, "issues": [] },
   "quota": { "used": 1, "limit": 5 }
 }
 ```
@@ -130,7 +154,7 @@ rather than failing outright.
 
 ### `POST /games/:id/modify`
 
-Auth required. Needs a Claude API key — template mode cannot rewrite code and
+Auth required. Needs a model API key — template mode cannot rewrite code and
 returns `503` saying so. Counts against the quota.
 
 ```json
@@ -204,7 +228,8 @@ The GameSpec JSON.
 
 ### `GET /games/:id/export/apk`
 
-**Pro plan only** — `402` with `code: "upgrade_required"` otherwise.
+**Pro plan only** — `402` with `code: "upgrade_required"`, or
+`code: "signup_required"` for a guest session.
 
 Returns a zip containing a ready-to-build Cordova project. Optional query
 parameters: `packageId` (defaults to `com.meamus.<slug>`) and `orientation`

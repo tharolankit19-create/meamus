@@ -16,7 +16,13 @@ POST /api/generate
        │     ├─ analysePrompt()      difficulty, visual style, control emphasis
        │     │
        │     ├─ AI path (key present)
-       │     │     services/claude.js   → POST /v1/messages with prompts/system.md
+       │     │     services/llm.js
+       │     │        ├─ capabilities()     reads OpenRouter's catalogue once:
+       │     │        │                     can this model see images? honour a schema?
+       │     │        ├─ buildUserMessage() images as native parts only if readable,
+       │     │        │                     otherwise named in the text + reported
+       │     │        └─ complete()         POST /chat/completions with the GameSpec
+       │     │                              JSON Schema in response_format
        │     │     services/validator.js
        │     │        ├─ extractJson()   balanced-brace scan, tolerates fences/prose
        │     │        └─ normaliseSpec() fills defaults, clamps enums, rejects eval
@@ -48,8 +54,9 @@ server/
   middleware/index.js  auth, quota, rate limit, error handler
   routes/              auth · templates · games · billing
   services/
-    claude.js          Messages API over fetch; userMessage() builds the
-                       multimodal content array (images before text)
+    llm.js             provider layer: OpenRouter (default) or Anthropic,
+                       capability detection, structured outputs
+    schema.js          the GameSpec JSON Schema used for structured outputs
     uploads.js         attachment store: type + size validation, disk-backed
     validator.js       extractJson + normaliseSpec (the trust boundary)
     generator.js       AI path, template path, prompt analysis
@@ -84,6 +91,24 @@ the env parser is 15 lines, the ZIP writer is `node:zlib`, the Claude client is
 `fetch`. A game generator whose install can break on a transitive dependency is
 a bad trade.
 
+**The model layer owns model facts.** Whether a model reads images or honours a
+JSON schema is read from OpenRouter's catalogue at first use and cached, with a
+static table as the offline fallback. Unknown models are assumed to do neither,
+because guessing "yes" produces a hard 400 while guessing "no" only loses a
+feature. Nothing above `services/llm.js` branches on the provider.
+
+**Structured outputs over hope.** The default model has 3B active parameters;
+asking it politely for JSON is not a plan. The GameSpec JSON Schema goes into
+`response_format` when the model supports it, with one retry without it if the
+deployment rejects the parameter, and `extractJson()` still standing behind
+that for models that support neither.
+
+**A guest is a real account.** Test mode mints an ordinary user record with
+`isGuest: true` rather than adding an anonymous code path. Ownership, quotas,
+exports and the chat thread all work unchanged, and registering while holding a
+guest token upgrades that same record so the session's games survive. The only
+guest-specific rules are two refusals: no APK export, no plan purchase.
+
 **The validator is the trust boundary.** Everything downstream — bundler, APK
 exporter, frontend — assumes a normalised spec. `normaliseSpec()` fills every
 default, clamps every enum, and throws on `eval`/`new Function` or absent game
@@ -116,8 +141,9 @@ for a 6 × 5 MB ceiling.
 
 ## Data shapes
 
-**User** — `id`, `email`, `name`, `passwordHash`, `plan`, `usage: {date, count}`,
-timestamps. Quotas reset by date string, so there is no cron to run.
+**User** — `id`, `email`, `name`, `passwordHash` (null for a guest), `plan`
+(`guest` | `free` | `pro`), `isGuest`, `usage: {date, count}`, timestamps.
+Quotas reset by date string, so there is no cron to run.
 
 **Game** — `id`, `userId`, `prompt`, `spec`, `meta`, `versions[]` (bounded to 10),
 `messages[]` (bounded to 60), `isPublic`, timestamps.
@@ -156,10 +182,23 @@ enforced per template (five scenes, three input methods, no `eval`, no
 `setInterval` loops, no `alert`, score persistence, monetization hooks, no
 external assets beyond Phaser).
 
-`npm test` — end-to-end: boots the real server on an ephemeral port with a
-throwaway data directory and walks register → upload → generate → chat thread →
-library → preview → exports → billing gate → APK → quota → delete. 30 checks,
-no network required.
+`npm test` — two suites, 43 checks, no network required.
+
+*API* (`scripts/smoke-test.js`, 35): boots the real server on an ephemeral port
+with a throwaway data directory and walks guest session → generate → play →
+guest export limits → guest-to-account upgrade → register → upload → generate
+with attachments → chat thread → library → preview → exports → billing gate →
+APK → quota → delete.
+
+*Provider* (`scripts/provider-test.js`, 8): runs a stand-in OpenRouter on
+localhost and asserts the exact wire format — endpoint, auth and attribution
+headers, model id, system/user ordering, the structured-output schema, how a
+text-only model is handed attachments, and that an unknown model falls back to
+safe assumptions.
+
+`npm run llm:check` — the only test that needs a real key. Prints the model's
+detected capabilities, does a round trip, then generates a whole game through
+the live pipeline and reports tokens and timing.
 
 The four demo games were additionally driven in headless Chromium: each boots,
 transitions scenes, and runs at 46–59 FPS under software rendering with no

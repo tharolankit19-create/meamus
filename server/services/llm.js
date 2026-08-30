@@ -1,0 +1,320 @@
+'use strict';
+
+/**
+ * LLM provider layer.
+ *
+ * OpenRouter is the default and speaks the OpenAI chat-completions shape.
+ * The Anthropic path is kept so an existing key keeps working; nothing above
+ * this module knows which one is active.
+ *
+ * Two things this layer owns that callers should not re-derive:
+ *  - model capabilities (can it read images? does it honour a JSON schema?),
+ *    detected from the OpenRouter catalogue and cached
+ *  - structured outputs, which is what keeps a small model emitting a spec
+ *    that parses on the first try
+ */
+
+const fs = require('fs');
+const path = require('path');
+const config = require('../config');
+const { RESPONSE_FORMAT } = require('./schema');
+
+const SYSTEM_PROMPT = fs.readFileSync(path.join(__dirname, '..', 'prompts', 'system.md'), 'utf8');
+
+class LlmError extends Error {
+  constructor(message, status, details) {
+    super(message);
+    this.name = 'LlmError';
+    this.status = status || 502;
+    this.details = details;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Capabilities                                                              */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Fallback capability table for when the catalogue cannot be reached.
+ * Anything unknown is assumed text-only with no schema support, because
+ * guessing "yes" produces a hard 400 while guessing "no" merely loses a
+ * feature.
+ */
+const KNOWN = {
+  'nvidia/nemotron-3.5-lightning': { images: false, structuredOutputs: true },
+  'nvidia/nemotron-3.5-lightning:free': { images: false, structuredOutputs: false },
+  'nvidia/nemotron-3-ultra-550b-a55b': { images: false, structuredOutputs: true },
+  'nvidia/nemotron-3-super-120b-a12b': { images: false, structuredOutputs: true },
+  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free': { images: true, structuredOutputs: false }
+};
+
+let capabilityCache = null;
+let capabilityPromise = null;
+
+function staticCapabilities(model) {
+  if (KNOWN[model]) return { ...KNOWN[model], source: 'static' };
+  // Anthropic and the OpenAI-style majors all take images.
+  if (/^(anthropic\/|claude)/.test(model)) return { images: true, structuredOutputs: false, source: 'static' };
+  return { images: false, structuredOutputs: false, source: 'assumed' };
+}
+
+/**
+ * Ask OpenRouter what the configured model can do. Cached for the process
+ * lifetime; a failure falls back to the static table rather than throwing,
+ * because a catalogue outage must not take generation down with it.
+ */
+async function capabilities() {
+  if (capabilityCache) return capabilityCache;
+  if (config.llm.provider !== 'openrouter') {
+    capabilityCache = staticCapabilities(config.llm.model);
+    return capabilityCache;
+  }
+  if (capabilityPromise) return capabilityPromise;
+
+  capabilityPromise = (async () => {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const response = await fetch(`${config.llm.baseUrl}/models`, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!response.ok) throw new Error(`catalogue returned ${response.status}`);
+
+      const { data } = await response.json();
+      const entry = (data || []).find((m) => m.id === config.llm.model);
+      if (!entry) throw new Error(`model ${config.llm.model} is not in the catalogue`);
+
+      const modalities = (entry.architecture && entry.architecture.input_modalities) || [];
+      const params = entry.supported_parameters || [];
+      capabilityCache = {
+        images: modalities.includes('image'),
+        structuredOutputs: params.includes('structured_outputs') && params.includes('response_format'),
+        contextLength: entry.context_length,
+        maxOutput: entry.top_provider && entry.top_provider.max_completion_tokens,
+        source: 'catalogue'
+      };
+    } catch (err) {
+      capabilityCache = staticCapabilities(config.llm.model);
+      capabilityCache.detectionError = err.message;
+    }
+    return capabilityCache;
+  })();
+
+  return capabilityPromise;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Message construction                                                      */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Build a user message from text plus resolved attachments.
+ *
+ * Text files are always folded into the prompt. Images become native image
+ * parts only when the model can read them; otherwise they are named in the
+ * text and reported back through `ignoredImages` so the caller can tell the
+ * user rather than silently dropping their reference art.
+ *
+ * @param {string} text
+ * @param {Array<{kind:string, mime:string, base64:string, text:string, name:string}>} [attachments]
+ * @param {{images:boolean}} caps
+ */
+function buildUserMessage(text, attachments = [], caps = { images: false }) {
+  const images = attachments.filter((a) => a.kind === 'image' && a.base64);
+  const files = attachments.filter((a) => a.kind === 'text' && a.text);
+
+  let body = text;
+
+  if (files.length) {
+    body += `\n\nAttached files:\n${files.map((f) => `--- ${f.name} ---\n${f.text}`).join('\n\n')}`;
+  }
+
+  if (images.length && caps.images) {
+    body += `\n\n${images.length} reference image${images.length === 1 ? ' is' : 's are'} attached. ` +
+      'Match the art direction, palette, layout and mood they show in the procedural graphics you generate.';
+  } else if (images.length) {
+    body += `\n\nThe user attached ${images.length} reference image${images.length === 1 ? '' : 's'} ` +
+      `(${images.map((i) => i.name).join(', ')}) that this model cannot read. ` +
+      'Infer the art direction from the written prompt alone and keep the palette coherent.';
+  }
+
+  const ignoredImages = caps.images ? [] : images.map((i) => i.name);
+
+  if (config.llm.provider === 'anthropic') {
+    const content = [
+      ...(caps.images ? images.map((image) => ({
+        type: 'image',
+        source: { type: 'base64', media_type: image.mime, data: image.base64 }
+      })) : []),
+      { type: 'text', text: body }
+    ];
+    return { message: { role: 'user', content }, ignoredImages };
+  }
+
+  // OpenAI / OpenRouter shape.
+  if (!caps.images || !images.length) {
+    return { message: { role: 'user', content: body }, ignoredImages };
+  }
+  return {
+    message: {
+      role: 'user',
+      content: [
+        ...images.map((image) => ({
+          type: 'image_url',
+          image_url: { url: `data:${image.mime};base64,${image.base64}` }
+        })),
+        { type: 'text', text: body }
+      ]
+    },
+    ignoredImages
+  };
+}
+
+/* ------------------------------------------------------------------------ */
+/* Requests                                                                  */
+/* ------------------------------------------------------------------------ */
+
+async function post(url, headers, payload) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), config.llm.timeoutMs);
+  try {
+    return await fetch(url, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(payload)
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') throw new LlmError('The model took too long to answer', 504);
+    throw new LlmError(`Could not reach ${config.llm.provider}: ${err.message}`, 502);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readError(response) {
+  const text = await response.text();
+  let detail = text.slice(0, 600);
+  try {
+    const parsed = JSON.parse(text);
+    detail = (parsed.error && (parsed.error.message || parsed.error)) || parsed.message || detail;
+  } catch { /* keep the raw body */ }
+  return typeof detail === 'string' ? detail : JSON.stringify(detail);
+}
+
+async function callOpenRouter({ messages, system, maxTokens, jsonSchema }) {
+  const payload = {
+    model: config.llm.model,
+    max_tokens: maxTokens || config.llm.maxTokens,
+    temperature: config.llm.temperature,
+    messages: [{ role: 'system', content: system }, ...messages]
+  };
+  if (jsonSchema) payload.response_format = RESPONSE_FORMAT;
+
+  let response = await post(`${config.llm.baseUrl}/chat/completions`, {
+    authorization: `Bearer ${config.llm.apiKey}`,
+    // OpenRouter uses these for attribution on its dashboard and leaderboards.
+    'HTTP-Referer': config.llm.referer,
+    'X-Title': config.llm.title
+  }, payload);
+
+  // Not every deployment of a model honours response_format. One retry without
+  // it beats failing the generation outright.
+  if (!response.ok && jsonSchema && (response.status === 400 || response.status === 422)) {
+    delete payload.response_format;
+    response = await post(`${config.llm.baseUrl}/chat/completions`, {
+      authorization: `Bearer ${config.llm.apiKey}`,
+      'HTTP-Referer': config.llm.referer,
+      'X-Title': config.llm.title
+    }, payload);
+  }
+
+  if (!response.ok) {
+    const detail = await readError(response);
+    const status = response.status === 429 ? 429
+      : response.status === 401 || response.status === 403 ? 401
+        : response.status >= 500 ? 502 : 400;
+    throw new LlmError(`${config.llm.provider} error (${response.status}): ${detail}`, status);
+  }
+
+  const payloadBody = await response.json();
+  const choice = (payloadBody.choices || [])[0];
+  if (!choice) throw new LlmError('The model returned no choices', 502);
+
+  const text = typeof choice.message.content === 'string'
+    ? choice.message.content
+    : (choice.message.content || []).filter((p) => p.type === 'text').map((p) => p.text).join('');
+
+  if (!text.trim()) throw new LlmError('The model returned an empty response', 502);
+
+  return {
+    text,
+    usage: payloadBody.usage || null,
+    model: payloadBody.model || config.llm.model,
+    stopReason: choice.finish_reason || null
+  };
+}
+
+async function callAnthropic({ messages, system, maxTokens }) {
+  const response = await post(`${config.llm.baseUrl}/v1/messages`, {
+    'x-api-key': config.llm.apiKey,
+    'anthropic-version': '2023-06-01'
+  }, {
+    model: config.llm.model,
+    max_tokens: maxTokens || config.llm.maxTokens,
+    system,
+    messages
+  });
+
+  if (!response.ok) {
+    const detail = await readError(response);
+    const status = response.status === 429 ? 429 : response.status >= 500 ? 502 : 400;
+    throw new LlmError(`anthropic error (${response.status}): ${detail}`, status);
+  }
+
+  const body = await response.json();
+  const text = (body.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
+  if (!text.trim()) throw new LlmError('The model returned an empty response', 502);
+
+  return {
+    text,
+    usage: body.usage || null,
+    model: body.model || config.llm.model,
+    stopReason: body.stop_reason || null
+  };
+}
+
+/**
+ * Send a conversation and return the model's reply text.
+ * @param {object} opts
+ * @param {Array} opts.messages
+ * @param {string} [opts.system]
+ * @param {number} [opts.maxTokens]
+ * @param {boolean} [opts.jsonSchema] request schema-constrained output
+ */
+async function complete({ messages, system = SYSTEM_PROMPT, maxTokens, jsonSchema = false }) {
+  if (!config.llm.enabled) {
+    throw new LlmError(
+      'No model API key is configured. Set OPENROUTER_API_KEY in .env and restart.',
+      503
+    );
+  }
+  const caps = await capabilities();
+  const useSchema = jsonSchema && caps.structuredOutputs && config.llm.provider === 'openrouter';
+
+  const result = config.llm.provider === 'anthropic'
+    ? await callAnthropic({ messages, system, maxTokens })
+    : await callOpenRouter({ messages, system, maxTokens, jsonSchema: useSchema });
+
+  return { ...result, structuredOutput: useSchema, provider: config.llm.provider };
+}
+
+/** Test hook: forget any detected capabilities. */
+function resetCapabilities() {
+  capabilityCache = null;
+  capabilityPromise = null;
+}
+
+module.exports = {
+  complete, buildUserMessage, capabilities, resetCapabilities,
+  SYSTEM_PROMPT, LlmError, KNOWN
+};

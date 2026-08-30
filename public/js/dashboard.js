@@ -6,6 +6,7 @@ import { el, icon, toast, clear, playModal, confirmModal, relativeTime } from '.
 import { state, projects, templatesApi, playUrl, setSession, billing } from './api.js';
 import { createComposer } from './composer.js';
 import { startProject } from './generate.js';
+import { openAuth } from './auth-dialog.js';
 
 const GREETINGS = ['Let\'s build something', 'What are we making', 'Ready when you are'];
 
@@ -13,8 +14,8 @@ export function renderDashboard(root, { tab = 'projects' } = {}) {
   const main = el('main', { class: 'main' });
   root.append(el('div', { class: 'app' }, sidebar('dashboard'), main));
 
-  const firstName = (state.user.name || state.user.email).split(/[\s@]/)[0];
   const greeting = GREETINGS[new Date().getDate() % GREETINGS.length];
+  const firstName = state.user.isGuest ? '' : (state.user.name || state.user.email).split(/[\s@]/)[0];
 
   const composer = createComposer({
     placeholder: 'Describe your next game… attach art or notes with +',
@@ -48,7 +49,7 @@ export function renderDashboard(root, { tab = 'projects' } = {}) {
   paintTabs(tab);
 
   main.append(
-    el('h1', { class: 'greet' }, `${greeting}, ${firstName}`),
+    el('h1', { class: 'greet' }, firstName ? `${greeting}, ${firstName}` : greeting),
     composer.node,
     !state.status?.aiEnabled && el('div', { class: 'notice', style: { marginTop: '16px' } },
       icon('alert'),
@@ -67,7 +68,7 @@ export function renderDashboard(root, { tab = 'projects' } = {}) {
 
 /* --- sidebar -------------------------------------------------------------- */
 export function sidebar(active) {
-  const initial = (state.user.name || state.user.email).charAt(0).toUpperCase();
+  const initial = state.user.isGuest ? 'G' : (state.user.name || state.user.email).charAt(0).toUpperCase();
 
   const recents = state.projects.slice(0, 6).map((project) => el('button', {
     class: 'side-item',
@@ -81,7 +82,8 @@ export function sidebar(active) {
 
     el('button', { class: 'workspace-pill', onClick: () => { location.hash = '#/account'; } },
       el('span', { class: 'avatar' }, initial),
-      el('span', { class: 'nm grow', style: { textAlign: 'left' } }, state.user.name || 'My workspace'),
+      el('span', { class: 'nm grow', style: { textAlign: 'left' } },
+        state.user.isGuest ? 'Guest workspace' : (state.user.name || 'My workspace')),
       icon('chevronDown', 'sm')),
 
     el('div', { style: { height: '10px' } }),
@@ -102,23 +104,34 @@ export function sidebar(active) {
       el('div', { class: 'side-label' }, 'Recent'),
       ...recents) : null,
 
-    state.user.plan === 'pro'
-      ? el('div', { class: 'upsell', style: { marginTop: 'auto' } },
-        el('h4', {}, 'Pro plan'),
-        el('p', {}, `${state.user.quota} generations a day and Android export.`))
-      : el('div', { class: 'upsell' },
-        el('h4', {}, 'Upgrade to Pro'),
-        el('p', {}, 'Android export and 200 generations a day.'),
+    state.user.isGuest
+      ? el('div', { class: 'upsell' },
+        el('h4', {}, 'Guest session'),
+        el('p', {}, 'Your games live in this browser only. Sign up to keep them.'),
         el('button', {
           class: 'btn primary sm block',
-          onClick: () => { location.hash = '#/pricing'; }
-        }, icon('bolt', 'sm'), 'See plans')),
+          onClick: async () => {
+            const user = await openAuth('register');
+            if (user) window.dispatchEvent(new HashChangeEvent('hashchange'));
+          }
+        }, icon('user', 'sm'), 'Save my work'))
+      : state.user.plan === 'pro'
+        ? el('div', { class: 'upsell', style: { marginTop: 'auto' } },
+          el('h4', {}, 'Pro plan'),
+          el('p', {}, `${state.user.quota} generations a day and Android export.`))
+        : el('div', { class: 'upsell' },
+          el('h4', {}, 'Upgrade to Pro'),
+          el('p', {}, 'Android export and 200 generations a day.'),
+          el('button', {
+            class: 'btn primary sm block',
+            onClick: () => { location.hash = '#/pricing'; }
+          }, icon('bolt', 'sm'), 'See plans')),
 
     el('button', {
       class: 'side-item',
       style: { marginTop: '6px' },
-      onClick: () => { setSession(null, null); location.hash = '#/'; }
-    }, icon('user'), 'Sign out'));
+      onClick: () => { setSession(null, null); location.href = '/'; }
+    }, icon('user'), state.user.isGuest ? 'End guest session' : 'Sign out'));
 }
 
 /* --- lists ---------------------------------------------------------------- */
@@ -280,6 +293,10 @@ export async function renderPricing(root) {
 }
 
 async function changePlan(planId) {
+  if (state.user.isGuest) {
+    const user = await openAuth('register');
+    if (!user) { toast('Create an account before upgrading', 'warn'); return; }
+  }
   try {
     const payload = planId === 'free' ? await billing.downgrade() : await billing.checkout(planId);
     if (payload.checkoutUrl) { location.href = payload.checkoutUrl; return; }

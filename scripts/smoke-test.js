@@ -21,6 +21,7 @@ process.env.PORT = '0';
 process.env.JWT_SECRET = 'test-secret-not-for-production-use-0123456789';
 process.env.NODE_ENV = 'test';
 process.env.RATE_LIMIT_MAX = '10000';
+process.env.TEST_MODE = 'true';
 
 const { app } = require('../server/index');
 
@@ -56,6 +57,8 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
   let token = null;
   let gameId = null;
   let uploadIds = [];
+  let guestToken = null;
+  let guestGameId = null;
 
   await check('GET /api/status reports a usable service', async () => {
     const { status, body } = await request('/api/status');
@@ -63,6 +66,8 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.strictEqual(body.service, 'meamus');
     assert.ok(body.templates >= 4, `expected >= 4 templates, got ${body.templates}`);
     assert.ok(['ai', 'template'].includes(body.mode));
+    assert.ok(['openrouter', 'anthropic'].includes(body.provider), `unexpected provider ${body.provider}`);
+    assert.strictEqual(body.testMode, true);
   });
 
   await check('GET /api/templates lists the bundled games', async () => {
@@ -85,9 +90,60 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.ok(html.includes('MEAMUS.gfx'), 'the kit body is incomplete');
   });
 
-  await check('generation requires an account', async () => {
+  await check('generation still requires a session token', async () => {
     const { status } = await request('/api/generate', { method: 'POST', body: { prompt: 'a space shooter' } });
     assert.strictEqual(status, 401);
+  });
+
+  await check('test mode mints a guest session with no signup', async () => {
+    const { status, body } = await request('/api/auth/guest', { method: 'POST' });
+    assert.strictEqual(status, 201);
+    assert.ok(body.token);
+    assert.strictEqual(body.user.isGuest, true);
+    assert.strictEqual(body.user.plan, 'guest');
+    assert.ok(body.user.quota >= 1, 'a guest needs a usable quota');
+    guestToken = body.token;
+  });
+
+  await check('a guest can generate and play without an account', async () => {
+    const gen = await request('/api/generate', {
+      method: 'POST', token: guestToken, body: { prompt: 'a fast arcade space shooter' }
+    });
+    assert.strictEqual(gen.status, 201, JSON.stringify(gen.body));
+    assert.ok(gen.body.spec.gameCode.javascript.length > 1000);
+    guestGameId = gen.body.game.id;
+
+    const play = await request(`/play/${guestGameId}?token=${guestToken}`, { raw: true });
+    assert.strictEqual(play.status, 200);
+    const html = await play.text();
+    assert.ok(html.includes('game-container'), 'the guest game did not render');
+  });
+
+  await check('a guest can export HTML but not an APK', async () => {
+    const html = await request(`/api/games/${guestGameId}/export/html`, { token: guestToken, raw: true });
+    assert.strictEqual(html.status, 200);
+
+    const apk = await request(`/api/games/${guestGameId}/export/apk`, { token: guestToken });
+    assert.strictEqual(apk.status, 402);
+    assert.strictEqual(apk.body.code, 'signup_required');
+
+    const upgrade = await request('/api/billing/checkout', { method: 'POST', token: guestToken, body: { plan: 'pro' } });
+    assert.strictEqual(upgrade.status, 402, 'a throwaway guest must not be able to buy a plan');
+  });
+
+  await check('registering from a guest session keeps that session\'s games', async () => {
+    const { status, body } = await request('/api/auth/register', {
+      method: 'POST', token: guestToken,
+      body: { email: 'upgraded@meamus.test', password: 'supersecret123', name: 'Upgraded' }
+    });
+    assert.strictEqual(status, 201, JSON.stringify(body));
+    assert.strictEqual(body.upgradedFromGuest, true);
+    assert.strictEqual(body.user.isGuest, false);
+    assert.strictEqual(body.user.plan, 'free');
+
+    const games = await request('/api/games', { token: body.token });
+    assert.ok(games.body.games.some((g) => g.id === guestGameId),
+      'the game made as a guest did not survive the upgrade');
   });
 
   await check('POST /api/auth/register creates an account', async () => {
@@ -292,11 +348,25 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.ok(buffer.length > 20000, 'apk project is too small');
   });
 
+  await check('guest sessions are refused when test mode is off', async () => {
+    // The route reads config at call time, so flipping the flag is enough.
+    const config = require('../server/config');
+    const previous = config.testMode;
+    config.testMode = false;
+    try {
+      const { status, body } = await request('/api/auth/guest', { method: 'POST' });
+      assert.strictEqual(status, 403);
+      assert.strictEqual(body.code, 'guest_disabled');
+    } finally {
+      config.testMode = previous;
+    }
+  });
+
   await check('modifying a game without an API key fails honestly', async () => {
     const { status, body } = await request(`/api/games/${gameId}/modify`, {
       method: 'POST', token, body: { instruction: 'add a boss fight' }
     });
-    if (process.env.ANTHROPIC_API_KEY) {
+    if (process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY) {
       assert.strictEqual(status, 200);
       assert.ok(body.spec.gameCode.javascript.length > 1000);
     } else {

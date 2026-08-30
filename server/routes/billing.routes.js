@@ -50,6 +50,12 @@ router.get('/billing/plans', (req, res) => {
 });
 
 router.post('/billing/checkout', requireAuth, asyncRoute(async (req, res) => {
+  if (req.user.isGuest) {
+    return res.status(402).json({
+      error: 'Create an account before upgrading',
+      code: 'signup_required'
+    });
+  }
   const planId = String(req.body.plan || 'pro');
   const plan = PLANS.find((p) => p.id === planId);
   if (!plan) return res.status(400).json({ error: 'Unknown plan', code: 'unknown_plan' });

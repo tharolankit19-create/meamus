@@ -12,6 +12,7 @@ function publicUser(user) {
     email: user.email,
     name: user.name,
     plan: user.plan,
+    isGuest: user.isGuest === true,
     createdAt: user.createdAt,
     usage: usageToday(user),
     quota: config.quotas[user.plan] || config.quotas.free
@@ -56,7 +57,10 @@ function optionalAuth(req, res, next) {
 
 function requireAuth(req, res, next) {
   if (!req.user) {
-    return res.status(401).json({ error: 'Sign in to continue', code: 'unauthorized' });
+    return res.status(401).json({
+      error: config.testMode ? 'Session expired - reload to start a new one' : 'Sign in to continue',
+      code: 'unauthorized'
+    });
   }
   next();
 }
@@ -64,6 +68,13 @@ function requireAuth(req, res, next) {
 function requirePlan(plan) {
   return (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: 'Sign in to continue', code: 'unauthorized' });
+    if (req.user.isGuest) {
+      return res.status(402).json({
+        error: 'Create an account to export your game to Android',
+        code: 'signup_required',
+        requiredPlan: plan
+      });
+    }
     if (req.user.plan !== plan) {
       return res.status(402).json({
         error: `This feature needs the ${plan} plan`,
@@ -79,8 +90,11 @@ function enforceQuota(req, res, next) {
   const quota = config.quotas[req.user.plan] || config.quotas.free;
   const used = usageToday(req.user);
   if (used >= quota) {
+    const nudge = req.user.isGuest ? 'Create an account to keep going.'
+      : req.user.plan === 'free' ? 'Upgrade to Pro for more.'
+        : 'Try again tomorrow.';
     return res.status(429).json({
-      error: `Daily limit reached (${used}/${quota} generations). ${req.user.plan === 'free' ? 'Upgrade to Pro for more.' : 'Try again tomorrow.'}`,
+      error: `Daily limit reached (${used}/${quota} generations). ${nudge}`,
       code: 'quota_exceeded',
       used,
       quota

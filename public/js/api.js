@@ -73,8 +73,25 @@ export async function loadSession() {
 
 export const auth = {
   register: (body) => api('/auth/register', { method: 'POST', body }),
-  login: (body) => api('/auth/login', { method: 'POST', body })
+  login: (body) => api('/auth/login', { method: 'POST', body }),
+  guest: () => api('/auth/guest', { method: 'POST' })
 };
+
+/**
+ * Test mode: mint a guest session so the first prompt works with no signup.
+ * The guest is a real account server-side, so nothing downstream is special-
+ * cased; registering later upgrades it in place and keeps the games.
+ */
+export async function ensureGuestSession() {
+  if (state.user || !state.status || !state.status.testMode) return state.user;
+  try {
+    const payload = await auth.guest();
+    setSession(payload.token, payload.user);
+    return payload.user;
+  } catch {
+    return null;
+  }
+}
 
 export const projects = {
   list: () => api('/games'),

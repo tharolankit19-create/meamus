@@ -46,13 +46,16 @@ app.get('/api/status', (req, res) => {
     aiEnabled: config.aiEnabled,
     // The one thing an operator needs to see at a glance.
     mode: config.aiEnabled ? 'ai' : 'template',
-    model: config.aiEnabled ? config.anthropic.model : null,
+    provider: config.llm.provider,
+    model: config.aiEnabled ? config.llm.model : null,
+    testMode: config.testMode,
     templates: templates.list().length,
     quotas: config.quotas,
     billingProvider: config.billing.provider,
     plans: PLANS.map((p) => ({ id: p.id, name: p.name, price: p.price })),
     warnings: [
-      ...(config.aiEnabled ? [] : ['ANTHROPIC_API_KEY is not set - generation runs in template mode.']),
+      ...(config.aiEnabled ? [] : ['OPENROUTER_API_KEY is not set - generation runs in template mode.']),
+      ...(config.testMode ? ['TEST_MODE is on - anyone can generate without signing up.'] : []),
       ...(config.auth.secretIsEphemeral ? ['JWT_SECRET is not set - sessions reset when the server restarts.'] : [])
     ]
   });
@@ -121,13 +124,15 @@ function start() {
     console.log(`  meamus  ${require('../package.json').version}`);
     console.log(`  ${url}`);
     console.log('');
-    console.log(`  mode       ${config.aiEnabled ? `AI (${config.anthropic.model})` : 'TEMPLATE (no ANTHROPIC_API_KEY)'}`);
+    console.log(`  mode       ${config.aiEnabled ? `AI · ${config.llm.provider} · ${config.llm.model}` : 'TEMPLATE (no OPENROUTER_API_KEY)'}`);
+    console.log(`  test mode  ${config.testMode ? 'ON - no signup required' : 'off'}`);
     console.log(`  templates  ${templates.list().length}`);
     console.log(`  billing    ${config.billing.provider}`);
     console.log(`  data       ${config.dataDir}`);
     if (!config.aiEnabled) {
       console.log('');
-      console.log('  Add ANTHROPIC_API_KEY to .env and restart for original AI generation.');
+      console.log('  Add OPENROUTER_API_KEY to .env and restart for original AI generation.');
+      console.log('  Verify the key with: npm run llm:check');
     }
     if (config.auth.secretIsEphemeral) {
       console.log('  Warning: JWT_SECRET is unset, so sessions reset on restart.');

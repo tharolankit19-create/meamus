@@ -21,8 +21,9 @@ prompt + images/files ──▶ Claude ──▶ GameSpec JSON ──▶ validat
 
 Three screens, white and orange, no dark mode:
 
-- **Landing** — hero prompt box. Type an idea, sign up, and you land straight in
-  the workspace with the game already built.
+- **Landing** — hero prompt box. Type an idea and you land straight in the
+  workspace with the game already built. In test mode there is no signup step
+  at all.
 - **Dashboard** — sidebar, greeting, the same prompt box, and a grid of your
   games. Every tile is a **live thumbnail**: the real game running in an iframe,
   not a screenshot.
@@ -34,10 +35,11 @@ Three screens, white and orange, no dark mode:
   Android project.
 
 **Attachments** work everywhere the composer does — click `+`, drag files onto
-the box, or paste a screenshot. Images (png/jpg/webp/gif, 5 MB) are sent to
-Claude as vision input so the generated art matches your reference; text files
-(md/txt/json/csv/js/html/css, 512 KB) are folded into the prompt as design
-notes. Six per message.
+the box, or paste a screenshot. Text files (md/txt/json/csv/js/html/css, 512 KB)
+are folded into the prompt as design notes. Images (png/jpg/webp/gif, 5 MB) are
+sent as native vision input **when the configured model can read them** — the
+default Nemotron cannot, so their filenames go into the prompt and the response
+says so plainly. Six files per message.
 
 ---
 
@@ -46,20 +48,69 @@ notes. Six per message.
 ```bash
 git clone <this repo> && cd meamus
 npm install          # installs express, then builds the demo games
-cp .env.example .env # optional - the app runs fine without it
+cp .env.example .env
 npm start            # http://localhost:3000
 ```
 
-That is the whole setup. **The only thing left to add is your API key.**
+**The only thing left to add is your OpenRouter key.**
 
 ```bash
 # .env
-ANTHROPIC_API_KEY=sk-ant-...
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=nvidia/nemotron-3.5-lightning   # already the default
 ```
 
-Restart, and the badge in the header flips from `TEMPLATE MODE` to
-`AI · claude-sonnet-5`. Nothing else changes — the accounts, quotas, library,
-preview, exports and billing all work identically either way.
+Then verify it before touching the UI:
+
+```bash
+npm run llm:check
+```
+
+That prints the model's real capabilities, does a round trip, and generates a
+whole game through the live pipeline. If the key or the model name is wrong it
+fails there instead of halfway through a prompt.
+
+Restart and the header badge flips from `TEMPLATE MODE` to
+`AI · nvidia/nemotron-3.5-lightning`.
+
+### Test mode — no signup
+
+`TEST_MODE=true` (the default outside production) means a visitor opens the
+page, types a prompt, and plays the game. No account, no dialog. A guest
+session is minted silently and owns its games exactly like a real account, so
+there is no second code path. Signing up later **upgrades that guest in place**
+and the games made during the session come with it.
+
+Turn it off before exposing the app publicly — it is an open door to your API
+key.
+
+### The model
+
+Default is **`nvidia/nemotron-3.5-lightning`** via OpenRouter:
+
+| | |
+|---|---|
+| Context | 262,144 tokens |
+| Max output | 131,072 tokens |
+| Price | ~$0.08/M in · $0.20/M out |
+| Images | **No** — text input only |
+| Structured outputs | **Yes** |
+
+Structured outputs matter here: it is a 3B-active MoE model, and pushing the
+GameSpec JSON Schema into `response_format` is what keeps it emitting a spec
+that parses on the first try instead of drifting. meamus detects this from
+OpenRouter's catalogue at runtime and downgrades to prompt-only instructions
+for models that do not support it.
+
+Because the model is text-only, **image attachments cannot be read by it**.
+meamus does not pretend otherwise: the filenames go into the prompt and the
+response carries an explicit note saying the images informed the prompt only.
+Point `OPENROUTER_MODEL` at a vision model and native image parts turn on
+automatically. `nvidia/nemotron-3.5-lightning:free` also works (1M context,
+64k output, no structured outputs, rate limited).
+
+An `ANTHROPIC_API_KEY` still works if that is the key you have — whichever key
+is present wins, OpenRouter first.
 
 ### Template mode (no key)
 
@@ -69,6 +120,22 @@ match, and retitles/reskins it from the prompt. Prompt analysis (difficulty,
 visual style, control emphasis) applies in both modes. This exists so the
 product is fully demoable and testable before the key is added — not as a
 substitute for generation.
+
+---
+
+## Not built yet
+
+Named here so the gap is obvious rather than assumed:
+
+- **Firecrawl research** — no crawl step feeds the generator today.
+- **Component/UI libraries for generated games** — games use the bundled
+  procedural kit only.
+- **3D / WebGL beyond Phaser's renderer** — everything generated is 2D.
+- **Managed hosting and a real database** — storage is a JSON file on disk
+  (see below), and publishing means a share link on this server.
+
+Each of these is an integration point, not a rewrite: research would slot in
+front of `services/generator.js`, and storage behind `server/db.js`.
 
 ---
 
@@ -95,14 +162,17 @@ runtime.
 **Backend** (`server/`) — Express, one runtime dependency.
 
 - Email/password accounts (scrypt hashing, HMAC-SHA256 session tokens via
-  `node:crypto` — no auth library)
+  `node:crypto` — no auth library), plus guest sessions that upgrade in place
 - Attachment store with type and size validation; images become Claude vision
   blocks, text files become prompt context (no multipart parser needed)
 - A chat thread per project, bounded at 60 turns, with a 10-deep version history
 - JSON document store with atomic writes (`server/db.js`; swap it for Postgres
   by reimplementing eight methods)
-- Claude Messages API client over `fetch`, with a forgiving JSON extractor for
-  fenced or prose-wrapped responses
+- Provider layer over `fetch` (OpenRouter by default, Anthropic optional) that
+  detects model capabilities from the catalogue and enforces the GameSpec JSON
+  Schema where the model supports it
+- A forgiving JSON extractor for fenced or prose-wrapped responses, for models
+  that do not
 - GameSpec validator that normalises every field and rejects `eval`/`new Function`
 - Per-day generation quotas and a fixed-window rate limiter
 - HTML bundler, and a ZIP writer built on `node:zlib` for the APK export
@@ -124,11 +194,14 @@ joystick and buttons, reusable Boot/Preload scenes, ad hooks, safe localStorage.
 ## Commands
 
 ```bash
-npm start           # run the server
-npm run dev         # run with --watch
-npm run build:demos # re-render public/demos/*.html from templates/
-npm run check       # static checks: syntax, template rules, config surface
-npm test            # end-to-end smoke test (24 checks, no network needed)
+npm start             # run the server
+npm run dev           # run with --watch
+npm run llm:check     # verify the model key end to end (needs a key)
+npm run build:demos   # re-render public/demos/*.html from templates/
+npm run check         # static checks: syntax, template rules, config surface
+npm test              # API smoke test + provider test (43 checks, no network)
+npm run test:api      # just the API suite
+npm run test:provider # just the provider suite
 ```
 
 `npm run check` enforces the game rules on every template: five scenes, all
@@ -145,10 +218,13 @@ Everything lives in `.env` (see `.env.example`). The values worth knowing:
 
 | Variable | Default | Notes |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | *(empty)* | The one thing you add. Empty = template mode. |
-| `ANTHROPIC_MODEL` | `claude-sonnet-5` | |
-| `ANTHROPIC_MAX_TOKENS` | `16000` | Raise it if generations come back truncated. |
+| `OPENROUTER_API_KEY` | *(empty)* | The one thing you add. Empty = template mode. |
+| `OPENROUTER_MODEL` | `nvidia/nemotron-3.5-lightning` | Any OpenRouter model id. |
+| `LLM_MAX_TOKENS` | `32000` | Raise it if generations come back truncated. |
+| `LLM_TEMPERATURE` | `0.6` | |
+| `TEST_MODE` | `true` outside production | Generation without signup. |
 | `JWT_SECRET` | *(random)* | Set it, or sessions reset on restart. |
+| `GUEST_DAILY_GENERATIONS` | `20` | |
 | `FREE_DAILY_GENERATIONS` | `5` | |
 | `PRO_DAILY_GENERATIONS` | `200` | |
 | `BILLING_PROVIDER` | `stub` | `stub` upgrades instantly so the paid path is testable. |

@@ -3,7 +3,7 @@
  * ========================================================================== */
 
 import { $, el, clear, icon, toast } from './ui.js';
-import { state, loadStatus, loadSession, onChange, projects } from './api.js';
+import { state, loadStatus, loadSession, onChange, projects, ensureGuestSession } from './api.js';
 import { renderLanding } from './landing.js';
 import { renderDashboard, renderTemplatesPage, renderPricing, sidebar } from './dashboard.js';
 import { renderWorkspace } from './workspace.js';
@@ -22,8 +22,15 @@ async function render() {
   const host = clear(root());
   document.body.classList.toggle('workspace-route', name === 'project');
 
-  // Signed-out visitors get the marketing page for every route but the
-  // public ones, so a shared link never dead-ends on a blank screen.
+  // A guest is signed in but has not committed to anything, so the landing
+  // page - with its prompt box - stays their home rather than the dashboard.
+  const browsing = !state.user || state.user.isGuest;
+
+  if (browsing && (name === '' || name === 'home')) {
+    renderLanding(host);
+    return;
+  }
+
   if (!state.user) {
     if (name === 'templates' || name === 'pricing' || name === 'docs') {
       renderLanding(host);
@@ -90,6 +97,8 @@ function renderAccount(host) {
 
   await loadStatus();
   await loadSession();
+  // In test mode nobody should hit a signup wall before their first game.
+  if (!state.user) await ensureGuestSession();
 
   // Warm the project list so the sidebar's recents are populated on first paint.
   if (state.user) {

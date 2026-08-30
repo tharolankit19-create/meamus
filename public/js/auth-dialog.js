@@ -1,7 +1,7 @@
 /* Sign-in / sign-up modal. Resolves to the user, or null if dismissed. */
 
 import { el, icon, modal, toast } from './ui.js';
-import { auth, setSession } from './api.js';
+import { auth, setSession, state } from './api.js';
 
 export function openAuth(mode = 'login') {
   return new Promise((resolve) => {
@@ -24,7 +24,9 @@ export function openAuth(mode = 'login') {
         const isRegister = current === 'register';
         title.textContent = isRegister ? 'Create your account' : 'Welcome back';
         sub.textContent = isRegister
-          ? 'Free plan, no card. Your games are saved to your account.'
+          ? (state.user && state.user.isGuest
+            ? 'Free plan, no card. The games from this session move across with you.'
+            : 'Free plan, no card. Your games are saved to your account.')
           : 'Sign in to keep building.';
         nameField.classList.toggle('hide', !isRegister);
         passwordInput.autocomplete = isRegister ? 'new-password' : 'current-password';
@@ -53,7 +55,11 @@ export function openAuth(mode = 'login') {
             });
             setSession(payload.token, payload.user);
             settled = payload.user;
-            toast(current === 'register' ? 'Account created — start building.' : 'Signed in', 'ok');
+            toast(
+              payload.upgradedFromGuest ? 'Account created — your games were saved to it.'
+                : current === 'register' ? 'Account created — start building.'
+                  : 'Signed in',
+              'ok');
             closeFn();
           } catch (err) {
             errorBox.textContent = err.message;

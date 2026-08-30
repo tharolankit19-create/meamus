@@ -3,7 +3,7 @@
  * ========================================================================== */
 
 import { el, icon, toast, playModal } from './ui.js';
-import { state, templatesApi } from './api.js';
+import { state, templatesApi, projects as projectsApi } from './api.js';
 import { createComposer } from './composer.js';
 import { openAuth } from './auth-dialog.js';
 import { startProject } from './generate.js';
@@ -38,7 +38,8 @@ export function renderLanding(root) {
     placeholder: 'A space shooter where I tap to blast asteroids…',
     submitLabel: 'Generate game',
     async onSubmit(text, attachmentIds, { mode }) {
-      // Signing in mid-prompt should not lose what was typed.
+      // In test mode a guest session already exists, so this never fires and
+      // the first prompt generates straight away.
       if (!state.user) {
         const user = await openAuth('register');
         if (!user) { toast('Create an account to generate your game', 'warn'); return; }
@@ -62,14 +63,29 @@ export function renderLanding(root) {
         el('a', { href: '#/pricing' }, 'Pricing'),
         el('a', { href: '#/docs' }, 'Docs')),
       el('span', { class: 'grow' }),
+      state.user && state.user.isGuest
+        ? el('button', {
+          class: 'btn ghost', onClick: () => { location.hash = '#/dashboard'; }
+        }, icon('grid', 'sm'), 'My games')
+        : null,
       el('button', { class: 'btn ghost', onClick: () => openAuth('login') }, 'Log in'),
-      el('button', { class: 'btn primary', onClick: () => openAuth('register') }, 'Get started')),
+      el('button', {
+        class: 'btn primary',
+        onClick: async () => {
+          const user = await openAuth('register');
+          if (user) location.hash = '#/dashboard';
+        }
+      }, state.user && state.user.isGuest ? 'Save my work' : 'Get started')),
 
     el('div', { class: 'hero-wrap' },
       el('div', { class: 'hero-glow' }),
       el('header', { class: 'hero' },
         el('div', { class: 'hero-inner' },
-          el('span', { class: 'eyebrow' }, icon('sparkles', 'sm'), 'Prompt to playable in one step'),
+          el('span', { class: 'eyebrow' },
+            icon('sparkles', 'sm'),
+            state.status && state.status.testMode
+              ? 'Test mode — no signup, just prompt and play'
+              : 'Prompt to playable in one step'),
           el('h1', {}, 'Describe a game.', el('br'), 'Play it in seconds.'),
           el('p', { class: 'lede' },
             'meamus turns a sentence into a complete HTML5 game — art, physics, ' +

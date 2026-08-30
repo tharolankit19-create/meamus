@@ -12,7 +12,7 @@
  */
 
 const config = require('../config');
-const claude = require('./claude');
+const llm = require('./llm');
 const templates = require('./templates');
 const { extractJson, normaliseSpec, SpecError } = require('./validator');
 
@@ -104,10 +104,10 @@ function templateGenerate(prompt, { reason = 'no-api-key', attachments = [] } = 
       attachmentCount: attachments.length,
       issues: [
         ...(chosen.score === 0
-          ? ['No template keywords matched this prompt. Add an ANTHROPIC_API_KEY for original generation.']
+          ? ['No template keywords matched this prompt. Add an OPENROUTER_API_KEY for original generation.']
           : []),
         ...(attachments.length
-          ? [`${attachments.length} attachment(s) ignored - template mode cannot read reference files. Add an ANTHROPIC_API_KEY to use them.`]
+          ? [`${attachments.length} attachment(s) ignored - template mode cannot read reference files. Add an OPENROUTER_API_KEY to use them.`]
           : [])
       ]
     }
@@ -147,21 +147,29 @@ function buildModifyMessage(instruction, currentSpec) {
   ].join('\n');
 }
 
-async function aiGenerate(messages) {
+async function aiGenerate(messages, extraIssues = []) {
   const started = Date.now();
-  const response = await claude.complete({ messages });
+  // Schema-constrained output where the model supports it; llm.complete()
+  // downgrades on its own when it does not.
+  const response = await llm.complete({ messages, jsonSchema: true });
   const raw = extractJson(response.text);
   const { spec, issues } = normaliseSpec(raw, { source: 'ai' });
+
+  if (response.stopReason === 'length') {
+    issues.push('The model hit its output limit - raise LLM_MAX_TOKENS if the game feels truncated.');
+  }
 
   return {
     spec,
     meta: {
       mode: 'ai',
+      provider: response.provider,
       model: response.model,
+      structuredOutput: response.structuredOutput,
       usage: response.usage,
       stopReason: response.stopReason,
       durationMs: Date.now() - started,
-      issues
+      issues: [...extraIssues, ...issues]
     }
   };
 }
@@ -189,7 +197,16 @@ async function generate(prompt, opts = {}) {
   const analysis = analysePrompt(prompt);
   const attachments = opts.attachments || [];
   try {
-    return await aiGenerate([claude.userMessage(buildUserMessage(prompt, analysis), attachments)]);
+    const caps = await llm.capabilities();
+    const { message, ignoredImages } = llm.buildUserMessage(
+      buildUserMessage(prompt, analysis), attachments, caps
+    );
+    // Never drop a user's reference art silently - say the model cannot see it.
+    const issues = ignoredImages.length
+      ? [`${config.llm.model} cannot read images, so ${ignoredImages.join(', ')} ` +
+         'informed the prompt only. Set OPENROUTER_MODEL to a vision model to use them.']
+      : [];
+    return await aiGenerate([message], issues);
   } catch (err) {
     if (!allowFallback) throw err;
     console.error('[generator] AI generation failed, serving a template:', err.message);
@@ -209,12 +226,19 @@ async function generate(prompt, opts = {}) {
  */
 async function modify(instruction, currentSpec, opts = {}) {
   if (!config.aiEnabled) {
-    const err = new SpecError('Modifying a game needs a Claude API key. Add ANTHROPIC_API_KEY to .env and restart.');
+    const err = new SpecError('Modifying a game needs a model API key. Add OPENROUTER_API_KEY to .env and restart.');
     err.status = 503;
     throw err;
   }
   if (opts.forceTemplate) throw new SpecError('Template mode cannot modify generated code');
-  return aiGenerate([claude.userMessage(buildModifyMessage(instruction, currentSpec), opts.attachments || [])]);
+  const caps = await llm.capabilities();
+  const { message, ignoredImages } = llm.buildUserMessage(
+    buildModifyMessage(instruction, currentSpec), opts.attachments || [], caps
+  );
+  const issues = ignoredImages.length
+    ? [`${config.llm.model} cannot read images, so ${ignoredImages.join(', ')} informed the prompt only.`]
+    : [];
+  return aiGenerate([message], issues);
 }
 
 module.exports = { generate, modify, templateGenerate, analysePrompt, titleFromPrompt };
