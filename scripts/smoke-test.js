@@ -24,6 +24,7 @@ process.env.RATE_LIMIT_MAX = '10000';
 process.env.TEST_MODE = 'true';
 
 const { app } = require('../server/index');
+const db = require('../server/db');
 
 let base = '';
 let passed = 0;
@@ -49,6 +50,7 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
 }
 
 (async function run() {
+  if (db.init) await db.init();
   const server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   base = `http://127.0.0.1:${server.address().port}`;

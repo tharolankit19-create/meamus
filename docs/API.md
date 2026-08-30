@@ -242,11 +242,21 @@ flips `spec.apkReady` to `true`. See [APK.md](APK.md).
 
 | Endpoint | Description |
 |---|---|
-| `GET /templates` | The bundled demo games with their mechanics and demo URLs. |
+| `GET /templates` | The catalogue. Each entry carries `playable` and `showcase`. |
 | `GET /templates/:id` | One template with its full spec. |
 | `GET /templates/:id/play` | Playable HTML, served inline. |
 
-No auth on any of these.
+The catalogue and the per-template metadata are public. **Playing is gated**:
+only the showcase template (`SHOWCASE_TEMPLATE`, default `space-shooter`) runs
+without an account, because it is the demo embedded on the landing page. Every
+other template answers `401` to a signed-out viewer with a small sign-up panel
+rather than a bare error, so it reads correctly inside a preview iframe.
+
+`?attract=1` starts a game in its self-playing demo loop; any click or key
+press hands control to the player.
+
+An iframe navigation sends no `Authorization` header, so a signed-in viewer
+must pass `?token=<token>` — the frontend's `templatePlayUrl()` does this.
 
 ---
 

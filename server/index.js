@@ -50,6 +50,7 @@ app.get('/api/status', (req, res) => {
     model: config.aiEnabled ? config.llm.model : null,
     testMode: config.testMode,
     templates: templates.list().length,
+    showcase: config.showcaseTemplate,
     quotas: config.quotas,
     billingProvider: config.billing.provider,
     plans: PLANS.map((p) => ({ id: p.id, name: p.name, price: p.price })),
@@ -116,8 +117,22 @@ function ensureDemos() {
   }
 }
 
-function start() {
+async function start() {
   ensureDemos();
+
+  // The Postgres backend reads every document once before serving, so route
+  // handlers can stay synchronous. Failing here is better than answering the
+  // first signup with an empty user table.
+  if (db.init) {
+    try {
+      await db.init();
+    } catch (err) {
+      console.error(`\n  Storage failed to start: ${err.message}`);
+      console.error('  Run `npm run db:check` to diagnose. Falling back would silently');
+      console.error('  lose data, so meamus stops here instead.\n');
+      process.exit(1);
+    }
+  }
   const server = app.listen(config.port, config.host, () => {
     const url = `http://localhost:${config.port}`;
     console.log('');
@@ -128,7 +143,7 @@ function start() {
     console.log(`  test mode  ${config.testMode ? 'ON - no signup required' : 'off'}`);
     console.log(`  templates  ${templates.list().length}`);
     console.log(`  billing    ${config.billing.provider}`);
-    console.log(`  data       ${config.dataDir}`);
+    console.log(`  storage    ${db.kind}${db.kind === 'json' ? ` (${config.dataDir})` : ` (${config.supabase.url})`}`);
     if (!config.aiEnabled) {
       console.log('');
       console.log('  Add OPENROUTER_API_KEY to .env and restart for original AI generation.');
@@ -136,6 +151,10 @@ function start() {
     }
     if (config.auth.secretIsEphemeral) {
       console.log('  Warning: JWT_SECRET is unset, so sessions reset on restart.');
+    }
+    if (db.kind === 'json' && config.env === 'production') {
+      console.log('  Warning: storing to local disk in production. On an ephemeral host');
+      console.log('           accounts vanish on restart - set SUPABASE_URL to fix it.');
     }
     console.log('');
   });
@@ -152,6 +171,11 @@ function start() {
   return server;
 }
 
-if (require.main === module) start();
+if (require.main === module) {
+  start().catch((err) => {
+    console.error('meamus failed to start:', err);
+    process.exit(1);
+  });
+}
 
 module.exports = { app, start };

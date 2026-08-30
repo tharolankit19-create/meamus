@@ -8,6 +8,7 @@ import { renderLanding } from './landing.js';
 import { renderDashboard, renderTemplatesPage, renderPricing, sidebar } from './dashboard.js';
 import { renderWorkspace } from './workspace.js';
 import { openAuth } from './auth-dialog.js';
+import { renderMarketingTemplates, renderMarketingPricing, renderDocs } from './marketing.js';
 
 const root = () => $('#root');
 
@@ -22,22 +23,34 @@ async function render() {
   const host = clear(root());
   document.body.classList.toggle('workspace-route', name === 'project');
 
-  // A guest is signed in but has not committed to anything, so the landing
-  // page - with its prompt box - stays their home rather than the dashboard.
+  // A guest is signed in but has not committed to anything, so the marketing
+  // pages stay their home rather than the app shell.
   const browsing = !state.user || state.user.isGuest;
 
-  if (browsing && (name === '' || name === 'home')) {
-    renderLanding(host);
-    return;
+  if (browsing) {
+    switch (name) {
+      case '':
+      case 'home':
+        renderLanding(host);
+        return;
+      case 'templates':
+        renderMarketingTemplates(host);
+        return;
+      case 'pricing':
+        await renderMarketingPricing(host);
+        return;
+      case 'docs':
+        renderDocs(host);
+        return;
+      default:
+        break;      // a guest still gets the app for dashboard/project routes
+    }
   }
 
+  // A signed-out visitor following a project link is asked to sign in rather
+  // than being dropped on the homepage with no explanation.
   if (!state.user) {
-    if (name === 'templates' || name === 'pricing' || name === 'docs') {
-      renderLanding(host);
-      setTimeout(() => document.querySelector('.section.warm')?.scrollIntoView({ behavior: 'smooth' }), 80);
-      return;
-    }
-    if (name === 'project') {
+    if (name === 'project' || name === 'dashboard' || name === 'account') {
       renderLanding(host);
       const user = await openAuth('login');
       if (user) render();
@@ -61,7 +74,11 @@ async function render() {
     case 'account':
       renderAccount(host);
       return;
+    case 'docs':
+      renderDocs(host);
+      return;
     case '':
+    case 'home':
       location.hash = '#/dashboard';
       return;
     default:
@@ -93,6 +110,15 @@ function renderAccount(host) {
 /* --- boot ----------------------------------------------------------------- */
 (async function boot() {
   window.addEventListener('hashchange', render);
+
+  // The gated template frame asks the parent to open sign-up. Only same-origin
+  // frames are trusted, and only for that one message.
+  window.addEventListener('message', async (event) => {
+    if (event.origin !== location.origin) return;
+    if (!event.data || event.data.type !== 'meamus:signin') return;
+    const user = await openAuth('register');
+    if (user) location.hash = '#/dashboard';
+  });
   onChange(() => { /* state changes re-render through explicit calls */ });
 
   await loadStatus();
