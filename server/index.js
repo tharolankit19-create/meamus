@@ -87,8 +87,10 @@ app.get('/api/status', (req, res) => {
       ...(db.durable === false
         ? ['Storage is not durable here, so signup is disabled. Building and playing still work. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.']
         : []),
-      ...(config.quotas.unlimited && config.aiEnabled
-        ? ['UNLIMITED_GENERATIONS is on and a model key is set - anyone can spend your API credits.']
+      // Unlimited behind a login is a plan; unlimited with no login at all is
+      // an open door to the API key.
+      ...(config.quotas.unlimited && config.aiEnabled && config.openAccess
+        ? ['OPEN_ACCESS and UNLIMITED_GENERATIONS are both on with a model key set - anyone can spend your API credits without signing up.']
         : []),
       // Settings that were corrected at boot. Silent correction is how a
       // rate limit of 0 turns into "the whole site is down" with no clue why.
@@ -179,8 +181,8 @@ async function start() {
     console.log(`  ${url}`);
     console.log('');
     console.log(`  mode       ${config.aiEnabled ? `AI · ${config.llm.provider} · ${config.llm.model}` : 'TEMPLATE (no OPENROUTER_API_KEY)'}`);
-    console.log(`  test mode  ${config.testMode ? 'ON - no signup required' : 'off'}`);
-    console.log(`  limits     ${config.rateLimit.max}/min · quotas ${config.quotas.guest}/${config.quotas.free}/${config.quotas.pro}`);
+    console.log(`  access     ${config.openAccess ? 'open - no signup required' : 'account required'} · templates ${config.templateAccess}`);
+    console.log(`  limits     ${config.rateLimit.max} req/min · generations ${config.quotas.unlimited ? 'unlimited' : `${config.quotas.guest}/${config.quotas.free}/${config.quotas.pro} per day`}`);
     console.log(`  templates  ${templates.list().length}`);
     console.log(`  billing    ${config.billing.provider}`);
     console.log(`  storage    ${db.kind}${db.kind === 'json' ? ` (${config.dataDir})` : ` (${config.supabase.url})`}`);

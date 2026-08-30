@@ -90,23 +90,23 @@ fails there instead of halfway through a prompt.
 Restart and the header badge flips from `TEMPLATE MODE` to
 `AI · nvidia/nemotron-3.5-lightning`.
 
-### Open access — no signup, no limits
+### Free account, unlimited games
 
-By default a visitor opens the page, types a prompt, and plays the game. No
-account, no dialog, no daily cap, and every template in the library is
-playable. A guest session is minted silently and owns its games exactly like a
-real account, so there is no second code path. Signing up later **upgrades that
-guest in place** and the games made during the session come with it.
+An account is required to build, and an account has no limits — no daily cap,
+the full template library, unlimited edits. The landing page's demo game stays
+public so a visitor sees the product working before signing up.
 
-| Setting | Default | Turns off by |
+A prompt typed before signing up is not lost: the sign-up dialog opens, and the
+game builds as soon as the account exists.
+
+| Setting | Default | What it does |
 |---|---|---|
-| `OPEN_ACCESS` | `true` | `false` — puts the signup wall back |
-| `TEMPLATE_ACCESS` | `open` | `gated` — library needs an account |
-| `UNLIMITED_GENERATIONS` | `true` | `false` — enforces the per-plan quotas |
+| `OPEN_ACCESS` | `false` | `true` lets visitors build with no account at all |
+| `TEMPLATE_ACCESS` | `gated` | `open` frees the whole library to anonymous visitors |
+| `UNLIMITED_GENERATIONS` | `true` | `false` enforces the per-plan daily quotas |
 
-**With a model key set, unlimited access lets anyone on the internet spend your
-API credits.** That is the trade for a fully open demo; set
-`UNLIMITED_GENERATIONS=false` before this is public.
+**Only turn `OPEN_ACCESS` on deliberately.** With a model key set it lets
+anyone on the internet spend your API credits without signing up.
 
 ### Signup needs durable storage
 
@@ -273,7 +273,7 @@ npm run db:check      # verify storage: connect, write, read, update, delete
 npm run db:persist-check  # prove an account survives a restart (needs Supabase)
 npm run build:demos   # re-render public/demos/*.html from templates/
 npm run check         # static checks: syntax, template rules, config surface
-npm test              # all six suites (96 checks, no network or keys needed)
+npm test              # all six suites (97 checks, no network or keys needed)
 npm run test:api      # API suite
 npm run test:provider # OpenRouter wire-format suite
 npm run test:store    # Supabase backend suite

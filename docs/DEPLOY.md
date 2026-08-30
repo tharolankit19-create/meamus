@@ -28,7 +28,12 @@ Preview if you use it).
 | `SUPABASE_SERVICE_ROLE_KEY` | the `service_role` key | Bypasses RLS. Server-side only. |
 | `OPENROUTER_API_KEY` | `sk-or-v1-…` | Without it, prompts fall back to templates. |
 | `JWT_SECRET` | 96 random hex chars | Without it every cold start invalidates all sessions. |
-| `TEST_MODE` | `false` | `true` lets anyone spend your API credits. |
+| `TEST_MODE` | `false` | Legacy flag; `OPEN_ACCESS` supersedes it. |
+
+An account is required by default and an account is unlimited, so
+`SUPABASE_URL` is not optional here: without durable storage nobody can sign
+up, and without signing up nobody can build. The landing demo still plays, and
+the page says why sign-up is unavailable rather than failing silently.
 | `NODE_ENV` | `production` | |
 
 Generate a secret with:

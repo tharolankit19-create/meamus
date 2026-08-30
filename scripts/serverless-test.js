@@ -18,6 +18,7 @@ const path = require('path');
 process.env.VERCEL = '1';                 // what the platform sets
 process.env.NODE_ENV = 'production';
 process.env.TEST_MODE = 'true';
+process.env.OPEN_ACCESS = 'true';   // the guest-session check below needs it on
 process.env.JWT_SECRET = 'serverless-test-secret-0123456789';
 // Production had these present but empty, which is what took the site down.
 // Leaving them empty here proves the fallback holds under the real conditions.
@@ -147,10 +148,11 @@ const req = (p, o = {}) => {
     if (!token) token = body.token;
   });
 
-  await check('every template plays with no account at all', async () => {
+  await check('the public showcase template plays with no account', async () => {
     const list = await req('/api/templates');
-    assert.ok(list.body.templates.every((t) => t.playable));
-    const res = await req(`/api/templates/${list.body.templates[0].id}/play`, { raw: true });
+    const showcase = list.body.templates.find((t) => t.showcase);
+    assert.ok(showcase.playable, 'the landing demo must load without a session');
+    const res = await req(`/api/templates/${showcase.id}/play`, { raw: true });
     assert.strictEqual(res.status, 200);
   });
 

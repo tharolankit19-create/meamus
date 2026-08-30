@@ -71,12 +71,14 @@ check('generation is unlimited unless explicitly switched off', () => {
   assert.strictEqual(loadConfig({ UNLIMITED_GENERATIONS: '' }).quotas.unlimited, true);
 });
 
-check('open access and open templates are the defaults', () => {
+check('an account is required by default, and unlimited once you have one', () => {
   const config = loadConfig({});
-  assert.strictEqual(config.openAccess, true);
-  assert.strictEqual(config.templateAccess, 'open');
-  assert.strictEqual(loadConfig({ OPEN_ACCESS: 'false' }).openAccess, false);
-  assert.strictEqual(loadConfig({ TEMPLATE_ACCESS: 'gated' }).templateAccess, 'gated');
+  assert.strictEqual(config.openAccess, false, 'anonymous access should be off');
+  assert.strictEqual(config.templateAccess, 'gated');
+  assert.strictEqual(config.quotas.unlimited, true, 'signed-in users should have no cap');
+  // Both are still switchable.
+  assert.strictEqual(loadConfig({ OPEN_ACCESS: 'true' }).openAccess, true);
+  assert.strictEqual(loadConfig({ TEMPLATE_ACCESS: 'open' }).templateAccess, 'open');
 });
 
 check('an empty LLM_MAX_TOKENS falls back instead of truncating to nothing', () => {

@@ -39,11 +39,11 @@ export function renderLanding(root) {
     placeholder: 'A space shooter where I tap to blast asteroids…',
     submitLabel: 'Generate game',
     async onSubmit(text, attachmentIds, { mode }) {
-      // In test mode a guest session already exists, so this never fires and
-      // the first prompt generates straight away.
+      // An account is required to build. The typed prompt survives the
+      // sign-up detour and generates as soon as it completes.
       if (!state.user) {
         const user = await openAuth('register');
-        if (!user) { toast('Create an account to generate your game', 'warn'); return; }
+        if (!user) { toast('Create a free account to generate your game', 'warn'); return; }
       }
       composer.setBusy(true);
       try {
@@ -65,13 +65,13 @@ export function renderLanding(root) {
         el('div', { class: 'hero-inner' },
           el('span', { class: 'eyebrow' },
             icon('sparkles', 'sm'),
-            state.status && state.status.testMode
-              ? 'Test mode — no signup, just prompt and play'
-              : 'Prompt to playable in one step'),
+            'Free account · unlimited games'),
           el('h1', {}, 'Describe a game.', el('br'), 'Play it in seconds.'),
           el('p', { class: 'lede' },
             'meamus turns a sentence into a complete HTML5 game — art, physics, ' +
-            'touch controls and all. No engine to learn, no assets to source.'),
+            'touch controls and all. Create a free account and build as many as ' +
+            'you like — there is no daily limit.'),
+          signupBlockedNotice(),
           composer.node,
           el('div', { class: 'chiprow', style: { marginTop: '16px', justifyContent: 'center' } },
             EXAMPLES.map((example) => el('button', {
@@ -105,6 +105,25 @@ export function renderLanding(root) {
   );
 
   loadTemplateStrip();
+}
+
+/**
+ * Shown when the deployment cannot keep an account. Without this the signup
+ * form just fails and the cause - unset storage credentials - is invisible to
+ * everyone including the operator.
+ */
+function signupBlockedNotice() {
+  if (!state.status || state.status.storageDurable !== false) return null;
+  return el('div', {
+    class: 'notice',
+    style: { margin: '0 auto 18px', maxWidth: '620px', textAlign: 'left' }
+  },
+  icon('alert'),
+  el('span', {},
+    el('strong', {}, 'Accounts are not available on this deployment yet. '),
+    'Sign-up is switched off because there is nowhere durable to save it. ',
+    'The demo below still plays. ',
+    el('span', { class: 'faint' }, '(Operator: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.)')));
 }
 
 /**

@@ -147,8 +147,9 @@ const config = {
   },
 
   quotas: {
-    // Open by default: no daily cap on anyone. Set UNLIMITED_GENERATIONS=false
-    // to enforce the per-plan numbers below.
+    // Unlimited for anyone with an account. There is no anonymous path to
+    // generation, so this is a benefit of signing in rather than an open door.
+    // Set UNLIMITED_GENERATIONS=false to enforce the per-plan numbers below.
     unlimited: (process.env.UNLIMITED_GENERATIONS || 'true').trim() !== 'false',
     guest: positive('GUEST_DAILY_GENERATIONS', process.env.GUEST_DAILY_GENERATIONS, 20),
     free: positive('FREE_DAILY_GENERATIONS', process.env.FREE_DAILY_GENERATIONS, 5),
@@ -156,17 +157,17 @@ const config = {
   },
 
   /**
-   * Open access: a visitor gets a session automatically and can prompt, build
-   * and play with no account. An account only adds persistence. Set
-   * OPEN_ACCESS=false to put the signup wall back.
+   * Anonymous guest sessions. Off by default: an account is required to
+   * build. Set OPEN_ACCESS=true to let visitors in without signing up.
    */
-  openAccess: (process.env.OPEN_ACCESS || 'true').trim() !== 'false',
+  openAccess: (process.env.OPEN_ACCESS || 'false').trim() === 'true',
 
   /**
-   * Template library access. "open" (the default) means every template plays
-   * for everyone; "gated" requires an account for all but the showcase.
+   * Template library access. "gated" (the default) requires an account for
+   * everything except the showcase, which has to stay public because it runs
+   * the landing page's demo loop. "open" lets anyone play all of them.
    */
-  templateAccess: (process.env.TEMPLATE_ACCESS || 'open').trim(),
+  templateAccess: (process.env.TEMPLATE_ACCESS || 'gated').trim(),
 
   /**
    * Test mode: anyone can generate and play without signing up. A guest

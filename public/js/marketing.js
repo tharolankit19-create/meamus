@@ -42,7 +42,7 @@ export function siteNav(active) {
         el('button', {
           class: 'btn primary',
           onClick: () => promptSignup()
-        }, state.user && state.user.isGuest ? 'Save my work' : 'Get started')));
+        }, state.user && state.user.isGuest ? 'Save my work' : 'Sign up free')));
 }
 
 export function siteFooter() {
@@ -82,8 +82,8 @@ export function renderMarketingTemplates(host) {
   marketingPage(host, {
     active: 'templates',
     title: 'Template library',
-    lede: 'Four complete games, each the reference build for its genre. Play them, ' +
-      'then remix any one into your own with a prompt.',
+    lede: 'Four complete games, each the reference build for its genre. Create a ' +
+      'free account to play them all and remix any one into your own with a prompt.',
     body: el('div', {}, grid)
   });
 
