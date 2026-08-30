@@ -161,6 +161,8 @@ async function start() {
 
   const shutdown = async (signal) => {
     console.log(`\n${signal} received, flushing data...`);
+    // Writes are issued without blocking requests, so the process must not
+    // exit until they have actually landed.
     await db.flush();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();

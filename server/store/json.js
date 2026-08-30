@@ -70,6 +70,9 @@ const store = {
 
   async init() { /* files are read lazily; nothing to warm up */ },
 
+  /** Drop the cache so the next read comes off disk. */
+  async reload() { cache.clear(); },
+
   id(prefix = 'id') {
     return `${prefix}_${Date.now().toString(36)}${crypto.randomBytes(6).toString('hex')}`;
   },

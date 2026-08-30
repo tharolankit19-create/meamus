@@ -19,7 +19,8 @@
     "test:api": "node scripts/smoke-test.js",
     "test:provider": "node scripts/provider-test.js",
     "db:check": "node scripts/db-check.js",
-    "test:store": "node scripts/store-test.js"
+    "test:store": "node scripts/store-test.js",
+    "db:persist-check": "node scripts/persist-check.js"
   },
   "dependencies": {
     "express": "^4.21.2"

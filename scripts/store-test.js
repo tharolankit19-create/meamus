@@ -154,6 +154,57 @@ const check = async (name, fn) => {
     assert.throws(() => cold.all('users'), /not ready/);
   });
 
+  await check('flush waits for in-flight writes', async () => {
+    // Regression: writes are issued without blocking the caller, so a process
+    // exiting straight after one used to lose it. flush() must await them.
+    const fresh = createSupabaseStore(config);
+    await fresh.init();
+    const doc = { id: fresh.id('usr'), email: 'flush@b.test' };
+    fresh.insert('users', doc);
+    assert.strictEqual(fresh.pendingWrites, 1, 'the write was not tracked');
+    await fresh.flush();
+    assert.strictEqual(fresh.pendingWrites, 0, 'flush returned with writes still pending');
+
+    const after = createSupabaseStore(config);
+    await after.init();
+    assert.ok(after.find('users', (u) => u.id === doc.id), 'the flushed write never landed');
+  });
+
+  await check('a delete is durable across a reload', async () => {
+    const fresh = createSupabaseStore(config);
+    await fresh.init();
+    const doc = fresh.find('users', (u) => u.email === 'flush@b.test');
+    fresh.remove('users', doc.id);
+    await fresh.flush();
+    await fresh.reload();
+    assert.strictEqual(fresh.find('users', (u) => u.id === doc.id), null,
+      'the row came back after a reload');
+  });
+
+  await check('a failed write is logged and flush still resolves', async () => {
+    // A dead database must not reject inside a request handler, but it must
+    // also never fail silently or leave a write pending forever.
+    const flaky = createSupabaseStore(config);
+    await flaky.init();
+
+    const captured = [];
+    const originalError = console.error;
+    const originalFetch = global.fetch;
+    console.error = (msg) => captured.push(String(msg));
+    global.fetch = () => Promise.reject(new Error('network is down'));
+    try {
+      flaky.insert('users', { id: flaky.id('usr'), email: 'doomed@b.test' });
+      await flaky.flush();                 // must resolve, not reject
+    } finally {
+      global.fetch = originalFetch;
+      console.error = originalError;
+    }
+
+    assert.strictEqual(flaky.pendingWrites, 0, 'a failed write stayed pending forever');
+    assert.ok(captured.some((m) => /insert into users failed/.test(m)),
+      `the failure was not logged: ${JSON.stringify(captured)}`);
+  });
+
   server.close();
   console.log(`\n${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);

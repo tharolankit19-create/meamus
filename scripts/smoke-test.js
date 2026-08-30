@@ -23,6 +23,16 @@ process.env.NODE_ENV = 'test';
 process.env.RATE_LIMIT_MAX = '10000';
 process.env.TEST_MODE = 'true';
 
+// The suite must be hermetic: it creates and deletes accounts freely, so it
+// runs against the local JSON store and never a shared project. Set
+// SMOKE_USE_SUPABASE=1 to point it at a real database on purpose.
+// Set to empty rather than deleted: config.js reads .env and only fills a key
+// that is absent, so deleting it would let the file put it straight back.
+if (process.env.SMOKE_USE_SUPABASE !== '1') {
+  process.env.SUPABASE_URL = '';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = '';
+}
+
 const { app } = require('../server/index');
 const db = require('../server/db');
 

@@ -30,12 +30,29 @@ it as compromised and rotate it.
 **3. Verify.**
 
 ```bash
-npm run db:check
+npm run db:check          # connect, write, read back, update, delete
+npm run db:persist-check  # the one that proves the signup bug is gone
 ```
 
-It connects, writes a probe row, reads it back, updates it, deletes it, and
-tells you which backend is live. A missing table or a wrong key fails here
-rather than on a real user's first signup.
+`db:check` fails fast on a missing table or a wrong key.
+
+`db:persist-check` is the real one: it boots the server, registers an account,
+generates a game, stops the server, **throws the data directory away**, boots
+again, and proves the account, the game and the session token all survived. On
+the JSON backend it refuses to run, because that is exactly the setup that
+loses data.
+
+## Durability
+
+Writes are issued without blocking the request, and tracked so `flush()` can
+wait for them. That matters in two places: `SIGTERM` flushes before the process
+exits, and any script that writes then exits must `await db.flush()` first.
+Without it a process can exit with a write still in the air — which is how a
+probe row survived its own delete during development.
+
+A failed write is logged and dropped rather than thrown into the request
+handler, so a database blip degrades the app instead of 500-ing it. The cache
+keeps the optimistic value, so the next restart is what reconciles.
 
 ## How it stores things
 
