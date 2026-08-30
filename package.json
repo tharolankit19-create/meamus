@@ -13,7 +13,7 @@
     "dev": "node --watch server/index.js",
     "build:demos": "node scripts/build-demos.js",
     "check": "node scripts/check.js",
-    "test": "node scripts/config-test.js && node scripts/smoke-test.js && node scripts/provider-test.js && node scripts/store-test.js && node scripts/serverless-test.js",
+    "test": "node scripts/config-test.js && node scripts/smoke-test.js && node scripts/provider-test.js && node scripts/store-test.js && node scripts/research-test.js && node scripts/serverless-test.js",
     "postinstall": "node scripts/build-demos.js",
     "llm:check": "node scripts/llm-check.js",
     "test:api": "node scripts/smoke-test.js",
@@ -22,7 +22,8 @@
     "test:store": "node scripts/store-test.js",
     "db:persist-check": "node scripts/persist-check.js",
     "test:serverless": "node scripts/serverless-test.js",
-    "test:config": "node scripts/config-test.js"
+    "test:config": "node scripts/config-test.js",
+    "test:research": "node scripts/research-test.js"
   },
   "dependencies": {
     "express": "^4.21.2"

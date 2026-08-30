@@ -100,6 +100,7 @@ function createSupabaseStore(config) {
 
   return {
     kind: 'supabase',
+    durable: true,
 
     async init() { await hydrate(); },
 

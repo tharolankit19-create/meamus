@@ -83,7 +83,8 @@ export const auth = {
  * cased; registering later upgrades it in place and keeps the games.
  */
 export async function ensureGuestSession() {
-  if (state.user || !state.status || !state.status.testMode) return state.user;
+  const open = state.status && (state.status.openAccess || state.status.testMode);
+  if (state.user || !open) return state.user;
   try {
     const payload = await auth.guest();
     setSession(payload.token, payload.user);

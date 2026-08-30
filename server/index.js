@@ -70,7 +70,11 @@ app.get('/api/status', (req, res) => {
     templates: templates.list().length,
     showcase: config.showcaseTemplate,
     storage: db.kind,
+    storageDurable: db.durable !== false,
     serverless: config.serverless,
+    openAccess: config.openAccess,
+    templateAccess: config.templateAccess,
+    unlimited: config.quotas.unlimited,
     quotas: config.quotas,
     billingProvider: config.billing.provider,
     plans: PLANS.map((p) => ({ id: p.id, name: p.name, price: p.price })),
@@ -80,8 +84,11 @@ app.get('/api/status', (req, res) => {
       // The failure mode this catches: on a serverless host the JSON store
       // writes to /tmp, which is discarded between invocations, so accounts
       // are created and then vanish.
-      ...(config.serverless && db.kind === 'json'
-        ? ['Running serverless with the local JSON store - accounts will not persist. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.']
+      ...(db.durable === false
+        ? ['Storage is not durable here, so signup is disabled. Building and playing still work. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.']
+        : []),
+      ...(config.quotas.unlimited && config.aiEnabled
+        ? ['UNLIMITED_GENERATIONS is on and a model key is set - anyone can spend your API credits.']
         : []),
       // Settings that were corrected at boot. Silent correction is how a
       // rate limit of 0 turns into "the whole site is down" with no clue why.

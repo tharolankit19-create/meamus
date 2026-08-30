@@ -59,7 +59,24 @@ check('empty quotas fall back instead of forbidding all generation', () => {
   const config = loadConfig({
     GUEST_DAILY_GENERATIONS: '', FREE_DAILY_GENERATIONS: '', PRO_DAILY_GENERATIONS: ''
   });
-  assert.deepStrictEqual(config.quotas, { guest: 20, free: 5, pro: 200 });
+  assert.strictEqual(config.quotas.guest, 20);
+  assert.strictEqual(config.quotas.free, 5);
+  assert.strictEqual(config.quotas.pro, 200);
+});
+
+check('generation is unlimited unless explicitly switched off', () => {
+  assert.strictEqual(loadConfig({}).quotas.unlimited, true);
+  assert.strictEqual(loadConfig({ UNLIMITED_GENERATIONS: 'false' }).quotas.unlimited, false);
+  // Anything that is not the literal "false" leaves it open, including blank.
+  assert.strictEqual(loadConfig({ UNLIMITED_GENERATIONS: '' }).quotas.unlimited, true);
+});
+
+check('open access and open templates are the defaults', () => {
+  const config = loadConfig({});
+  assert.strictEqual(config.openAccess, true);
+  assert.strictEqual(config.templateAccess, 'open');
+  assert.strictEqual(loadConfig({ OPEN_ACCESS: 'false' }).openAccess, false);
+  assert.strictEqual(loadConfig({ TEMPLATE_ACCESS: 'gated' }).templateAccess, 'gated');
 });
 
 check('an empty LLM_MAX_TOKENS falls back instead of truncating to nothing', () => {

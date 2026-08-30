@@ -37,6 +37,20 @@ Three screens, white and orange, no dark mode:
   and the full spec. Publish gives you a share link, the standalone HTML, or the
   Android project.
 
+### Design research
+
+Every generation is grounded in real games. meamus maps the prompt to genres,
+pulls matching titles from the [FreeToGame](https://www.freetogame.com)
+catalogue, and puts their names, genres and one-line summaries into the model's
+brief so it writes to genre conventions instead of inventing a category from
+memory. The reference titles are shown in the spec pane of every build.
+
+Being precise about what that is: FreeToGame returns **metadata and prose** —
+not code, not physics constants, not assets. It makes the *design* more
+specific; every line of the game is still written by the model. No key or
+account is needed, and attribution is rendered in the footer as their terms
+require. If the catalogue is slow or down, generation proceeds without it.
+
 **Attachments** work everywhere the composer does — click `+`, drag files onto
 the box, or paste a screenshot. Text files (md/txt/json/csv/js/html/css, 512 KB)
 are folded into the prompt as design notes. Images (png/jpg/webp/gif, 5 MB) are
@@ -76,16 +90,31 @@ fails there instead of halfway through a prompt.
 Restart and the header badge flips from `TEMPLATE MODE` to
 `AI · nvidia/nemotron-3.5-lightning`.
 
-### Test mode — no signup
+### Open access — no signup, no limits
 
-`TEST_MODE=true` (the default outside production) means a visitor opens the
-page, types a prompt, and plays the game. No account, no dialog. A guest
-session is minted silently and owns its games exactly like a real account, so
-there is no second code path. Signing up later **upgrades that guest in place**
-and the games made during the session come with it.
+By default a visitor opens the page, types a prompt, and plays the game. No
+account, no dialog, no daily cap, and every template in the library is
+playable. A guest session is minted silently and owns its games exactly like a
+real account, so there is no second code path. Signing up later **upgrades that
+guest in place** and the games made during the session come with it.
 
-Turn it off before exposing the app publicly — it is an open door to your API
-key.
+| Setting | Default | Turns off by |
+|---|---|---|
+| `OPEN_ACCESS` | `true` | `false` — puts the signup wall back |
+| `TEMPLATE_ACCESS` | `open` | `gated` — library needs an account |
+| `UNLIMITED_GENERATIONS` | `true` | `false` — enforces the per-plan quotas |
+
+**With a model key set, unlimited access lets anyone on the internet spend your
+API credits.** That is the trade for a fully open demo; set
+`UNLIMITED_GENERATIONS=false` before this is public.
+
+### Signup needs durable storage
+
+Signup is **refused with a clear message** when the deployment cannot keep the
+account — a serverless host with the local JSON store writes to `/tmp` and
+discards it, so issuing a token would mean the user signs up and is then told
+they never did. Building and playing still work; only persistence is off.
+Setting `SUPABASE_URL` turns signup back on.
 
 ### The model
 
@@ -169,7 +198,7 @@ is storing to local disk in production.
 
 Named here so the gap is obvious rather than assumed:
 
-- **Firecrawl research** — no crawl step feeds the generator today.
+- **Firecrawl** — genre grounding comes from FreeToGame; there is no crawler.
 - **Component/UI libraries for generated games** — games use the bundled
   procedural kit only.
 - **3D / WebGL beyond Phaser's renderer** — everything generated is 2D.
@@ -244,12 +273,13 @@ npm run db:check      # verify storage: connect, write, read, update, delete
 npm run db:persist-check  # prove an account survives a restart (needs Supabase)
 npm run build:demos   # re-render public/demos/*.html from templates/
 npm run check         # static checks: syntax, template rules, config surface
-npm test              # all five suites (81 checks, no network or keys needed)
+npm test              # all six suites (96 checks, no network or keys needed)
 npm run test:api      # API suite
 npm run test:provider # OpenRouter wire-format suite
 npm run test:store    # Supabase backend suite
 npm run test:serverless   # loads api/index.js the way Vercel does
 npm run test:config   # env-var parsing, where an empty value must not mean 0
+npm run test:research # FreeToGame genre routing and graceful degradation
 ```
 
 `npm run check` enforces the game rules on every template: five scenes, all

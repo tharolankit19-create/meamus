@@ -152,6 +152,14 @@ export function confirmModal(title, body, confirmLabel = 'Delete') {
 export const escapeHtml = (s) => String(s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+/** "unlimited" when the plan has no cap, otherwise used/limit. */
+export function quotaLabel(user) {
+  const target = user || (globalThis.__meamusUser || null);
+  if (!target) return '';
+  if (target.quota == null) return `${target.usage} generations today · unlimited`;
+  return `${target.usage}/${target.quota} generations today`;
+}
+
 export function relativeTime(iso) {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.round(diff / 60000);

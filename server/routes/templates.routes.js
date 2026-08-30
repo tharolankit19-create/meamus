@@ -9,6 +9,16 @@ const { requireAuth } = require('../middleware');
 const router = express.Router();
 
 /**
+ * Whether this caller may play this template. With TEMPLATE_ACCESS=open (the
+ * default) everything plays for everyone; gated keeps the library behind an
+ * account, apart from the showcase that runs the landing page's demo loop.
+ */
+function isPlayable(req, id) {
+  if (config.templateAccess === 'open') return true;
+  return Boolean(req.user) || id === config.showcaseTemplate;
+}
+
+/**
  * Catalogue. Public, but signed-out callers get metadata only - enough to
  * render the marketing page, not enough to play.
  */
@@ -16,10 +26,13 @@ router.get('/templates', (req, res) => {
   const list = templates.list().map((template) => ({
     ...template,
     showcase: template.id === config.showcaseTemplate,
-    // Only the showcase is playable without an account.
-    playable: Boolean(req.user) || template.id === config.showcaseTemplate
+    playable: isPlayable(req, template.id)
   }));
-  res.json({ templates: list, showcase: config.showcaseTemplate, gated: !req.user });
+  res.json({
+    templates: list,
+    showcase: config.showcaseTemplate,
+    gated: config.templateAccess !== 'open' && !req.user
+  });
 });
 
 router.get('/templates/:id', (req, res) => {
@@ -46,8 +59,7 @@ router.get('/templates/:id/play', (req, res) => {
   const template = templates.get(req.params.id);
   if (!template) return res.status(404).send('Template not found');
 
-  const isShowcase = template.id === config.showcaseTemplate;
-  if (!isShowcase && !req.user) {
+  if (!isPlayable(req, template.id)) {
     return res.status(401).send(signInWall(template));
   }
 

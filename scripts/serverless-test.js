@@ -103,7 +103,8 @@ const req = (p, o = {}) => {
         'warned about persistence while on Postgres');
     } else {
       assert.strictEqual(body.storage, 'json');
-      assert.ok(body.warnings.some((w) => /will not persist/i.test(w)),
+      assert.strictEqual(body.storageDurable, false, 'a /tmp store must not claim to be durable');
+      assert.ok(body.warnings.some((w) => /not durable/i.test(w)),
         `no persistence warning: ${JSON.stringify(body.warnings)}`);
     }
   });
@@ -123,20 +124,34 @@ const req = (p, o = {}) => {
   });
 
   let token = null;
-  await check('POST /api/auth/register works (was "Request failed (404)")', async () => {
+  await check('signup is refused rather than silently losing the account', async () => {
+    // /tmp does not survive between invocations, so handing out a token here
+    // is what produced "you never signed up" on the next request.
     const { status, body } = await req('/api/auth/register', {
       method: 'POST',
       body: { email: `sl-${Date.now()}@meamus.test`, password: 'supersecret123', name: 'Serverless' }
     });
-    assert.strictEqual(status, 201, `got ${status}: ${JSON.stringify(body)}`);
-    assert.ok(body.token);
-    token = body.token;
+    if (process.env.SERVERLESS_USE_SUPABASE === '1') {
+      assert.strictEqual(status, 201, `durable storage should accept signup: ${JSON.stringify(body)}`);
+      token = body.token;
+    } else {
+      assert.strictEqual(status, 503, `got ${status}: ${JSON.stringify(body)}`);
+      assert.strictEqual(body.code, 'storage_not_durable');
+    }
   });
 
-  await check('a guest session can be minted', async () => {
+  await check('a guest session works, so the app is still usable', async () => {
     const { status, body } = await req('/api/auth/guest', { method: 'POST' });
-    assert.strictEqual(status, 201);
+    assert.strictEqual(status, 201, `got ${status}: ${JSON.stringify(body)}`);
     assert.strictEqual(body.user.isGuest, true);
+    if (!token) token = body.token;
+  });
+
+  await check('every template plays with no account at all', async () => {
+    const list = await req('/api/templates');
+    assert.ok(list.body.templates.every((t) => t.playable));
+    const res = await req(`/api/templates/${list.body.templates[0].id}/play`, { raw: true });
+    assert.strictEqual(res.status, 200);
   });
 
   let gameId = null;

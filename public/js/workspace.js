@@ -2,7 +2,7 @@
  * Project workspace: chat thread on the left, live game on the right.
  * ========================================================================== */
 
-import { el, icon, toast, clear, playModal, relativeTime, escapeHtml } from './ui.js';
+import { el, icon, toast, clear, playModal, relativeTime, escapeHtml, quotaLabel } from './ui.js';
 import { state, projects, playUrl, download } from './api.js';
 import { createComposer } from './composer.js';
 
@@ -191,7 +191,7 @@ export async function renderWorkspace(root, projectId) {
       composer.node,
       el('p', { class: 'faint small', style: { margin: '8px 2px 0' } },
         state.user
-          ? `${state.user.usage}/${state.user.quota} generations today · Enter to send, Shift+Enter for a new line`
+          ? `${quotaLabel(state.user)} · Enter to send, Shift+Enter for a new line`
           : '')));
 
   const body = el('div', { class: 'ws-body' }, chat, stage);
@@ -365,6 +365,16 @@ function specPane(data) {
     (meta.issues || []).length
       ? el('div', { class: 'notice', style: { marginBottom: '26px' } },
         icon('alert'), el('span', {}, el('strong', {}, 'Notes: '), meta.issues.join(' · ')))
+      : null,
+
+    meta.research && meta.research.used
+      ? section('Design research',
+        el('p', { class: 'muted small' },
+          `Grounded in ${meta.research.count} real ${meta.research.categories.join(' / ')} games from `,
+          el('a', { href: meta.research.sourceUrl, target: '_blank', rel: 'noopener', style: { color: 'var(--orange)' } }, 'FreeToGame'),
+          '. Metadata and design context only — the code is generated fresh.'),
+        el('div', { class: 'row', style: { gap: '6px' } },
+          meta.research.titles.map((title) => el('span', { class: 'tag' }, title))))
       : null,
 
     section('Controls', el('dl', { class: 'deflist' },
