@@ -30,9 +30,35 @@ function loadDotEnv() {
 
 loadDotEnv();
 
-const num = (v, fallback) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
+/**
+ * Read a numeric setting.
+ *
+ * An env var that exists but is empty means "not set". Number('') is 0 and
+ * Number.isFinite(0) is true, so the obvious implementation silently turns an
+ * unfilled variable into a hard zero - a rate limit of 0 blocks every request,
+ * a token TTL of 0 expires every session instantly, a quota of 0 forbids all
+ * generation. Empty and whitespace both fall back.
+ */
+const num = (value, fallback) => {
+  if (value === undefined || value === null) return fallback;
+  const text = String(value).trim();
+  if (!text) return fallback;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+/** Settings collected here are surfaced by /api/status instead of failing quietly. */
+const configProblems = [];
+
+/**
+ * A setting that is meaningless at or below zero. Falls back rather than
+ * locking the product, and records why so an operator can see it.
+ */
+const positive = (name, value, fallback) => {
+  const parsed = num(value, fallback);
+  if (parsed > 0) return parsed;
+  configProblems.push(`${name} is set to "${value}", which would disable the feature. Using ${fallback}.`);
+  return fallback;
 };
 
 /**
@@ -55,9 +81,9 @@ function buildLlmConfig() {
       enabled: Boolean(anthropicKey),
       model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
       baseUrl: (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/+$/, ''),
-      maxTokens: num(process.env.LLM_MAX_TOKENS, 16000),
-      temperature: Number(process.env.LLM_TEMPERATURE ?? 1),
-      timeoutMs: num(process.env.LLM_TIMEOUT_MS, 300000),
+      maxTokens: positive('LLM_MAX_TOKENS', process.env.LLM_MAX_TOKENS, 16000),
+      temperature: num(process.env.LLM_TEMPERATURE, 1),
+      timeoutMs: positive('LLM_TIMEOUT_MS', process.env.LLM_TIMEOUT_MS, 300000),
       referer: '',
       title: ''
     };
@@ -72,9 +98,9 @@ function buildLlmConfig() {
     // emitting a spec that parses first try.
     model: process.env.OPENROUTER_MODEL || 'nvidia/nemotron-3.5-lightning',
     baseUrl: (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, ''),
-    maxTokens: num(process.env.LLM_MAX_TOKENS, 32000),
-    temperature: Number(process.env.LLM_TEMPERATURE ?? 0.6),
-    timeoutMs: num(process.env.LLM_TIMEOUT_MS, 300000),
+    maxTokens: positive('LLM_MAX_TOKENS', process.env.LLM_MAX_TOKENS, 32000),
+    temperature: num(process.env.LLM_TEMPERATURE, 0.6),
+    timeoutMs: positive('LLM_TIMEOUT_MS', process.env.LLM_TIMEOUT_MS, 300000),
     referer: process.env.OPENROUTER_REFERER || 'https://meamus.app',
     title: process.env.OPENROUTER_TITLE || 'meamus'
   };
@@ -117,13 +143,13 @@ const config = {
   auth: {
     secret: (process.env.JWT_SECRET || '').trim() || crypto.randomBytes(48).toString('hex'),
     secretIsEphemeral: !(process.env.JWT_SECRET || '').trim(),
-    ttlHours: num(process.env.JWT_TTL_HOURS, 168)
+    ttlHours: positive('JWT_TTL_HOURS', process.env.JWT_TTL_HOURS, 168)
   },
 
   quotas: {
-    guest: num(process.env.GUEST_DAILY_GENERATIONS, 20),
-    free: num(process.env.FREE_DAILY_GENERATIONS, 5),
-    pro: num(process.env.PRO_DAILY_GENERATIONS, 200)
+    guest: positive('GUEST_DAILY_GENERATIONS', process.env.GUEST_DAILY_GENERATIONS, 20),
+    free: positive('FREE_DAILY_GENERATIONS', process.env.FREE_DAILY_GENERATIONS, 5),
+    pro: positive('PRO_DAILY_GENERATIONS', process.env.PRO_DAILY_GENERATIONS, 200)
   },
 
   /**
@@ -137,8 +163,8 @@ const config = {
     : (process.env.NODE_ENV || 'development') !== 'production',
 
   rateLimit: {
-    windowMs: num(process.env.RATE_LIMIT_WINDOW_MS, 60000),
-    max: num(process.env.RATE_LIMIT_MAX, 60)
+    windowMs: positive('RATE_LIMIT_WINDOW_MS', process.env.RATE_LIMIT_WINDOW_MS, 60000),
+    max: positive('RATE_LIMIT_MAX', process.env.RATE_LIMIT_MAX, 60)
   },
 
   /**
@@ -162,5 +188,8 @@ const config = {
 
 /** True when a model API key is configured. */
 config.aiEnabled = config.llm.enabled;
+
+/** Misconfigured settings that were corrected, reported by /api/status. */
+config.problems = configProblems;
 
 module.exports = config;

@@ -19,7 +19,11 @@ process.env.VERCEL = '1';                 // what the platform sets
 process.env.NODE_ENV = 'production';
 process.env.TEST_MODE = 'true';
 process.env.JWT_SECRET = 'serverless-test-secret-0123456789';
-process.env.RATE_LIMIT_MAX = '10000';
+// Production had these present but empty, which is what took the site down.
+// Leaving them empty here proves the fallback holds under the real conditions.
+process.env.RATE_LIMIT_MAX = '';
+process.env.JWT_TTL_HOURS = '';
+process.env.FREE_DAILY_GENERATIONS = '';
 delete process.env.DATA_DIR;              // must fall back to /tmp on its own
 // Blank rather than deleted: config.js reads .env and would refill a missing
 // key. SERVERLESS_USE_SUPABASE=1 opts into a real database on purpose.
@@ -58,6 +62,24 @@ const req = (p, o = {}) => {
   await check('the handler is a usable Express app', () => {
     assert.strictEqual(typeof handler, 'function');
     assert.strictEqual(typeof handler.listen, 'function');
+  });
+
+  await check('empty env vars do not disable the app', () => {
+    // The production outage: RATE_LIMIT_MAX was set but empty, Number('') is 0,
+    // and the limiter rejected every request including /api/status.
+    assert.strictEqual(config.rateLimit.max, 60, 'the rate limit collapsed to zero again');
+    assert.strictEqual(config.auth.ttlHours, 168);
+    assert.strictEqual(config.quotas.free, 5);
+  });
+
+  await check('repeated requests are not rate limited into a lockout', async () => {
+    for (let i = 0; i < 12; i += 1) {
+      const { status } = await req('/api/status');
+      assert.strictEqual(status, 200, `request ${i + 1} returned ${status}`);
+    }
+    const res = await req('/api/status', { raw: true });
+    assert.notStrictEqual(res.headers.get('x-ratelimit-limit'), '0',
+      'the limit header is 0, which is the production failure');
   });
 
   await check('writable paths move to /tmp on their own', () => {

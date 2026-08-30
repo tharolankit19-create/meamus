@@ -83,6 +83,9 @@ app.get('/api/status', (req, res) => {
       ...(config.serverless && db.kind === 'json'
         ? ['Running serverless with the local JSON store - accounts will not persist. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.']
         : []),
+      // Settings that were corrected at boot. Silent correction is how a
+      // rate limit of 0 turns into "the whole site is down" with no clue why.
+      ...config.problems,
       ...(config.auth.secretIsEphemeral ? ['JWT_SECRET is not set - sessions reset when the server restarts.'] : [])
     ]
   });
@@ -170,6 +173,7 @@ async function start() {
     console.log('');
     console.log(`  mode       ${config.aiEnabled ? `AI · ${config.llm.provider} · ${config.llm.model}` : 'TEMPLATE (no OPENROUTER_API_KEY)'}`);
     console.log(`  test mode  ${config.testMode ? 'ON - no signup required' : 'off'}`);
+    console.log(`  limits     ${config.rateLimit.max}/min · quotas ${config.quotas.guest}/${config.quotas.free}/${config.quotas.pro}`);
     console.log(`  templates  ${templates.list().length}`);
     console.log(`  billing    ${config.billing.provider}`);
     console.log(`  storage    ${db.kind}${db.kind === 'json' ? ` (${config.dataDir})` : ` (${config.supabase.url})`}`);
@@ -181,6 +185,7 @@ async function start() {
     if (config.auth.secretIsEphemeral) {
       console.log('  Warning: JWT_SECRET is unset, so sessions reset on restart.');
     }
+    for (const problem of config.problems) console.log(`  Config: ${problem}`);
     if (db.kind === 'json' && config.env === 'production') {
       console.log('  Warning: storing to local disk in production. On an ephemeral host');
       console.log('           accounts vanish on restart - set SUPABASE_URL to fix it.');
