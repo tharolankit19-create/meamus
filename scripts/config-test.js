@@ -71,14 +71,61 @@ check('generation is unlimited unless explicitly switched off', () => {
   assert.strictEqual(loadConfig({ UNLIMITED_GENERATIONS: '' }).quotas.unlimited, true);
 });
 
-check('an account is required by default, and unlimited once you have one', () => {
+check('the access model is automatic unless it is forced', () => {
   const config = loadConfig({});
-  assert.strictEqual(config.openAccess, false, 'anonymous access should be off');
-  assert.strictEqual(config.templateAccess, 'gated');
-  assert.strictEqual(config.quotas.unlimited, true, 'signed-in users should have no cap');
-  // Both are still switchable.
-  assert.strictEqual(loadConfig({ OPEN_ACCESS: 'true' }).openAccess, true);
-  assert.strictEqual(loadConfig({ TEMPLATE_ACCESS: 'open' }).templateAccess, 'open');
+  assert.strictEqual(config.openAccessSetting, null, 'the default should resolve at runtime');
+  assert.strictEqual(config.templateAccessSetting, null);
+  assert.strictEqual(config.quotas.unlimited, true, 'members should have no cap');
+  assert.strictEqual(loadConfig({ OPEN_ACCESS: 'true' }).openAccessSetting, true);
+  assert.strictEqual(loadConfig({ OPEN_ACCESS: 'false' }).openAccessSetting, false);
+  assert.strictEqual(loadConfig({ TEMPLATE_ACCESS: 'open' }).templateAccessSetting, 'open');
+});
+
+check('durable storage means an account is required', () => {
+  loadConfig({});
+  const db = require('../server/db');
+  const access = require('../server/access');
+  const original = Object.getOwnPropertyDescriptor(db, 'durable');
+  Object.defineProperty(db, 'durable', { value: true, configurable: true });
+  try {
+    assert.strictEqual(access.openAccess(), false, 'login should be required when accounts work');
+    assert.strictEqual(access.templateAccess(), 'gated');
+    assert.strictEqual(access.accountsAvailable(), true);
+  } finally {
+    if (original) Object.defineProperty(db, 'durable', original); else delete db.durable;
+  }
+});
+
+check('no durable storage opens access instead of leaving a dead site', () => {
+  // Requiring a login that cannot be completed locks everyone out; the app
+  // degrades to usable-without-accounts until storage is configured.
+  loadConfig({});
+  const db = require('../server/db');
+  const access = require('../server/access');
+  const original = Object.getOwnPropertyDescriptor(db, 'durable');
+  Object.defineProperty(db, 'durable', { value: false, configurable: true });
+  try {
+    assert.strictEqual(access.openAccess(), true, 'the app would be unusable otherwise');
+    assert.strictEqual(access.templateAccess(), 'open');
+    assert.strictEqual(access.accountsAvailable(), false);
+    assert.strictEqual(access.describe().auto, true);
+  } finally {
+    if (original) Object.defineProperty(db, 'durable', original); else delete db.durable;
+  }
+});
+
+check('an explicit OPEN_ACCESS beats the automatic choice', () => {
+  loadConfig({ OPEN_ACCESS: 'false' });
+  const db = require('../server/db');
+  const access = require('../server/access');
+  const original = Object.getOwnPropertyDescriptor(db, 'durable');
+  Object.defineProperty(db, 'durable', { value: false, configurable: true });
+  try {
+    assert.strictEqual(access.openAccess(), false, 'an explicit setting must win');
+    assert.strictEqual(access.describe().auto, false);
+  } finally {
+    if (original) Object.defineProperty(db, 'durable', original); else delete db.durable;
+  }
 });
 
 check('an empty LLM_MAX_TOKENS falls back instead of truncating to nothing', () => {

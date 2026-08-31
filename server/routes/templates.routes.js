@@ -2,6 +2,7 @@
 
 const express = require('express');
 const config = require('../config');
+const access = require('../access');
 const templates = require('../services/templates');
 const bundler = require('../services/bundler');
 const { requireAuth } = require('../middleware');
@@ -14,7 +15,7 @@ const router = express.Router();
  * account, apart from the showcase that runs the landing page's demo loop.
  */
 function isPlayable(req, id) {
-  if (config.templateAccess === 'open') return true;
+  if (access.templateAccess() === 'open') return true;
   return Boolean(req.user) || id === config.showcaseTemplate;
 }
 
@@ -31,7 +32,7 @@ router.get('/templates', (req, res) => {
   res.json({
     templates: list,
     showcase: config.showcaseTemplate,
-    gated: config.templateAccess !== 'open' && !req.user
+    gated: access.templateAccess() !== 'open' && !req.user
   });
 });
 

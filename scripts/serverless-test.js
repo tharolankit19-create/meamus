@@ -18,7 +18,9 @@ const path = require('path');
 process.env.VERCEL = '1';                 // what the platform sets
 process.env.NODE_ENV = 'production';
 process.env.TEST_MODE = 'true';
-process.env.OPEN_ACCESS = 'true';   // the guest-session check below needs it on
+// Left unset on purpose: serverless with the JSON store has no durable
+// storage, so the app should open access on its own. That is the behaviour
+// under test.
 process.env.JWT_SECRET = 'serverless-test-secret-0123456789';
 // Production had these present but empty, which is what took the site down.
 // Leaving them empty here proves the fallback holds under the real conditions.
@@ -105,8 +107,12 @@ const req = (p, o = {}) => {
     } else {
       assert.strictEqual(body.storage, 'json');
       assert.strictEqual(body.storageDurable, false, 'a /tmp store must not claim to be durable');
-      assert.ok(body.warnings.some((w) => /not durable/i.test(w)),
+      assert.ok(body.warnings.some((w) => /accounts are off/i.test(w)),
         `no persistence warning: ${JSON.stringify(body.warnings)}`);
+      // The whole point: no accounts must not mean no product.
+      assert.strictEqual(body.openAccess, true, 'access should have opened automatically');
+      assert.strictEqual(body.accountsAvailable, false);
+      assert.strictEqual(body.templateAccess, 'open');
     }
   });
 
@@ -148,12 +154,14 @@ const req = (p, o = {}) => {
     if (!token) token = body.token;
   });
 
-  await check('the public showcase template plays with no account', async () => {
+  await check('every template plays, since accounts are impossible here', async () => {
     const list = await req('/api/templates');
-    const showcase = list.body.templates.find((t) => t.showcase);
-    assert.ok(showcase.playable, 'the landing demo must load without a session');
-    const res = await req(`/api/templates/${showcase.id}/play`, { raw: true });
-    assert.strictEqual(res.status, 200);
+    assert.ok(list.body.templates.every((t) => t.playable),
+      'gating the library behind an account that cannot exist locks it forever');
+    for (const template of list.body.templates) {
+      const res = await req(`/api/templates/${template.id}/play`, { raw: true });
+      assert.strictEqual(res.status, 200, `${template.id} answered ${res.status}`);
+    }
   });
 
   let gameId = null;

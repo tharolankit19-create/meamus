@@ -4,6 +4,7 @@ const express = require('express');
 const db = require('../db');
 const auth = require('../auth');
 const config = require('../config');
+const access = require('../access');
 const { publicUser, requireAuth, asyncRoute } = require('../middleware');
 
 const router = express.Router();
@@ -23,7 +24,7 @@ function issue(user) {
  * second code path to keep in sync.
  */
 router.post('/guest', asyncRoute(async (req, res) => {
-  if (!config.openAccess && !config.testMode) {
+  if (!access.openAccess()) {
     return res.status(403).json({
       error: 'Guest sessions are disabled. Create an account to continue.',
       code: 'guest_disabled'
@@ -55,11 +56,11 @@ router.post('/register', asyncRoute(async (req, res) => {
   // Issuing a token for an account that is about to evaporate is worse than
   // refusing: the user signs up, the next request lands on a different
   // instance, and the app tells them they never signed up.
-  if (!db.durable) {
+  if (!access.accountsAvailable()) {
     return res.status(503).json({
-      error: 'Accounts cannot be saved on this deployment yet, so signing up would not stick. ' +
-        'You can keep building without an account - everything works. ' +
-        '(Operator: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.)',
+      error: 'Accounts are not available on this deployment - there is nowhere durable to save one. ' +
+        'You are already signed in and can build without one; nothing is locked. ' +
+        '(Operator: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to turn accounts on.)',
       code: 'storage_not_durable'
     });
   }

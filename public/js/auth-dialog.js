@@ -65,7 +65,7 @@ export function openAuth(mode = 'login') {
             // A deployment without durable storage refuses signup on purpose;
             // say so plainly instead of looking like a broken form.
             errorBox.textContent = err.code === 'storage_not_durable'
-              ? 'Accounts are not available on this deployment yet — but you can keep building without one. Close this and start a prompt.'
+              ? 'Accounts are off on this deployment, so nothing is locked — close this and start a prompt. Everything is already unlocked for you.'
               : err.message;
             errorBox.classList.remove('hide');
           } finally {

@@ -101,11 +101,20 @@ game builds as soon as the account exists.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `OPEN_ACCESS` | `false` | `true` lets visitors build with no account at all |
-| `TEMPLATE_ACCESS` | `gated` | `open` frees the whole library to anonymous visitors |
+| `OPEN_ACCESS` | *auto* | `true`/`false` forces the model either way |
+| `TEMPLATE_ACCESS` | *auto* | `open`/`gated` forces the library either way |
 | `UNLIMITED_GENERATIONS` | `true` | `false` enforces the per-plan daily quotas |
 
-**Only turn `OPEN_ACCESS` on deliberately.** With a model key set it lets
+**Auto** means the app looks at whether storage can actually hold an account:
+
+- **Storage is durable** → an account is required, the library is gated, and
+  an account has no limits. This is the intended model.
+- **Storage is not durable** → accounts are impossible, so requiring one would
+  leave a site nobody can use. Access opens automatically, the library opens
+  with it, and the landing page says so. Set `SUPABASE_URL` and it flips back
+  with no code change.
+
+**Only force `OPEN_ACCESS=true` deliberately.** With a model key set it lets
 anyone on the internet spend your API credits without signing up.
 
 ### Signup needs durable storage
@@ -273,7 +282,7 @@ npm run db:check      # verify storage: connect, write, read, update, delete
 npm run db:persist-check  # prove an account survives a restart (needs Supabase)
 npm run build:demos   # re-render public/demos/*.html from templates/
 npm run check         # static checks: syntax, template rules, config surface
-npm test              # all six suites (97 checks, no network or keys needed)
+npm test              # all six suites (100 checks, no network or keys needed)
 npm run test:api      # API suite
 npm run test:provider # OpenRouter wire-format suite
 npm run test:store    # Supabase backend suite
