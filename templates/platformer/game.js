@@ -31,17 +31,18 @@
     START_LIVES: 3
   };
 
+  // Warm sunlit stone: sand walls, mint ledges, nothing murky.
   var COLORS = {
-    bg: 0x0d1226,
-    bgTop: 0x1d2a54,
-    solid: 0x3d4f8a,
-    solidTop: 0x5d75c4,
-    platform: 0x7a5cc4,
-    player: 0x59e6a0,
-    enemy: 0xff6b81,
-    gem: 0x62d8ff,
-    spike: 0xff4f6d,
-    door: 0xffd85e
+    bg: 0xfaf3e7,          // sunlit cave floor
+    bgTop: 0xdceaf5,       // cool light from above
+    solid: 0xd8c3a5,       // sandstone
+    solidTop: 0xefe0c9,    // lit top edge
+    platform: 0x9ad3b8,    // mint ledge
+    player: 0x4fa3d1,      // cornflower explorer
+    enemy: 0xf08a8a,       // soft coral crawler
+    gem: 0x5ec8c8,         // teal crystal
+    spike: 0xe4735e,       // terracotta hazard
+    door: 0xf2b544         // amber exit
   };
 
   /* --- Level maps -------------------------------------------------------- */
@@ -168,7 +169,7 @@
         (function (self, idx) {
           var locked = idx + 1 > unlocked;
           MEAMUS.ui.button(self, W / 2 - 90 + idx * 90, 416, locked ? '🔒' : String(idx + 1), function () {
-            if (locked) { MEAMUS.fx.floatText(self, W / 2, 460, 'Finish the previous cave first', '#ff5d6c'); return; }
+            if (locked) { MEAMUS.fx.floatText(self, W / 2, 460, 'Finish the previous cave first', '#c4503f'); return; }
             self.scene.start('GameScene', { level: idx, score: 0, lives: CFG.START_LIVES });
           }, { width: 70, height: 46, fill: locked ? 0x25305c : 0x6c7bff });
         })(this, i);
@@ -331,9 +332,9 @@
 
     buildHud() {
       var W = this.scale.width;
-      this.hudScore = MEAMUS.ui.label(this, 12, 10, '', { size: 17, mono: true, color: '#f5f7ff', originX: 0, originY: 0 }).setDepth(900);
-      this.hudGems = MEAMUS.ui.label(this, W / 2, 10, '', { size: 17, mono: true, color: '#62d8ff', originY: 0 }).setDepth(900);
-      this.hudTime = MEAMUS.ui.label(this, W - 12, 10, '', { size: 17, mono: true, color: '#ffd85e', originX: 1, originY: 0 }).setDepth(900);
+      this.hudScore = MEAMUS.ui.label(this, 12, 10, '', { size: 17, mono: true, color: '#2f2a24', originX: 0, originY: 0 }).setDepth(900);
+      this.hudGems = MEAMUS.ui.label(this, W / 2, 10, '', { size: 17, mono: true, color: '#2e8f96', originY: 0 }).setDepth(900);
+      this.hudTime = MEAMUS.ui.label(this, W - 12, 10, '', { size: 17, mono: true, color: '#c9862b', originX: 1, originY: 0 }).setDepth(900);
       this.refreshHud();
     }
 
@@ -373,7 +374,7 @@
       if (!gem.active) return;
       this.tweens.killTweensOf(gem);
       this.sparkles.explode(10, gem.x, gem.y);
-      MEAMUS.fx.floatText(this, gem.x, gem.y, '+' + CFG.GEM_SCORE, '#62d8ff');
+      MEAMUS.fx.floatText(this, gem.x, gem.y, '+' + CFG.GEM_SCORE, '#2e8f96');
       gem.destroy();
       this.gemsLeft -= 1;
       this.score += CFG.GEM_SCORE;
@@ -381,7 +382,7 @@
       MEAMUS.sfx.coin();
       this.refreshHud();
       if (this.gemsLeft === 0) {
-        MEAMUS.fx.floatText(this, this.door.x, this.door.y - 40, 'DOOR OPEN', '#ffd85e');
+        MEAMUS.fx.floatText(this, this.door.x, this.door.y - 40, 'DOOR OPEN', '#c9862b');
         this.tweens.add({ targets: this.doorGlow, scale: 1.6, alpha: 0.35, yoyo: true, repeat: -1, duration: 700 });
       }
     }
@@ -396,7 +397,7 @@
         player.setVelocityY(CFG.ENEMY_STOMP_BOUNCE);
         this.score += CFG.STOMP_SCORE;
         MEAMUS.sfx.explode();
-        MEAMUS.fx.floatText(this, enemy.x, enemy.y, '+' + CFG.STOMP_SCORE, '#38d39f');
+        MEAMUS.fx.floatText(this, enemy.x, enemy.y, '+' + CFG.STOMP_SCORE, '#2f8f68');
         this.refreshHud();
         return;
       }
@@ -469,7 +470,7 @@
       MEAMUS.ui.title(this, W / 2, H / 2 - 76, 'CAVE CLEARED', 30).setDepth(1001);
       MEAMUS.ui.label(this, W / 2, H / 2 - 16,
         'TIME BONUS  +' + bonus + '\nSCORE       ' + this.score,
-        { size: 18, mono: true, color: '#f5f7ff', lineSpacing: 8 }).setDepth(1001);
+        { size: 18, mono: true, color: '#2f2a24', lineSpacing: 8 }).setDepth(1001);
 
       var last = this.levelIndex >= LEVELS.length - 1;
       MEAMUS.ui.button(this, W / 2, H / 2 + 72, last ? 'FINISH' : 'NEXT CAVE', () => {
@@ -582,11 +583,11 @@
 
       MEAMUS.ui.title(this, W / 2, 108, data.cleared ? 'ALL CAVES CLEARED' : 'GAME OVER', data.cleared ? 34 : 42);
       if (!data.cleared && data.reason) {
-        MEAMUS.ui.label(this, W / 2, 150, data.reason, { size: 15, color: '#ff8fa0' });
+        MEAMUS.ui.label(this, W / 2, 150, data.reason, { size: 15, color: '#c4503f' });
       }
       MEAMUS.ui.label(this, W / 2, 200,
         'SCORE  ' + score + '\nCAVE   ' + ((data.level || 0) + 1) + '\nBEST   ' + best,
-        { size: 20, mono: true, color: '#f5f7ff', lineSpacing: 8 });
+        { size: 20, mono: true, color: '#2f2a24', lineSpacing: 8 });
       if (score > prevBest) MEAMUS.sfx.win();
 
       MEAMUS.ui.button(this, W / 2, 320, 'PLAY AGAIN', () => {
@@ -597,7 +598,7 @@
         MEAMUS.ui.button(this, W / 2, 384, 'WATCH AD: RETRY CAVE', () => {
           MEAMUS.ads.showRewarded('retry-level',
             () => this.scene.start('GameScene', { level: data.level || 0, score: score, lives: 1 }),
-            () => MEAMUS.fx.floatText(this, W / 2, 384, 'No ad available', '#ff5d6c'));
+            () => MEAMUS.fx.floatText(this, W / 2, 384, 'No ad available', '#c4503f'));
         }, { width: 240, fill: 0x25305c });
       }
       MEAMUS.ui.button(this, W / 2, 448, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: 0x25305c });
@@ -612,7 +613,7 @@
     width: CFG.WIDTH,
     height: CFG.HEIGHT,
     parent: 'game-container',
-    backgroundColor: '#0d1226',
+    backgroundColor: '#faf3e7',
     physics: { default: 'arcade', arcade: { gravity: { y: CFG.GRAVITY }, debug: false } },
     scene: [
       MEAMUS.scenes.makeBoot('PreloadScene'),

@@ -293,13 +293,18 @@
   /* UI primitives - buttons meet the 44x44 touch-target minimum.            */
   /* ---------------------------------------------------------------------- */
   MEAMUS.ui = {
+    /**
+     * Light-ground palette. Games render on pale backgrounds, so the ink is
+     * dark and the accents are muted rather than neon - a bright colour on a
+     * bright ground is the fastest way to make a game look cheap.
+     */
     PALETTE: {
-      ink: '#f5f7ff',
-      dim: '#93a0c8',
-      accent: '#6c7bff',
-      good: '#38d39f',
-      warn: '#ffcc4d',
-      bad: '#ff5d6c'
+      ink: '#2f2a24',
+      dim: '#7d7469',
+      accent: '#ff8a5c',
+      good: '#3fa77e',
+      warn: '#d9992b',
+      bad: '#d4614f'
     },
 
     title: function (scene, x, y, text, size) {
@@ -307,8 +312,10 @@
         fontFamily: MEAMUS.FONT,
         fontSize: (size || 46) + 'px',
         color: this.PALETTE.ink,
-        stroke: '#000000',
-        strokeThickness: 6,
+        // A soft white halo instead of a black outline: it separates the text
+        // from a light background without the arcade-sticker look.
+        stroke: '#ffffff',
+        strokeThickness: 5,
         align: 'center'
       }).setOrigin(0.5);
     },
@@ -333,13 +340,17 @@
       opts = opts || {};
       var w = Math.max(opts.width || 200, 120);
       var h = Math.max(opts.height || 52, 44);
-      var fill = opts.fill === undefined ? 0x6c7bff : opts.fill;
+      var fill = opts.fill === undefined ? 0xff8a5c : opts.fill;
       var container = scene.add.container(x, y);
       var bg = scene.add.graphics();
       var draw = function (color, alpha) {
         bg.clear();
-        bg.fillStyle(color, alpha === undefined ? 1 : alpha).fillRoundedRect(-w / 2, -h / 2, w, h, 12);
-        bg.lineStyle(2, 0xffffff, 0.22).strokeRoundedRect(-w / 2, -h / 2, w, h, 12);
+        // Soft shadow under a rounded pill reads smoother than a hard border.
+        bg.fillStyle(0x000000, 0.06 * (alpha === undefined ? 1 : alpha))
+          .fillRoundedRect(-w / 2, -h / 2 + 3, w, h, 14);
+        bg.fillStyle(color, alpha === undefined ? 1 : alpha)
+          .fillRoundedRect(-w / 2, -h / 2, w, h, 14);
+        bg.lineStyle(1.5, 0xffffff, 0.55).strokeRoundedRect(-w / 2, -h / 2, w, h, 14);
       };
       draw(fill);
       var label = scene.add.text(0, 0, text, {
@@ -368,10 +379,11 @@
     panel: function (scene, x, y, w, h, opts) {
       opts = opts || {};
       var g = scene.add.graphics();
-      g.fillStyle(opts.fill === undefined ? 0x0b1020 : opts.fill, opts.alpha === undefined ? 0.82 : opts.alpha);
-      g.fillRoundedRect(x - w / 2, y - h / 2, w, h, opts.radius || 18);
-      g.lineStyle(2, opts.stroke === undefined ? 0x6c7bff : opts.stroke, 0.5);
-      g.strokeRoundedRect(x - w / 2, y - h / 2, w, h, opts.radius || 18);
+      g.fillStyle(0x000000, 0.08).fillRoundedRect(x - w / 2, y - h / 2 + 4, w, h, opts.radius || 20);
+      g.fillStyle(opts.fill === undefined ? 0xfffaf3 : opts.fill, opts.alpha === undefined ? 0.97 : opts.alpha);
+      g.fillRoundedRect(x - w / 2, y - h / 2, w, h, opts.radius || 20);
+      g.lineStyle(1.5, opts.stroke === undefined ? 0xe5d9c8 : opts.stroke, 1);
+      g.strokeRoundedRect(x - w / 2, y - h / 2, w, h, opts.radius || 20);
       return g;
     },
 
@@ -382,9 +394,9 @@
       var h = 50;
       var y = position === 'top' ? h / 2 : H - h / 2;
       var g = scene.add.graphics().setDepth(900).setScrollFactor(0);
-      g.fillStyle(0x000000, 0.28).fillRect(0, y - h / 2, W, h);
+      g.fillStyle(0x000000, 0.05).fillRect(0, y - h / 2, W, h);
       var t = scene.add.text(W / 2, y, 'AD SLOT 320x50', {
-        fontFamily: MEAMUS.MONO, fontSize: '12px', color: '#5a6690'
+        fontFamily: MEAMUS.MONO, fontSize: '12px', color: '#b3a999'
       }).setOrigin(0.5).setDepth(901).setScrollFactor(0);
       MEAMUS.ads.showBanner(position || 'bottom');
       return { bg: g, text: t, height: h };
@@ -397,7 +409,8 @@
   MEAMUS.fx = {
     floatText: function (scene, x, y, text, color) {
       var t = scene.add.text(x, y, text, {
-        fontFamily: MEAMUS.FONT, fontSize: '20px', color: color || '#ffcc4d', fontStyle: 'bold'
+        fontFamily: MEAMUS.FONT, fontSize: '20px', color: color || '#c9862b',
+        fontStyle: 'bold', stroke: '#ffffff', strokeThickness: 3
       }).setOrigin(0.5).setDepth(800);
       scene.tweens.add({
         targets: t, y: y - 46, alpha: 0, duration: 700, ease: 'Cubic.easeOut',
@@ -433,8 +446,8 @@
       var baseY = opts.y || scene.scale.height - radius - 26;
       var depth = opts.depth || 950;
 
-      var base = scene.add.circle(baseX, baseY, radius, 0xffffff, 0.10).setScrollFactor(0).setDepth(depth);
-      var thumb = scene.add.circle(baseX, baseY, radius * 0.42, 0xffffff, 0.30).setScrollFactor(0).setDepth(depth + 1);
+      var base = scene.add.circle(baseX, baseY, radius, 0x2f2a24, 0.10).setScrollFactor(0).setDepth(depth);
+      var thumb = scene.add.circle(baseX, baseY, radius * 0.42, 0x2f2a24, 0.26).setScrollFactor(0).setDepth(depth + 1);
       var vector = new Phaser.Math.Vector2(0, 0);
       var pointerId = null;
 
@@ -482,15 +495,15 @@
       var x = opts.x || scene.scale.width - r - 26;
       var y = opts.y || scene.scale.height - r - 26;
       var depth = opts.depth || 950;
-      var circle = scene.add.circle(x, y, r, 0xffffff, 0.14).setScrollFactor(0).setDepth(depth)
+      var circle = scene.add.circle(x, y, r, 0x2f2a24, 0.14).setScrollFactor(0).setDepth(depth)
         .setInteractive(new Phaser.Geom.Circle(r, r, r), Phaser.Geom.Circle.Contains);
       var text = scene.add.text(x, y, label, {
-        fontFamily: MEAMUS.FONT, fontSize: '15px', color: '#ffffff', fontStyle: 'bold'
+        fontFamily: MEAMUS.FONT, fontSize: '15px', color: '#2f2a24', fontStyle: 'bold'
       }).setOrigin(0.5).setScrollFactor(0).setDepth(depth + 1);
       var held = false;
-      circle.on('pointerdown', function () { held = true; circle.setFillStyle(0xffffff, 0.3); if (onDown) onDown(); });
-      circle.on('pointerup', function () { held = false; circle.setFillStyle(0xffffff, 0.14); });
-      circle.on('pointerout', function () { held = false; circle.setFillStyle(0xffffff, 0.14); });
+      circle.on('pointerdown', function () { held = true; circle.setFillStyle(0x2f2a24, 0.3); if (onDown) onDown(); });
+      circle.on('pointerup', function () { held = false; circle.setFillStyle(0x2f2a24, 0.14); });
+      circle.on('pointerout', function () { held = false; circle.setFillStyle(0x2f2a24, 0.14); });
       return {
         isDown: function () { return held; },
         destroy: function () { circle.destroy(); text.destroy(); }
@@ -529,14 +542,14 @@
         create() {
           var W = this.scale.width;
           var H = this.scale.height;
-          this.cameras.main.setBackgroundColor(opts.bg || '#0b1020');
+          this.cameras.main.setBackgroundColor(opts.bg || '#fdf6ec');
           MEAMUS.ui.title(this, W / 2, H / 2 - 60, titleText, 34);
           var barW = Math.min(360, W - 80);
           var barBg = this.add.graphics();
-          barBg.fillStyle(0xffffff, 0.12).fillRoundedRect(W / 2 - barW / 2, H / 2, barW, 14, 7);
+          barBg.fillStyle(0x2f2a24, 0.10).fillRoundedRect(W / 2 - barW / 2, H / 2, barW, 14, 7);
           var bar = this.add.graphics();
           var pct = this.add.text(W / 2, H / 2 + 40, '0%', {
-            fontFamily: MEAMUS.MONO, fontSize: '14px', color: '#93a0c8'
+            fontFamily: MEAMUS.MONO, fontSize: '14px', color: '#7d7469'
           }).setOrigin(0.5);
 
           // Textures are generated synchronously; the bar is stepped so the
@@ -549,7 +562,7 @@
             callback: () => {
               step += 1;
               var p = step / steps;
-              bar.clear().fillStyle(0x6c7bff, 1)
+              bar.clear().fillStyle(0xff8a5c, 1)
                 .fillRoundedRect(W / 2 - barW / 2, H / 2, Math.max(14, barW * p), 14, 7);
               pct.setText(Math.round(p * 100) + '%');
               if (step === 2 && typeof bake === 'function') bake(this);

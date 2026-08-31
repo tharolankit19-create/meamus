@@ -78,6 +78,22 @@ app.get('/api/status', (req, res) => {
     quotas: config.quotas,
     billingProvider: config.billing.provider,
     plans: PLANS.map((p) => ({ id: p.id, name: p.name, price: p.price })),
+    // Names only, never values. A key set under the wrong name - or on the
+    // wrong Vercel environment - is invisible otherwise, and looks exactly
+    // like a key that was never added.
+    envSeen: [
+      'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'ANTHROPIC_API_KEY',
+      'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'JWT_SECRET',
+      'OPEN_ACCESS', 'TEMPLATE_ACCESS', 'UNLIMITED_GENERATIONS', 'NODE_ENV'
+    ].filter((name) => (process.env[name] || '').trim().length > 0),
+    envUnexpected: Object.keys(process.env)
+      .filter((name) => /OPENROUTER|OPEN_ROUTER|SUPABASE|ANTHROPIC/i.test(name))
+      .filter((name) => ![
+        'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'OPENROUTER_BASE_URL',
+        'OPENROUTER_REFERER', 'OPENROUTER_TITLE', 'ANTHROPIC_API_KEY',
+        'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL',
+        'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'
+      ].includes(name)),
     warnings: [
       ...(config.aiEnabled ? [] : ['OPENROUTER_API_KEY is not set - generation runs in template mode.']),
       ...(config.testMode ? ['TEST_MODE is on - anyone can generate without signing up.'] : []),
