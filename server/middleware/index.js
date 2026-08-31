@@ -3,6 +3,7 @@
 const config = require('../config');
 const db = require('../db');
 const auth = require('../auth');
+const credits = require('../credits');
 
 /** Public shape of a user - never leaks the password hash. */
 function publicUser(user) {
@@ -16,7 +17,11 @@ function publicUser(user) {
     createdAt: user.createdAt,
     usage: usageToday(user),
     // null means no cap. The UI renders that as "unlimited".
-    quota: config.quotas.unlimited ? null : (config.quotas[user.plan] || config.quotas.free)
+    quota: config.quotas.unlimited ? null : (config.quotas[user.plan] || config.quotas.free),
+    // The balance is authoritative here. The client only ever displays it.
+    credits: credits.balanceOf(user),
+    creditCosts: { create: credits.COSTS.create, iterate: credits.COSTS.iterate },
+    creditsEnabled: config.credits.enabled
   };
 }
 
@@ -88,6 +93,20 @@ function requirePlan(plan) {
 }
 
 function enforceQuota(req, res, next) {
+  // Credits are checked first: they are the real meter, and a player who
+  // cannot pay for the work should be told before the model is called.
+  if (config.credits.enabled) {
+    const kind = req.creditKind || 'create';
+    if (!credits.canAfford(req.user, kind)) {
+      return res.status(402).json({
+        error: `You need ${credits.costOf(kind)} credits for this and have ${credits.balanceOf(req.user)}. Pick a plan to top up.`,
+        code: 'insufficient_credits',
+        balance: credits.balanceOf(req.user),
+        required: credits.costOf(kind)
+      });
+    }
+  }
+
   if (config.quotas.unlimited) return next();
   const quota = config.quotas[req.user.plan] || config.quotas.free;
   const used = usageToday(req.user);

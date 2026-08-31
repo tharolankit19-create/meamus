@@ -2,6 +2,8 @@
  * DOM helpers, icon set, toasts, dialogs.
  * ========================================================================== */
 
+import { state } from './api.js';
+
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
@@ -152,12 +154,47 @@ export function confirmModal(title, body, confirmLabel = 'Delete') {
 export const escapeHtml = (s) => String(s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-/** "unlimited" when the plan has no cap, otherwise used/limit. */
+/**
+ * What the meter says. Credits are the real currency, so they win over the
+ * legacy daily quota whenever the server has them switched on.
+ */
 export function quotaLabel(user) {
-  const target = user || (globalThis.__meamusUser || null);
+  const target = user || state.user;
   if (!target) return '';
+  if (target.creditsEnabled) {
+    const costs = target.creditCosts || {};
+    return `${target.credits} credits · ${costs.create || 20} per game, ${costs.iterate || 10} per change`;
+  }
   if (target.quota == null) return `${target.usage} generations today · unlimited`;
   return `${target.usage}/${target.quota} generations today`;
+}
+
+/**
+ * The header balance. Goes amber once there is not enough left for two more
+ * games, which is the point at which a plan stops being abstract.
+ */
+export function creditChip(user) {
+  const target = user || state.user;
+  if (!target || !target.creditsEnabled) return null;
+  const cost = (target.creditCosts || {}).create || 20;
+  const chip = el('button', {
+    class: 'credit-chip', type: 'button',
+    onClick: () => { location.hash = '#/pricing'; }
+  }, icon('bolt', 'sm'), el('b', {}, '0'), 'credits');
+
+  /**
+   * Repaint from the live user object. The balance changes on every build, so
+   * a chip rendered once at mount goes stale and contradicts the chat.
+   */
+  chip.refresh = () => {
+    const now = (state.user || target).credits;
+    const low = now < cost * 2;
+    chip.querySelector('b').textContent = String(now);
+    chip.classList.toggle('low', low);
+    chip.title = low ? 'Running low - see plans' : `${now} credits left`;
+  };
+  chip.refresh();
+  return chip;
 }
 
 export function relativeTime(iso) {

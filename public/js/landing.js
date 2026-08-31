@@ -54,7 +54,12 @@ export function renderLanding(root) {
       try {
         await startProject(text, attachmentIds, mode);
       } catch (err) {
-        toast(err.message, 'err', 7000);
+        if (err.code === 'insufficient_credits') {
+          toast(err.message, 'warn', 7000);
+          location.hash = '#/pricing';
+        } else {
+          toast(err.message, 'err', 7000);
+        }
       } finally {
         composer.setBusy(false);
       }

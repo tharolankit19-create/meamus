@@ -24,13 +24,19 @@ export async function startProject(text, attachmentIds = [], mode = 'build') {
     meta: result.meta,
     messages: result.messages || []
   };
-  if (state.user) state.user.usage = result.quota.used;
+  if (state.user) {
+    state.user.usage = result.quota.used;
+    if (result.credits) state.user.credits = result.credits.balance;
+  }
   state.projects = [result.game, ...state.projects.filter((p) => p.id !== result.game.id)];
 
   if (result.meta.mode === 'template') {
     toast(`Built from the ${result.meta.templateId} template — add an API key for original generation.`, 'warn', 6500);
   } else {
-    toast(`Generated "${result.spec.gameConfig.title}"`, 'ok');
+    const spent = result.credits && result.credits.charged
+      ? ` · ${result.credits.charged} credits, ${result.credits.balance} left`
+      : '';
+    toast(`Task complete — "${result.spec.gameConfig.title}" is ready${spent}`, 'ok');
   }
 
   location.hash = `#/project/${result.game.id}`;

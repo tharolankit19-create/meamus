@@ -7,7 +7,14 @@ const generator = require('../services/generator');
 const uploads = require('../services/uploads');
 const bundler = require('../services/bundler');
 const apk = require('../services/apk');
+const credits = require('../credits');
 const { requireAuth, requirePlan, enforceQuota, recordUsage, asyncRoute } = require('../middleware');
+
+/**
+ * Tags the request so enforceQuota charges the right price. A change costs
+ * less than a game built from nothing.
+ */
+const costs = (kind) => (req, res, next) => { req.creditKind = kind; next(); };
 
 const router = express.Router();
 
@@ -75,7 +82,7 @@ function ownedGame(req, res) {
 }
 
 /* --- generate ----------------------------------------------------------- */
-router.post('/generate', requireAuth, enforceQuota, asyncRoute(async (req, res) => {
+router.post('/generate', requireAuth, costs('create'), enforceQuota, asyncRoute(async (req, res) => {
   const prompt = String(req.body.prompt || '').trim();
   if (prompt.length < 4) {
     return res.status(400).json({ error: 'Describe the game you want in a sentence or two', code: 'prompt_too_short' });
@@ -113,12 +120,16 @@ router.post('/generate', requireAuth, enforceQuota, asyncRoute(async (req, res) 
   });
 
   const used = recordUsage(req.user);
+  // Charged here, not before the model call: a generation that threw must not
+  // cost the player anything.
+  const billed = credits.charge(req.user, 'create');
 
   res.status(201).json({
     game: summarise(game),
     spec,
     meta,
     messages: game.messages,
+    credits: { charged: billed.charged, balance: billed.balance },
     quota: { used, limit: config.quotas.unlimited ? null : (config.quotas[req.user.plan] || config.quotas.free) }
   });
 }));
@@ -159,7 +170,7 @@ router.delete('/games/:id', requireAuth, (req, res) => {
 });
 
 /* --- iterate ------------------------------------------------------------ */
-router.post('/games/:id/modify', requireAuth, enforceQuota, asyncRoute(async (req, res) => {
+router.post('/games/:id/modify', requireAuth, costs('iterate'), enforceQuota, asyncRoute(async (req, res) => {
   const game = ownedGame(req, res);
   if (!game) return;
 
@@ -190,12 +201,14 @@ router.post('/games/:id/modify', requireAuth, enforceQuota, asyncRoute(async (re
       }))
   });
   const used = recordUsage(req.user);
+  const billed = credits.charge(req.user, 'iterate');
 
   res.json({
     game: summarise(updated),
     spec,
     meta: updated.meta,
     messages: updated.messages,
+    credits: { charged: billed.charged, balance: billed.balance },
     quota: { used, limit: config.quotas.unlimited ? null : (config.quotas[req.user.plan] || config.quotas.free) }
   });
 }));

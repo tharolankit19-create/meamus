@@ -23,10 +23,11 @@ export function openAuth(mode = 'login') {
       function paint() {
         const isRegister = current === 'register';
         title.textContent = isRegister ? 'Create your account' : 'Welcome back';
+        const grant = (state.status && state.status.credits && state.status.credits.signupGrant) || 200;
         sub.textContent = isRegister
           ? (state.user && state.user.isGuest
-            ? 'Free plan, no card. The games from this session move across with you.'
-            : 'Free plan, no card. Your games are saved to your account.')
+            ? `${grant} free credits, no card. The games from this session move across with you.`
+            : `${grant} free credits, no card — about ten games before you need a plan.`)
           : 'Sign in to keep building.';
         nameField.classList.toggle('hide', !isRegister);
         passwordInput.autocomplete = isRegister ? 'new-password' : 'current-password';

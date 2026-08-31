@@ -146,6 +146,20 @@ const config = {
     ttlHours: positive('JWT_TTL_HOURS', process.env.JWT_TTL_HOURS, 168)
   },
 
+  /**
+   * Credits.
+   *
+   * The meter that replaces "unlimited". A new account gets a grant that buys
+   * roughly ten games, and a plan tops it up. Set CREDITS=false to turn the
+   * whole system off and fall back to the daily quotas below.
+   */
+  credits: {
+    enabled: (process.env.CREDITS || 'true').trim() !== 'false',
+    signupGrant: positive('SIGNUP_CREDITS', process.env.SIGNUP_CREDITS, 200),
+    costCreate: positive('CREDITS_PER_GAME', process.env.CREDITS_PER_GAME, 20),
+    costIterate: positive('CREDITS_PER_EDIT', process.env.CREDITS_PER_EDIT, 10)
+  },
+
   quotas: {
     // Unlimited for anyone with an account. There is no anonymous path to
     // generation, so this is a benefit of signing in rather than an open door.

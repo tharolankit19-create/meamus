@@ -118,10 +118,10 @@ export function sidebar(active) {
       : state.user.plan === 'pro'
         ? el('div', { class: 'upsell', style: { marginTop: 'auto' } },
           el('h4', {}, 'Pro plan'),
-          el('p', {}, `${state.user.quota} generations a day and Android export.`))
+          el('p', {}, `${state.user.credits} credits left, plus Android APK export.`))
         : el('div', { class: 'upsell' },
-          el('h4', {}, 'Upgrade to Pro'),
-          el('p', {}, 'Android export and 200 generations a day.'),
+          el('h4', {}, state.user.credits < 40 ? 'Almost out of credits' : 'Need more credits?'),
+          el('p', {}, `${state.user.credits} left. Starter is $29 for 1,000 a month; Pro is $59 for 2,500 plus APK export.`),
           el('button', {
             class: 'btn primary sm block',
             onClick: () => { location.hash = '#/pricing'; }
@@ -251,32 +251,39 @@ export async function renderPricing(root) {
   const main = el('main', { class: 'main' });
   root.append(el('div', { class: 'app' }, sidebar('pricing'), main));
 
-  const host = el('div', { class: 'grid c2', style: { maxWidth: '760px' } });
+  const host = el('div', { class: 'grid c3', style: { maxWidth: '1000px' } });
+  const costs = state.user.creditCosts || { create: 20, iterate: 10 };
   main.append(
     el('h1', { class: 'greet' }, 'Plans'),
-    el('p', { class: 'muted', style: { marginBottom: '28px' } },
-      'Generate for free. Pay when you want to ship to the Play Store.'),
+    el('p', { class: 'muted', style: { marginBottom: '10px' } },
+      `A new game costs ${costs.create} credits and a change costs ${costs.iterate}. ` +
+      'Credits from a plan add to what you already have.'),
+    el('p', { class: 'muted', style: { marginBottom: '26px' } },
+      el('strong', {}, `You have ${state.user.credits} credits.`)),
     host);
 
   try {
     const { plans, provider } = await billing.plans();
     clear(host).append(...plans.map((plan) => {
       const isCurrent = state.user.plan === plan.id;
-      return el('article', { class: 'card', style: plan.id === 'pro' ? { borderColor: 'var(--orange-line)' } : {} },
+      return el('article', { class: 'card', style: plan.id === 'starter' ? { borderColor: 'var(--orange-line)' } : {} },
         el('div', { class: 'spread' },
           el('h2', { style: { fontSize: '18px', margin: 0 } }, plan.name),
-          plan.id === 'pro' ? el('span', { class: 'tag orange' }, 'Most popular') : null),
-        el('div', { style: { fontSize: '34px', fontWeight: '650', letterSpacing: '-0.03em', margin: '10px 0 4px' } },
+          plan.id === 'starter' ? el('span', { class: 'tag orange' }, 'Most popular') : null,
+          plan.apk ? el('span', { class: 'tag green' }, 'APK export') : null),
+        el('div', { style: { fontSize: '34px', fontWeight: '650', letterSpacing: '-0.03em', margin: '10px 0 2px' } },
           plan.price === 0 ? 'Free' : `$${plan.price}`,
           plan.price ? el('span', { class: 'faint', style: { fontSize: '14px', fontWeight: '500' } }, ` / ${plan.interval}`) : null),
-        el('ul', { class: 'ticks', style: { margin: '16px 0 20px' } },
+        el('div', { class: 'muted small', style: { margin: '0 0 8px' } },
+          plan.credits ? `${plan.credits.toLocaleString()} credits a month` : 'Credits you get on sign-up'),
+        el('ul', { class: 'ticks', style: { margin: '14px 0 20px' } },
           plan.features.map((feature) => el('li', {}, feature))),
         isCurrent
           ? el('button', { class: 'btn block', disabled: true }, icon('check', 'sm'), 'Current plan')
           : el('button', {
-            class: `btn block ${plan.id === 'pro' ? 'primary' : ''}`,
+            class: `btn block ${plan.id === 'starter' ? 'primary' : ''}`,
             onClick: () => changePlan(plan.id)
-          }, plan.id === 'pro' ? 'Upgrade to Pro' : 'Switch to Free'));
+          }, plan.price === 0 ? 'Switch to Free' : `Get ${plan.name}`));
     }));
 
     if (provider === 'stub') {
@@ -301,7 +308,10 @@ async function changePlan(planId) {
     const payload = planId === 'free' ? await billing.downgrade() : await billing.checkout(planId);
     if (payload.checkoutUrl) { location.href = payload.checkoutUrl; return; }
     state.user = payload.user;
-    toast(planId === 'pro' ? 'Upgraded to Pro — Android export unlocked.' : 'Switched to the Free plan.', 'ok');
+    const added = payload.granted
+      ? ` — ${payload.granted.toLocaleString()} credits added, ${payload.user.credits} total`
+      : '';
+    toast(planId === 'free' ? 'Switched to the Free plan.' : `Plan updated${added}.`, 'ok');
     window.dispatchEvent(new HashChangeEvent('hashchange'));
   } catch (err) {
     toast(err.message, 'err', 7000);

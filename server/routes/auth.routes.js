@@ -40,6 +40,9 @@ router.post('/guest', asyncRoute(async (req, res) => {
     passwordHash: null,
     plan: 'guest',
     isGuest: true,
+    // A throwaway guest gets a taste, not the full signup grant - the grant is
+    // the reason to make a real account.
+    credits: Math.round(config.credits.signupGrant / 4),
     usage: { date: null, count: 0 },
     createdAt: now,
     updatedAt: now
@@ -91,6 +94,7 @@ router.post('/register', asyncRoute(async (req, res) => {
     name: name || email.split('@')[0],
     passwordHash: auth.hashPassword(password),
     plan: 'free',
+    credits: config.credits.signupGrant,
     usage: { date: null, count: 0 },
     createdAt: now,
     updatedAt: now

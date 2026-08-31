@@ -2,7 +2,7 @@
  * Project workspace: chat thread on the left, live game on the right.
  * ========================================================================== */
 
-import { el, icon, toast, clear, playModal, relativeTime, escapeHtml, quotaLabel } from './ui.js';
+import { el, icon, toast, clear, playModal, relativeTime, escapeHtml, quotaLabel, creditChip } from './ui.js';
 import { state, projects, playUrl, download } from './api.js';
 import { createComposer } from './composer.js';
 
@@ -112,6 +112,8 @@ export async function renderWorkspace(root, projectId) {
     }
   }, icon('monitor', 'lg'));
 
+  const creditsChip = creditChip(state.user);
+
   const top = el('header', { class: 'ws-top' },
     el('a', { class: 'brand', href: '#/dashboard', title: 'Back to dashboard' },
       el('span', { class: 'brand-mark' }, icon('gamepad'))),
@@ -125,6 +127,7 @@ export async function renderWorkspace(root, projectId) {
       }
     }, icon('panel', 'lg')),
     el('span', { class: 'grow', style: { display: 'flex', justifyContent: 'center' } }, seg),
+    creditsChip,
     deviceBtn,
     el('button', {
       class: 'btn icon sq', title: 'Restart the game', 'aria-label': 'Restart the game',
@@ -158,7 +161,7 @@ export async function renderWorkspace(root, projectId) {
       const pending = el('div', { class: 'build-card' },
         el('div', { class: 'thinking' },
           el('span', { class: 'dots' }, el('i'), el('i'), el('i')),
-          el('span', {}, 'Rebuilding your game…')));
+          el('span', {}, 'Applying your change…')));
       thread.append(pending);
       scrollThread();
 
@@ -172,9 +175,24 @@ export async function renderWorkspace(root, projectId) {
         if (state.user) state.user.usage = result.quota.used;
         composer.clearAll();
         view.frameKey += 1;
+        if (state.user && result.credits) {
+          state.user.credits = result.credits.balance;
+          // A chip painted once at mount goes stale and contradicts the chat.
+          if (creditsChip) creditsChip.refresh();
+          meter.textContent = `${quotaLabel(state.user)} · Enter to send, Shift+Enter for a new line`;
+        }
         paintThread();
         paintStage();
-        toast('Game updated', 'ok');
+        // The thread should end on a result, not on a progress word. The chat
+        // is the record of what was done, so it says so plainly.
+        thread.append(el('div', { class: 'done-line' },
+          icon('check', 'sm'),
+          el('span', {}, 'Task complete — ' + (result.spec.gameConfig.title || 'your game') + ' rebuilt.'),
+          result.credits && result.credits.charged
+            ? el('span', { class: 'faint' }, ` ${result.credits.charged} credits · ${result.credits.balance} left`)
+            : null));
+        scrollThread();
+        toast('Task complete', 'ok');
       } catch (err) {
         pending.replaceWith(el('div', { class: 'notice' }, icon('alert'), el('span', {}, err.message)));
         scrollThread();
@@ -185,14 +203,12 @@ export async function renderWorkspace(root, projectId) {
     }
   });
 
+  const meter = el('p', { class: 'faint small', style: { margin: '8px 2px 0' } },
+    state.user ? `${quotaLabel(state.user)} · Enter to send, Shift+Enter for a new line` : '');
+
   const chat = el('div', { class: 'chat' },
     thread,
-    el('div', { class: 'chat-foot' },
-      composer.node,
-      el('p', { class: 'faint small', style: { margin: '8px 2px 0' } },
-        state.user
-          ? `${quotaLabel(state.user)} · Enter to send, Shift+Enter for a new line`
-          : '')));
+    el('div', { class: 'chat-foot' }, composer.node, meter));
 
   const body = el('div', { class: 'ws-body' }, chat, stage);
   shell.append(top, body);

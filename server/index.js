@@ -76,8 +76,15 @@ app.get('/api/status', (req, res) => {
     ...access.describe(),
     unlimited: config.quotas.unlimited,
     quotas: config.quotas,
+    credits: {
+      enabled: config.credits.enabled,
+      signupGrant: config.credits.signupGrant,
+      costs: { create: config.credits.costCreate, iterate: config.credits.costIterate }
+    },
     billingProvider: config.billing.provider,
-    plans: PLANS.map((p) => ({ id: p.id, name: p.name, price: p.price })),
+    plans: PLANS.map((p) => ({
+      id: p.id, name: p.name, price: p.price, credits: p.credits || 0, apk: Boolean(p.apk)
+    })),
     // Names only, never values. A key set under the wrong name - or on the
     // wrong Vercel environment - is invisible otherwise, and looks exactly
     // like a key that was never added.

@@ -349,6 +349,68 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
       `unexpected external assets: ${external.join(', ')}`);
   });
 
+  await check('a new account starts with the signup credit grant', async () => {
+    const { status, body } = await request('/api/auth/me', { token });
+    assert.strictEqual(status, 200);
+    assert.strictEqual(body.user.creditsEnabled, true);
+    assert.ok(body.user.credits > 0, 'a new account has no credits to spend');
+    assert.ok(body.user.creditCosts.create > 0, 'a game must cost something');
+  });
+
+  await check('a generation charges credits, and only on success', async () => {
+    const before = (await request('/api/auth/me', { token })).body.user.credits;
+    const gen = await request('/api/generate', {
+      method: 'POST', token, body: { prompt: 'a tiny arcade game about sorting fruit' }
+    });
+    assert.strictEqual(gen.status, 201);
+    assert.strictEqual(gen.body.credits.charged, gen.body.credits.charged);
+    const after = (await request('/api/auth/me', { token })).body.user.credits;
+    assert.strictEqual(after, before - gen.body.credits.charged, 'the balance did not move by the charge');
+    assert.strictEqual(gen.body.credits.balance, after, 'the response balance disagrees with the account');
+
+    // A refused generation must not cost anything.
+    const balanceBefore = after;
+    const bad = await request('/api/generate', { method: 'POST', token, body: { prompt: 'x' } });
+    assert.strictEqual(bad.status, 400);
+    const unchanged = (await request('/api/auth/me', { token })).body.user.credits;
+    assert.strictEqual(unchanged, balanceBefore, 'a rejected prompt still charged the account');
+  });
+
+  await check('running out of credits is a 402 that names the price', async () => {
+    const drained = await request('/api/auth/register', {
+      method: 'POST',
+      body: { email: `broke-${Date.now()}@example.com`, password: 'hunter2hunter2', name: 'Broke' }
+    });
+    const brokeToken = drained.body.token;
+    let last = null;
+    for (let i = 0; i < 40; i += 1) {
+      last = await request('/api/generate', { method: 'POST', token: brokeToken, body: { prompt: 'a simple maze game' } });
+      if (last.status === 402) break;
+    }
+    assert.strictEqual(last.status, 402, 'the balance never ran out');
+    assert.strictEqual(last.body.code, 'insufficient_credits');
+    assert.ok(last.body.required > 0 && last.body.balance >= 0, 'the refusal does not say what is needed');
+
+    // A plan tops the balance back up and unblocks generation.
+    const up = await request('/api/billing/checkout', { method: 'POST', token: brokeToken, body: { plan: 'starter' } });
+    assert.strictEqual(up.status, 200);
+    assert.strictEqual(up.body.granted, 1000, 'the $29 plan should grant 1,000 credits');
+    const again = await request('/api/generate', { method: 'POST', token: brokeToken, body: { prompt: 'a simple maze game' } });
+    assert.strictEqual(again.status, 201, 'a topped-up account still cannot generate');
+  });
+
+  await check('the plan ladder is free / $29 / $59 with APK on the top tier', async () => {
+    const { body } = await request('/api/billing/plans');
+    const byId = Object.fromEntries(body.plans.map((p) => [p.id, p]));
+    assert.strictEqual(byId.free.price, 0);
+    assert.strictEqual(byId.starter.price, 29);
+    assert.strictEqual(byId.starter.credits, 1000);
+    assert.strictEqual(byId.pro.price, 59);
+    assert.strictEqual(byId.pro.credits, 2500);
+    assert.strictEqual(byId.pro.apk, true, 'APK export belongs to the top tier');
+    assert.strictEqual(byId.starter.apk, false);
+  });
+
   await check('the vendored Phaser build is served', async () => {
     const res = await request('/vendor/phaser.min.js', { raw: true });
     assert.strictEqual(res.status, 200, 'a game cannot boot without this file');

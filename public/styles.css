@@ -599,3 +599,22 @@ dialog::backdrop { background: rgba(28, 24, 18, .38); backdrop-filter: blur(2px)
   .ws-top .hide-sm { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation-duration: .001ms !important; transition-duration: .001ms !important; } }
+
+/* A chat turn ends on a result, not on a progress word. */
+.done-line {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 9px 12px; border-radius: var(--r);
+  background: var(--green-soft); border: 1px solid #c3e7d0;
+  color: var(--green); font-size: 13px; font-weight: 540;
+}
+.done-line .faint { font-weight: 460; }
+
+/* Credit balance in the header. Turns amber when a top-up is close. */
+.credit-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 560;
+  border: 1px solid var(--line-strong); background: var(--bg-warm); color: var(--ink-2);
+  white-space: nowrap;
+}
+.credit-chip.low { border-color: var(--orange-line); background: var(--orange-soft); color: var(--orange); }
+.credit-chip b { font-variant-numeric: tabular-nums; }
