@@ -155,10 +155,10 @@
         size: 15, mono: true, color: MEAMUS.ui.PALETTE.warn
       });
 
-      MEAMUS.ui.button(this, W / 2, 248, 'START', () => {
-        this.scene.start('GameScene', { level: 0, score: 0, lives: CFG.START_LIVES });
-      }, { width: 220 });
-      MEAMUS.ui.button(this, W / 2, 312, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: 0x25305c });
+      var play = () => this.scene.start('GameScene', { level: 0, score: 0, lives: CFG.START_LIVES });
+      var skip = [];
+      MEAMUS.ui.button(this, W / 2, 248, 'START', play, { width: 220 });
+      skip.push(MEAMUS.ui.button(this, W / 2, 312, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk }));
 
       // Level select unlocks as the player progresses.
       var unlocked = Number(MEAMUS.storage.get(CFG.KEY + ':unlocked', 1)) || 1;
@@ -168,17 +168,18 @@
       for (var i = 0; i < LEVELS.length; i += 1) {
         (function (self, idx) {
           var locked = idx + 1 > unlocked;
-          MEAMUS.ui.button(self, W / 2 - 90 + idx * 90, 416, locked ? '🔒' : String(idx + 1), function () {
+          skip.push(MEAMUS.ui.button(self, W / 2 - 90 + idx * 90, 416, locked ? '🔒' : String(idx + 1), function () {
             if (locked) { MEAMUS.fx.floatText(self, W / 2, 460, 'Finish the previous cave first', '#c4503f'); return; }
             self.scene.start('GameScene', { level: idx, score: 0, lives: CFG.START_LIVES });
-          }, { width: 70, height: 46, fill: locked ? 0x25305c : 0x6c7bff });
+          }, { width: 70, height: 46, fill: locked ? 0xefe7dc : 0xffb27a, textColor: MEAMUS.ui.PALETTE.softInk }));
         })(this, i);
       }
 
       MEAMUS.attachDebug(this);
-      this.input.keyboard.on('keydown-ENTER', () => {
-        this.scene.start('GameScene', { level: 0, score: 0, lives: CFG.START_LIVES });
-      });
+      MEAMUS.ui.anywhereToStart(this, play, skip);
+
+      // The landing-page demo drops straight into play rather than a menu.
+      if (MEAMUS.attractActive) this.time.delayedCall(700, play);
     }
 
     showHelp() {
@@ -564,7 +565,7 @@
         this.scene.stop(data.parent);
         this.scene.stop();
         this.scene.start('MenuScene');
-      }, { width: 200, fill: 0x25305c });
+      }, { width: 200, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
     }
   }
 
@@ -599,9 +600,9 @@
           MEAMUS.ads.showRewarded('retry-level',
             () => this.scene.start('GameScene', { level: data.level || 0, score: score, lives: 1 }),
             () => MEAMUS.fx.floatText(this, W / 2, 384, 'No ad available', '#c4503f'));
-        }, { width: 240, fill: 0x25305c });
+        }, { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
       }
-      MEAMUS.ui.button(this, W / 2, 448, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: 0x25305c });
+      MEAMUS.ui.button(this, W / 2, 448, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       if (MEAMUS.ads.countRun()) MEAMUS.ads.showInterstitial('game-over');
     }

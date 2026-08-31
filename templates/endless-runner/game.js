@@ -100,15 +100,18 @@
         size: 15, mono: true, color: MEAMUS.ui.PALETTE.warn
       });
 
-      MEAMUS.ui.button(this, W / 2, 272, 'RUN', () => this.scene.start('GameScene'), { width: 220 });
-      MEAMUS.ui.button(this, W / 2, 336, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: 0x2a1152 });
+      var play = () => this.scene.start('GameScene');
+      MEAMUS.ui.button(this, W / 2, 272, 'RUN', play, { width: 220 });
+      var help = MEAMUS.ui.button(this, W / 2, 336, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       var runner = this.add.image(CFG.PLAYER_X, CFG.GROUND_Y - CFG.PLAYER_H / 2, 'runner');
       this.tweens.add({ targets: runner, y: runner.y - 18, yoyo: true, repeat: -1, duration: 480, ease: 'Sine.easeInOut' });
 
       MEAMUS.attachDebug(this);
-      this.input.keyboard.on('keydown-SPACE', () => this.scene.start('GameScene'));
-      this.input.keyboard.on('keydown-ENTER', () => this.scene.start('GameScene'));
+      MEAMUS.ui.anywhereToStart(this, play, [help]);
+
+      // The landing-page demo drops straight into play rather than a menu.
+      if (MEAMUS.attractActive) this.time.delayedCall(700, play);
     }
 
     showHelp() {
@@ -495,7 +498,7 @@
         this.scene.stop(data.parent);
         this.scene.stop();
         this.scene.start('MenuScene');
-      }, { width: 200, fill: 0x2a1152 });
+      }, { width: 200, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
     }
   }
 
@@ -527,8 +530,8 @@
         MEAMUS.ads.showRewarded('continue',
           () => this.scene.start('GameScene'),
           () => MEAMUS.fx.floatText(this, W / 2, 364, 'No ad available', '#c4503f'));
-      }, { width: 240, fill: 0x2a1152 });
-      MEAMUS.ui.button(this, W / 2, 428, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: 0x2a1152 });
+      }, { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
+      MEAMUS.ui.button(this, W / 2, 428, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       if (MEAMUS.ads.countRun()) MEAMUS.ads.showInterstitial('game-over');
       MEAMUS.ui.bannerSlot(this, 'bottom');

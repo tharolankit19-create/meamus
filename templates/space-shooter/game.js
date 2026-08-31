@@ -102,20 +102,22 @@
         size: 15, mono: true, color: MEAMUS.ui.PALETTE.warn
       });
 
-      MEAMUS.ui.button(this, W / 2, 268, 'PLAY', () => this.scene.start('GameScene'), { width: 220 });
-      MEAMUS.ui.button(this, W / 2, 332, 'HOW TO PLAY', () => this.showHelp(), {
-        width: 220, fill: 0x1d2748
+      var play = () => this.scene.start('GameScene');
+      MEAMUS.ui.button(this, W / 2, 268, 'PLAY', play, { width: 220 });
+      var help = MEAMUS.ui.button(this, W / 2, 332, 'HOW TO PLAY', () => this.showHelp(), {
+        width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk
       });
       // SHOP HOOK: coins collected in-run buy hull skins / bullet colours.
-      MEAMUS.ui.button(this, W / 2, 396, 'SHOP  (soon)', () => {
+      var shop = MEAMUS.ui.button(this, W / 2, 396, 'SHOP  (soon)', () => {
         MEAMUS.fx.floatText(this, W / 2, 396, 'Shop coming soon', '#7d7469');
-      }, { width: 220, fill: 0x1d2748 });
+      }, { width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       MEAMUS.ui.bannerSlot(this, 'bottom');
       MEAMUS.attachDebug(this);
 
-      this.input.keyboard.on('keydown-ENTER', () => this.scene.start('GameScene'));
-      this.input.keyboard.on('keydown-SPACE', () => this.scene.start('GameScene'));
+      // Tapping the artwork or hitting any key starts the run too, so a missed
+      // button never reads as a dead game.
+      MEAMUS.ui.anywhereToStart(this, play, [help, shop]);
 
       // The landing-page demo drops straight into play rather than a menu.
       if (MEAMUS.attractActive) this.time.delayedCall(700, () => this.scene.start('GameScene'));
@@ -597,7 +599,7 @@
         this.scene.stop(data.parent);
         this.scene.stop();
         this.scene.start('MenuScene');
-      }, { width: 200, fill: 0x1d2748 });
+      }, { width: 200, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
     }
   }
 
@@ -631,10 +633,10 @@
         MEAMUS.ads.showRewarded('revive',
           () => this.scene.start('GameScene'),
           () => MEAMUS.fx.floatText(this, W / 2, 364, 'No ad available', '#c4503f'));
-      }, { width: 240, fill: 0x1d2748 });
+      }, { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       MEAMUS.ui.button(this, W / 2, 428, 'MENU', () => this.scene.start('MenuScene'), {
-        width: 240, fill: 0x1d2748
+        width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk
       });
 
       // AD HOOK: interstitial every N runs.

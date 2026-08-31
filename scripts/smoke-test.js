@@ -98,7 +98,13 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.strictEqual(res.status, 200);
     const html = await res.text();
     assert.ok(html.includes('new Phaser.Game') || html.includes('MEAMUS.boot'), 'no Phaser bootstrap in the bundle');
-    assert.ok(html.includes('phaser@3.60.0'), 'Phaser CDN is not pinned');
+    // Phaser must load from our own origin FIRST. When the CDN came first, a
+    // blocked or slow jsdelivr left a frozen frame and dead buttons.
+    const localAt = html.indexOf('src="/vendor/phaser.min.js"');
+    const cdnAt = html.indexOf('cdn.jsdelivr.net/npm/phaser');
+    assert.ok(localAt > -1, 'Phaser is not served from our own origin');
+    assert.ok(cdnAt > localAt, 'the CDN must only be a fallback behind the local copy');
+    assert.ok(html.includes('phaser@3.60.0'), 'the Phaser fallback is not pinned');
     assert.ok(html.includes('meamus kit - shared runtime'), 'the shared kit was not inlined');
     assert.ok(html.includes('MEAMUS.gfx'), 'the kit body is incomplete');
   });
@@ -341,6 +347,13 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     const external = [...html.matchAll(/(?:src|href)="(https?:\/\/[^"]+)"/g)].map((m) => m[1]);
     assert.ok(external.every((u) => u.includes('cdn.jsdelivr.net/npm/phaser')),
       `unexpected external assets: ${external.join(', ')}`);
+  });
+
+  await check('the vendored Phaser build is served', async () => {
+    const res = await request('/vendor/phaser.min.js', { raw: true });
+    assert.strictEqual(res.status, 200, 'a game cannot boot without this file');
+    const body = await res.text();
+    assert.ok(body.length > 500000, `vendored Phaser looks truncated (${body.length} bytes)`);
   });
 
   await check('APK export is gated behind the Pro plan', async () => {

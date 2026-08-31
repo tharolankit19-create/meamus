@@ -80,14 +80,16 @@
         size: 15, mono: true, color: MEAMUS.ui.PALETTE.warn
       });
 
-      MEAMUS.ui.button(this, W / 2, 326, 'PLAY', () => {
-        this.scene.start('GameScene', { level: 1, score: 0 });
-      }, { width: 220 });
-      MEAMUS.ui.button(this, W / 2, 390, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: 0x25305c });
+      var play = () => this.scene.start('GameScene', { level: 1, score: 0 });
+      MEAMUS.ui.button(this, W / 2, 326, 'PLAY', play, { width: 220 });
+      var help = MEAMUS.ui.button(this, W / 2, 390, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       MEAMUS.ui.bannerSlot(this, 'bottom');
       MEAMUS.attachDebug(this);
-      this.input.keyboard.on('keydown-ENTER', () => this.scene.start('GameScene', { level: 1, score: 0 }));
+      MEAMUS.ui.anywhereToStart(this, play, [help]);
+
+      // The landing-page demo drops straight into play rather than a menu.
+      if (MEAMUS.attractActive) this.time.delayedCall(700, play);
     }
 
     showHelp() {
@@ -683,7 +685,7 @@
         this.scene.stop(data.parent);
         this.scene.stop();
         this.scene.start('MenuScene');
-      }, { width: 200, fill: 0x25305c });
+      }, { width: 200, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
     }
   }
 
@@ -714,8 +716,8 @@
         MEAMUS.ads.showRewarded('extra-moves',
           () => this.scene.start('GameScene', { level: data.level || 1, score: score }),
           () => MEAMUS.fx.floatText(this, W / 2, 384, 'No ad available', '#c4503f'));
-      }, { width: 240, fill: 0x25305c });
-      MEAMUS.ui.button(this, W / 2, 448, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: 0x25305c });
+      }, { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
+      MEAMUS.ui.button(this, W / 2, 448, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       if (MEAMUS.ads.countRun()) MEAMUS.ads.showInterstitial('game-over');
     }
