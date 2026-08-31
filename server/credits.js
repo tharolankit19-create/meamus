@@ -62,6 +62,26 @@ function charge(user, kind) {
   return { charged: cost, balance };
 }
 
+/**
+ * Take an exact amount, for work priced on real token usage rather than a flat
+ * per-job rate. Never takes the balance below zero: a build that overran its
+ * estimate is the operator's problem, not a debt for the founder.
+ *
+ * @returns {{charged:number, balance:number}}
+ */
+function chargeExact(user, amount) {
+  const cost = Math.max(0, Math.round(amount));
+  if (!config.credits.enabled || cost === 0) {
+    return { charged: 0, balance: balanceOf(user) };
+  }
+  const before = balanceOf(user);
+  const charged = Math.min(before, cost);
+  const balance = before - charged;
+  db.update('users', user.id, { credits: balance });
+  user.credits = balance;
+  return { charged, balance };
+}
+
 /** Add a plan's credit pack. Credits accumulate rather than reset. */
 function grant(user, amount) {
   const balance = balanceOf(user) + Math.max(0, Math.round(amount));
@@ -79,4 +99,4 @@ function summary(user) {
   };
 }
 
-module.exports = { COSTS, balanceOf, costOf, canAfford, charge, grant, summary };
+module.exports = { COSTS, balanceOf, costOf, canAfford, charge, chargeExact, grant, summary };

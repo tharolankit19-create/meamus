@@ -156,8 +156,19 @@ const config = {
   credits: {
     enabled: (process.env.CREDITS || 'true').trim() !== 'false',
     signupGrant: positive('SIGNUP_CREDITS', process.env.SIGNUP_CREDITS, 200),
+    // Credits are metered on tokens, which is what the model provider actually
+    // bills for. The flat per-game numbers below are the floor when a build
+    // reports no usage.
+    perMillionTokens: positive('CREDITS_PER_MTOK', process.env.CREDITS_PER_MTOK, 100),
     costCreate: positive('CREDITS_PER_GAME', process.env.CREDITS_PER_GAME, 20),
     costIterate: positive('CREDITS_PER_EDIT', process.env.CREDITS_PER_EDIT, 10)
+  },
+
+  build: {
+    // How many times the review loop hands a rejected build back to the model.
+    maxAttempts: positive('BUILD_MAX_ATTEMPTS', process.env.BUILD_MAX_ATTEMPTS, 3),
+    // A build the founder has approved but never started is dropped after this.
+    planTtlMs: positive('BUILD_PLAN_TTL_MS', process.env.BUILD_PLAN_TTL_MS, 30 * 60 * 1000)
   },
 
   quotas: {

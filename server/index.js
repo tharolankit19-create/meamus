@@ -128,6 +128,7 @@ app.get('/api/status', (req, res) => {
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api', require('./routes/templates.routes'));
 app.use('/api', require('./routes/games.routes'));
+app.use('/api', require('./routes/build.routes'));
 app.use('/api', require('./routes/uploads.routes'));
 app.use('/api', require('./routes/billing.routes').router);
 

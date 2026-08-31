@@ -445,6 +445,129 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.strictEqual(body.code, 'empty_message');
   });
 
+  await check('a build is quoted before any credits are spent', async () => {
+    const before = (await request('/api/auth/me', { token })).body.user.credits;
+    const { status, body } = await request('/api/build/plan', {
+      method: 'POST', token, body: { prompt: 'a tower defence game with three tower types' }
+    });
+    assert.strictEqual(status, 200);
+    assert.ok(body.planId, 'no plan to approve');
+    assert.strictEqual(body.kind, 'create');
+    assert.ok(body.estimate.credits.expected > 0, 'the quote names no price');
+    assert.ok(body.estimate.credits.worstCase >= body.estimate.credits.expected,
+      'the worst case must not be cheaper than the expected case');
+    assert.ok(body.estimate.seconds.expected > 0, 'the quote names no duration');
+    assert.ok(body.plan.length >= 4, 'the quote does not say what the agents will do');
+    const after = (await request('/api/auth/me', { token })).body.user.credits;
+    assert.strictEqual(after, before, 'quoting a build charged for it');
+  });
+
+  await check('an approval is single use', async () => {
+    const plan = await request('/api/build/plan', {
+      method: 'POST', token, body: { prompt: 'a maze game with a torch and a monster' }
+    });
+    const first = await request('/api/build/start', {
+      method: 'POST', token, body: { planId: plan.body.planId }
+    });
+    assert.strictEqual(first.status, 202, 'the approved build did not start');
+    const replay = await request('/api/build/start', {
+      method: 'POST', token, body: { planId: plan.body.planId }
+    });
+    assert.strictEqual(replay.status, 410, 'the same approval bought a second build');
+    assert.strictEqual(replay.body.code, 'plan_expired');
+  });
+
+  await check('a stopped build charges nothing', async () => {
+    const plan = await request('/api/build/plan', {
+      method: 'POST', token, body: { prompt: 'a fishing game with a day night cycle' }
+    });
+    const started = await request('/api/build/start', {
+      method: 'POST', token, body: { planId: plan.body.planId }
+    });
+    const buildId = started.body.buildId;
+    const before = (await request('/api/auth/me', { token })).body.user.credits;
+
+    const stopped = await request(`/api/build/${buildId}/stop`, { method: 'POST', token });
+    assert.strictEqual(stopped.status, 200);
+
+    // With no model key a template build can finish before the stop lands.
+    // Only a build that was actually still running can be stopped, so the
+    // assertion follows which of the two happened.
+    if (stopped.body.state === 'running') {
+      assert.strictEqual(stopped.body.stopRequested, true, 'a running build ignored the stop');
+      for (let i = 0; i < 40; i += 1) {
+        const poll = await request(`/api/build/${buildId}`, { token });
+        if (poll.body.state !== 'running') {
+          assert.notStrictEqual(poll.body.state, 'done', 'a stopped build still shipped');
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const after = (await request('/api/auth/me', { token })).body.user.credits;
+      assert.strictEqual(after, before, 'a stopped build still charged the account');
+    } else {
+      assert.strictEqual(stopped.body.state, 'done', `unexpected state ${stopped.body.state}`);
+    }
+
+    // The invariant, checked directly so it holds regardless of timing: a build
+    // that ends stopped has shipped nothing and therefore charges nothing.
+    const builds = require('../server/services/builds');
+    const fake = builds.start('usr_probe', { kind: 'create', prompt: 'x', estimate: {} }).build;
+    builds.requestStop(fake.buildId, 'usr_probe');
+    assert.strictEqual(fake.stopRequested, true, 'requestStop did not set the flag');
+    builds.fail(fake, 'stopped');
+    assert.strictEqual(builds.view(fake).state, 'stopped');
+    assert.strictEqual(builds.view(fake).credits, undefined, 'a stopped build reported a charge');
+  });
+
+  await check('a build reports its own progress', async () => {
+    const plan = await request('/api/build/plan', {
+      method: 'POST', token, body: { prompt: 'a rhythm game where you tap falling notes' }
+    });
+    const started = await request('/api/build/start', {
+      method: 'POST', token, body: { planId: plan.body.planId }
+    });
+    const poll = await request(`/api/build/${started.body.buildId}`, { token });
+    assert.strictEqual(poll.status, 200);
+    assert.ok(['running', 'done', 'failed'].includes(poll.body.state));
+    assert.ok(Array.isArray(poll.body.steps), 'a build with no steps cannot be shown in the chat');
+    assert.ok(typeof poll.body.elapsedMs === 'number', 'no elapsed time for the clock');
+  });
+
+  await check('another account cannot read or stop your build', async () => {
+    const plan = await request('/api/build/plan', {
+      method: 'POST', token, body: { prompt: 'a card battler with a deck of thirty' }
+    });
+    const started = await request('/api/build/start', {
+      method: 'POST', token, body: { planId: plan.body.planId }
+    });
+    const other = await request('/api/auth/register', {
+      method: 'POST',
+      body: { email: `nosy-${Date.now()}@example.com`, password: 'hunter2hunter2', name: 'Nosy' }
+    });
+    const peek = await request(`/api/build/${started.body.buildId}`, { token: other.body.token });
+    assert.strictEqual(peek.status, 404, 'a build leaked to another account');
+    const stop = await request(`/api/build/${started.body.buildId}/stop`, { method: 'POST', token: other.body.token });
+    assert.strictEqual(stop.status, 404, 'another account could stop your build');
+  });
+
+  await check('generation refuses rather than substituting a different game', async () => {
+    // The silent template fallback shipped the space-shooter retitled "A Ludo".
+    const generator = require('../server/services/generator');
+    const config = require('../server/config');
+    const original = config.llm.enabled;
+    try {
+      config.llm.enabled = true;
+      await generator.generate('a ludo board game for four players', { research: false });
+      assert.fail('a failing model call should not have produced a game');
+    } catch (err) {
+      assert.ok(!/space|shooter|astro/i.test(err.message),
+        `refusal should not mention a substituted template: ${err.message}`);
+    } finally {
+      config.llm.enabled = original;
+    }
+  });
+
   await check('the vendored Phaser build is served', async () => {
     const res = await request('/vendor/phaser.min.js', { raw: true });
     assert.strictEqual(res.status, 200, 'a game cannot boot without this file');

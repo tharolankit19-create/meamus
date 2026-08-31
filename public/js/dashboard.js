@@ -2,7 +2,7 @@
  * Signed-in home: sidebar + greeting + composer + project grid.
  * ========================================================================== */
 
-import { el, icon, toast, clear, playModal, confirmModal, relativeTime, quotaLabel } from './ui.js';
+import { el, add, icon, toast, clear, playModal, confirmModal, relativeTime, quotaLabel } from './ui.js';
 import { state, projects, templatesApi, playUrl, setSession, billing, templatePlayUrl } from './api.js';
 import { createComposer } from './composer.js';
 import { startProject } from './generate.js';
@@ -48,8 +48,11 @@ export function renderDashboard(root, { tab = 'projects' } = {}) {
   };
   paintTabs(tab);
 
-  main.append(
-    el('h1', { class: 'greet' }, firstName ? `${greeting}, ${firstName}` : greeting),
+  // add() rather than the native append(): native append writes a bare `false`
+  // into the page as text, which is exactly what the "false" under the composer
+  // was. add() skips null/false children.
+  add(main,
+    [el('h1', { class: 'greet' }, firstName ? `${greeting}, ${firstName}` : greeting),
     composer.node,
     !state.status?.aiEnabled && el('div', { class: 'notice', style: { marginTop: '16px' } },
       icon('alert'),
@@ -61,7 +64,7 @@ export function renderDashboard(root, { tab = 'projects' } = {}) {
       tabs,
       el('span', { class: 'faint small' },
         quotaLabel(state.user))),
-    listHost);
+    listHost]);
 
   loadTab(tab, listHost);
 }
