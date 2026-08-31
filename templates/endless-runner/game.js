@@ -92,17 +92,17 @@
       this.add.rectangle(0, CFG.GROUND_Y, W, H - CFG.GROUND_Y, COLORS.ground).setOrigin(0, 0);
       this.add.rectangle(0, CFG.GROUND_Y, W, 3, COLORS.groundLine).setOrigin(0, 0);
 
-      MEAMUS.ui.title(this, W / 2, 120, 'NEON DASH', 52);
-      MEAMUS.ui.label(this, W / 2, 168, 'Run forever. Jump the spikes. Slide the beams.', { size: 16 });
+      MEAMUS.ui.title(this, W / 2, H * 0.20, 'NEON DASH', 52);
+      MEAMUS.ui.label(this, W / 2, H * 0.28, 'Run forever. Jump the spikes. Slide the beams.', { size: 16 });
 
       var best = MEAMUS.storage.best(CFG.KEY);
-      MEAMUS.ui.label(this, W / 2, 208, 'BEST  ' + best + '        COINS  ' + MEAMUS.currency.get(), {
+      MEAMUS.ui.label(this, W / 2, H * 0.35, 'BEST  ' + best + '        COINS  ' + MEAMUS.currency.get(), {
         size: 15, mono: true, color: MEAMUS.ui.PALETTE.warn
       });
 
       var play = () => this.scene.start('GameScene');
-      MEAMUS.ui.button(this, W / 2, 272, 'RUN', play, { width: 220 });
-      var help = MEAMUS.ui.button(this, W / 2, 336, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
+      MEAMUS.ui.button(this, W / 2, H * 0.45, 'RUN', play, { width: 220 });
+      var help = MEAMUS.ui.button(this, W / 2, H * 0.56, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       var runner = this.add.image(CFG.PLAYER_X, CFG.GROUND_Y - CFG.PLAYER_H / 2, 'runner');
       this.tweens.add({ targets: runner, y: runner.y - 18, yoyo: true, repeat: -1, duration: 480, ease: 'Sine.easeInOut' });
@@ -518,20 +518,20 @@
       var best = MEAMUS.storage.best(CFG.KEY, score);
       var isRecord = score > prevBest;
 
-      MEAMUS.ui.title(this, W / 2, 104, isRecord ? 'NEW RECORD!' : 'WIPEOUT', 42);
-      MEAMUS.ui.label(this, W / 2, 178,
+      MEAMUS.ui.title(this, W / 2, H * 0.17, isRecord ? 'NEW RECORD!' : 'WIPEOUT', 42);
+      MEAMUS.ui.label(this, W / 2, H * 0.30,
         'SCORE     ' + score + '\nDISTANCE  ' + (data.metres || 0) + ' m\nCOINS     ' + (data.coins || 0) + '\nBEST      ' + best,
         { size: 19, mono: true, color: '#2f2a24', lineSpacing: 8 });
       if (isRecord) MEAMUS.sfx.win();
 
-      MEAMUS.ui.button(this, W / 2, 300, 'RUN AGAIN', () => this.scene.start('GameScene'), { width: 240 });
+      MEAMUS.ui.button(this, W / 2, H * 0.50, 'RUN AGAIN', () => this.scene.start('GameScene'), { width: 240 });
       // AD HOOK: rewarded video continues the run from where it ended.
-      MEAMUS.ui.button(this, W / 2, 364, 'WATCH AD: CONTINUE', () => {
+      MEAMUS.ui.button(this, W / 2, H * 0.61, 'WATCH AD: CONTINUE', () => {
         MEAMUS.ads.showRewarded('continue',
           () => this.scene.start('GameScene'),
           () => MEAMUS.fx.floatText(this, W / 2, 364, 'No ad available', '#c4503f'));
       }, { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
-      MEAMUS.ui.button(this, W / 2, 428, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
+      MEAMUS.ui.button(this, W / 2, H * 0.72, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       if (MEAMUS.ads.countRun()) MEAMUS.ads.showInterstitial('game-over');
       MEAMUS.ui.bannerSlot(this, 'bottom');
@@ -539,6 +539,17 @@
       this.input.keyboard.on('keydown-SPACE', () => this.scene.start('GameScene'));
     }
   }
+
+
+  /* Size the canvas to the screen it is on, keeping the tuned pixel budget.
+     A fixed 4:3 canvas left a phone showing the game in a band with two
+     thirds of the display empty. */
+  var VIEW = MEAMUS.viewport(800, 600);
+  CFG.WIDTH = VIEW.width;
+  CFG.HEIGHT = VIEW.height;
+  // The ground sits at a fixed fraction of the canvas, so a tall phone gets
+  // headroom for jumps rather than a horizon stuck in the middle.
+  CFG.GROUND_Y = Math.round(CFG.HEIGHT * 0.78);
 
   /* --- boot -------------------------------------------------------------- */
   MEAMUS.boot({

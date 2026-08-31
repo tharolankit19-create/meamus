@@ -66,23 +66,23 @@
       var H = this.scale.height;
       this.add.image(W / 2, H / 2, 'puzzle-bg').setDisplaySize(W, H);
 
-      MEAMUS.ui.title(this, W / 2, 104, 'GEM CASCADE', 48);
-      MEAMUS.ui.label(this, W / 2, 150, 'Swap. Match three. Ride the cascade.', { size: 16 });
+      MEAMUS.ui.title(this, W / 2, H * 0.17, 'GEM CASCADE', 48);
+      MEAMUS.ui.label(this, W / 2, H * 0.25, 'Swap. Match three. Ride the cascade.', { size: 16 });
 
       // Decorative gem row so the menu shows the actual art.
       for (var i = 0; i < GEM_KEYS.length; i += 1) {
-        var g = this.add.image(W / 2 - 140 + i * 56, 208, GEM_KEYS[i]).setScale(0.85);
-        this.tweens.add({ targets: g, y: 198, yoyo: true, repeat: -1, duration: 700 + i * 90, ease: 'Sine.easeInOut' });
+        var g = this.add.image(W / 2 - 140 + i * 56, H * 0.35, GEM_KEYS[i]).setScale(0.85);
+        this.tweens.add({ targets: g, y: H * 0.33, yoyo: true, repeat: -1, duration: 700 + i * 90, ease: 'Sine.easeInOut' });
       }
 
       var best = MEAMUS.storage.best(CFG.KEY);
-      MEAMUS.ui.label(this, W / 2, 262, 'BEST  ' + best + '        COINS  ' + MEAMUS.currency.get(), {
+      MEAMUS.ui.label(this, W / 2, H * 0.44, 'BEST  ' + best + '        COINS  ' + MEAMUS.currency.get(), {
         size: 15, mono: true, color: MEAMUS.ui.PALETTE.warn
       });
 
       var play = () => this.scene.start('GameScene', { level: 1, score: 0 });
-      MEAMUS.ui.button(this, W / 2, 326, 'PLAY', play, { width: 220 });
-      var help = MEAMUS.ui.button(this, W / 2, 390, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
+      MEAMUS.ui.button(this, W / 2, H * 0.55, 'PLAY', play, { width: 220 });
+      var help = MEAMUS.ui.button(this, W / 2, H * 0.66, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       MEAMUS.ui.bannerSlot(this, 'bottom');
       MEAMUS.attachDebug(this);
@@ -168,8 +168,11 @@
       var w = CFG.COLS * CFG.CELL;
       var h = CFG.ROWS * CFG.CELL;
       var g = this.add.graphics().setDepth(-5);
-      g.fillStyle(0x000000, 0.35).fillRoundedRect(CFG.BOARD_X - 10, CFG.BOARD_Y - 10, w + 20, h + 20, 14);
-      g.lineStyle(2, 0x6c7bff, 0.35).strokeRoundedRect(CFG.BOARD_X - 10, CFG.BOARD_Y - 10, w + 20, h + 20, 14);
+      // A warm off-white tray. The old 35%-black panel turned the board into a
+      // grey slab on an otherwise light game.
+      g.fillStyle(0x000000, 0.05).fillRoundedRect(CFG.BOARD_X - 10, CFG.BOARD_Y - 6, w + 20, h + 20, 16);
+      g.fillStyle(0xfffaf3, 0.96).fillRoundedRect(CFG.BOARD_X - 10, CFG.BOARD_Y - 10, w + 20, h + 20, 16);
+      g.lineStyle(1.5, 0xe5d9c8, 1).strokeRoundedRect(CFG.BOARD_X - 10, CFG.BOARD_Y - 10, w + 20, h + 20, 16);
       // Checkerboard so empty cells stay readable while gems fall.
       for (var r = 0; r < CFG.ROWS; r += 1) {
         for (var c = 0; c < CFG.COLS; c += 1) {
@@ -604,9 +607,12 @@
     /* --- HUD + flow ------------------------------------------------------ */
     buildHud() {
       var W = this.scale.width;
-      this.hudScore = MEAMUS.ui.label(this, 22, 20, '', { size: 19, mono: true, color: '#2f2a24', originX: 0, originY: 0 }).setDepth(900);
-      this.hudMoves = MEAMUS.ui.label(this, W - 22, 20, '', { size: 19, mono: true, color: '#c9862b', originX: 1, originY: 0 }).setDepth(900);
-      this.hudLevel = MEAMUS.ui.label(this, W / 2, 20, '', { size: 16, mono: true, color: '#7d7469', originY: 0 }).setDepth(900);
+      // The HUD rides at a fraction of the canvas so it stays clear of a
+      // phone's status bar on a tall portrait canvas.
+      var hy = CFG.HUD_Y;
+      this.hudScore = MEAMUS.ui.label(this, 22, hy, '', { size: 19, mono: true, color: '#2f2a24', originX: 0, originY: 0 }).setDepth(900);
+      this.hudMoves = MEAMUS.ui.label(this, W - 22, hy, '', { size: 19, mono: true, color: '#c9862b', originX: 1, originY: 0 }).setDepth(900);
+      this.hudLevel = MEAMUS.ui.label(this, W / 2, hy + 26, '', { size: 16, mono: true, color: '#7d7469', originY: 0 }).setDepth(900);
       this.progressBg = this.add.graphics().setDepth(900);
       this.progressBar = this.add.graphics().setDepth(901);
       this.refreshHud();
@@ -618,12 +624,16 @@
       this.hudMoves.setText('MOVES ' + Math.max(0, this.moves));
       this.hudLevel.setText('LEVEL ' + this.level + '   TARGET ' + this.target);
 
-      var barW = W - 200;
+      // Proportional, and dark enough to be visible on a light ground. A
+      // 10%-white track was invisible once the game stopped being dark.
+      var barX = Math.round(W * 0.12);
+      var barW = W - barX * 2;
+      var barY = Math.round(CFG.HUD_Y + 52);
       var pct = Phaser.Math.Clamp(this.score / this.target, 0, 1);
-      this.progressBg.clear().fillStyle(0xffffff, 0.10)
-        .fillRoundedRect(100, 74, barW, 10, 5);
-      this.progressBar.clear().fillStyle(pct >= 1 ? 0x38d39f : 0x6c7bff, 1)
-        .fillRoundedRect(100, 74, Math.max(10, barW * pct), 10, 5);
+      this.progressBg.clear().fillStyle(0x2f2a24, 0.10)
+        .fillRoundedRect(barX, barY, barW, 10, 5);
+      this.progressBar.clear().fillStyle(pct >= 1 ? 0x3fa77e : 0xff8a5c, 1)
+        .fillRoundedRect(barX, barY, Math.max(10, barW * pct), 10, 5);
     }
 
     togglePause() {
@@ -702,26 +712,45 @@
       var prevBest = MEAMUS.storage.best(CFG.KEY);
       var best = MEAMUS.storage.best(CFG.KEY, score);
 
-      MEAMUS.ui.title(this, W / 2, 118, 'OUT OF MOVES', 40);
-      MEAMUS.ui.label(this, W / 2, 196,
+      MEAMUS.ui.title(this, W / 2, H * 0.20, 'OUT OF MOVES', 40);
+      MEAMUS.ui.label(this, W / 2, H * 0.33,
         'SCORE   ' + score + '\nLEVEL   ' + (data.level || 1) + '\nTARGET  ' + (data.target || 0) + '\nBEST    ' + best,
         { size: 19, mono: true, color: '#2f2a24', lineSpacing: 8 });
       if (score > prevBest) MEAMUS.sfx.win();
 
-      MEAMUS.ui.button(this, W / 2, 320, 'PLAY AGAIN', () => {
+      MEAMUS.ui.button(this, W / 2, H * 0.54, 'PLAY AGAIN', () => {
         this.scene.start('GameScene', { level: 1, score: 0 });
       }, { width: 240 });
       // AD HOOK: rewarded video grants five extra moves on the same level.
-      MEAMUS.ui.button(this, W / 2, 384, 'WATCH AD: +5 MOVES', () => {
+      MEAMUS.ui.button(this, W / 2, H * 0.65, 'WATCH AD: +5 MOVES', () => {
         MEAMUS.ads.showRewarded('extra-moves',
           () => this.scene.start('GameScene', { level: data.level || 1, score: score }),
           () => MEAMUS.fx.floatText(this, W / 2, 384, 'No ad available', '#c4503f'));
       }, { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
-      MEAMUS.ui.button(this, W / 2, 448, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
+      MEAMUS.ui.button(this, W / 2, H * 0.76, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       if (MEAMUS.ads.countRun()) MEAMUS.ads.showInterstitial('game-over');
     }
   }
+
+
+  /* Size the canvas to the screen it is on, keeping the tuned pixel budget.
+     A fixed 4:3 canvas left a phone showing the game in a band with two
+     thirds of the display empty. */
+  var VIEW = MEAMUS.viewport(800, 600);
+  CFG.WIDTH = VIEW.width;
+  CFG.HEIGHT = VIEW.height;
+  // The board is centred and scaled to fit whatever shape the canvas took,
+  // leaving room for the HUD above it.
+  CFG.CELL = Math.floor(Math.min(
+    (CFG.WIDTH - 48) / CFG.COLS,
+    (CFG.HEIGHT - 210) / CFG.ROWS
+  ));
+  CFG.BOARD_X = Math.round((CFG.WIDTH - CFG.COLS * CFG.CELL) / 2);
+  // Centred in the space under the HUD, so a tall canvas does not leave the
+  // board stranded at the top with dead space beneath it.
+  CFG.HUD_Y = Math.round(CFG.HEIGHT * 0.06);
+  CFG.BOARD_Y = Math.round(CFG.HUD_Y + 40 + (CFG.HEIGHT - CFG.HUD_Y - 40 - CFG.ROWS * CFG.CELL - 60) / 2);
 
   /* --- boot -------------------------------------------------------------- */
   MEAMUS.boot({

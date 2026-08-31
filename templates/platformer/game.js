@@ -147,29 +147,29 @@
       var H = this.scale.height;
       this.add.image(W / 2, H / 2, 'cave-bg').setDisplaySize(W, H);
 
-      MEAMUS.ui.title(this, W / 2, 100, 'CRYSTAL CAVES', 46);
-      MEAMUS.ui.label(this, W / 2, 146, 'Three caves. Every crystal. Beat the clock.', { size: 16 });
+      MEAMUS.ui.title(this, W / 2, H * 0.17, 'CRYSTAL CAVES', 46);
+      MEAMUS.ui.label(this, W / 2, H * 0.25, 'Three caves. Every crystal. Beat the clock.', { size: 16 });
 
       var best = MEAMUS.storage.best(CFG.KEY);
-      MEAMUS.ui.label(this, W / 2, 184, 'BEST  ' + best + '        COINS  ' + MEAMUS.currency.get(), {
+      MEAMUS.ui.label(this, W / 2, H * 0.32, 'BEST  ' + best + '        COINS  ' + MEAMUS.currency.get(), {
         size: 15, mono: true, color: MEAMUS.ui.PALETTE.warn
       });
 
       var play = () => this.scene.start('GameScene', { level: 0, score: 0, lives: CFG.START_LIVES });
       var skip = [];
-      MEAMUS.ui.button(this, W / 2, 248, 'START', play, { width: 220 });
-      skip.push(MEAMUS.ui.button(this, W / 2, 312, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk }));
+      MEAMUS.ui.button(this, W / 2, H * 0.43, 'START', play, { width: 220 });
+      skip.push(MEAMUS.ui.button(this, W / 2, H * 0.54, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk }));
 
       // Level select unlocks as the player progresses.
       var unlocked = Number(MEAMUS.storage.get(CFG.KEY + ':unlocked', 1)) || 1;
-      MEAMUS.ui.label(this, W / 2, 372, 'CAVES UNLOCKED  ' + unlocked + ' / ' + LEVELS.length, {
+      MEAMUS.ui.label(this, W / 2, H * 0.645, 'CAVES UNLOCKED  ' + unlocked + ' / ' + LEVELS.length, {
         size: 14, mono: true
       });
       for (var i = 0; i < LEVELS.length; i += 1) {
         (function (self, idx) {
           var locked = idx + 1 > unlocked;
-          skip.push(MEAMUS.ui.button(self, W / 2 - 90 + idx * 90, 416, locked ? '🔒' : String(idx + 1), function () {
-            if (locked) { MEAMUS.fx.floatText(self, W / 2, 460, 'Finish the previous cave first', '#c4503f'); return; }
+          skip.push(MEAMUS.ui.button(self, W / 2 - 90 + idx * 90, H * 0.72, locked ? '🔒' : String(idx + 1), function () {
+            if (locked) { MEAMUS.fx.floatText(self, W / 2, H * 0.80, 'Finish the previous cave first', '#c4503f'); return; }
             self.scene.start('GameScene', { level: idx, score: 0, lives: CFG.START_LIVES });
           }, { width: 70, height: 46, fill: locked ? 0xefe7dc : 0xffb27a, textColor: MEAMUS.ui.PALETTE.softInk }));
         })(this, i);
@@ -582,31 +582,42 @@
       var prevBest = MEAMUS.storage.best(CFG.KEY);
       var best = MEAMUS.storage.best(CFG.KEY, score);
 
-      MEAMUS.ui.title(this, W / 2, 108, data.cleared ? 'ALL CAVES CLEARED' : 'GAME OVER', data.cleared ? 34 : 42);
+      MEAMUS.ui.title(this, W / 2, H * 0.18, data.cleared ? 'ALL CAVES CLEARED' : 'GAME OVER', data.cleared ? 34 : 42);
       if (!data.cleared && data.reason) {
-        MEAMUS.ui.label(this, W / 2, 150, data.reason, { size: 15, color: '#c4503f' });
+        MEAMUS.ui.label(this, W / 2, H * 0.26, data.reason, { size: 15, color: '#c4503f' });
       }
-      MEAMUS.ui.label(this, W / 2, 200,
+      MEAMUS.ui.label(this, W / 2, H * 0.34,
         'SCORE  ' + score + '\nCAVE   ' + ((data.level || 0) + 1) + '\nBEST   ' + best,
         { size: 20, mono: true, color: '#2f2a24', lineSpacing: 8 });
       if (score > prevBest) MEAMUS.sfx.win();
 
-      MEAMUS.ui.button(this, W / 2, 320, 'PLAY AGAIN', () => {
+      MEAMUS.ui.button(this, W / 2, H * 0.54, 'PLAY AGAIN', () => {
         this.scene.start('GameScene', { level: 0, score: 0, lives: CFG.START_LIVES });
       }, { width: 240 });
       // AD HOOK: rewarded video restarts the current cave with the score kept.
       if (!data.cleared) {
-        MEAMUS.ui.button(this, W / 2, 384, 'WATCH AD: RETRY CAVE', () => {
+        MEAMUS.ui.button(this, W / 2, H * 0.65, 'WATCH AD: RETRY CAVE', () => {
           MEAMUS.ads.showRewarded('retry-level',
             () => this.scene.start('GameScene', { level: data.level || 0, score: score, lives: 1 }),
             () => MEAMUS.fx.floatText(this, W / 2, 384, 'No ad available', '#c4503f'));
         }, { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
       }
-      MEAMUS.ui.button(this, W / 2, 448, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
+      MEAMUS.ui.button(this, W / 2, H * 0.76, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       if (MEAMUS.ads.countRun()) MEAMUS.ads.showInterstitial('game-over');
     }
   }
+
+
+  /* The levels are hand-authored 25x18 tile grids, so the canvas keeps a
+     landscape-ish shape - squeezing them into a phone's portrait would leave
+     tiles too small to read. The tile size then scales to fill whatever
+     canvas that produces. */
+  var VIEW = MEAMUS.viewport(800, 576, { minAspect: 1.0, maxAspect: 1.7 });
+  CFG.TILE = Math.floor(Math.min(VIEW.width / CFG.COLS, VIEW.height / CFG.ROWS));
+  // The canvas is exactly the grid, so tile placement needs no centring offset.
+  CFG.WIDTH = CFG.COLS * CFG.TILE;
+  CFG.HEIGHT = CFG.ROWS * CFG.TILE;
 
   /* --- boot -------------------------------------------------------------- */
   MEAMUS.boot({

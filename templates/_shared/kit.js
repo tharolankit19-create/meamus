@@ -124,6 +124,42 @@
     }
   };
 
+  /**
+   * Game size matched to the screen it is actually on.
+   *
+   * A fixed 4:3 canvas under Scale.FIT leaves a phone showing the game in a
+   * band across the middle with two thirds of the screen empty. This keeps the
+   * design's pixel budget - so gameplay density, speeds and sprite sizes stay
+   * tuned - and redistributes it to the host's aspect ratio, which removes the
+   * letterbox instead of hiding it.
+   *
+   * The aspect is clamped so a very tall phone or a very wide desktop window
+   * cannot produce a shape the layouts were never built for.
+   *
+   * A game whose levels are hand-authored at a fixed shape - a 25-wide tile
+   * grid, say - passes a narrower clamp so it keeps a playable tile size
+   * instead of being squeezed into a portrait it was never drawn for.
+   *
+   * @param {number} designW the width the game was tuned at
+   * @param {number} designH the height the game was tuned at
+   * @param {{minAspect?:number, maxAspect?:number}} [opts]
+   * @returns {{width:number, height:number, portrait:boolean}}
+   */
+  MEAMUS.viewport = function (designW, designH, opts) {
+    opts = opts || {};
+    var dw = designW || 800;
+    var dh = designH || 600;
+    var area = dw * dh;
+    var cw = global.innerWidth || dw;
+    var ch = global.innerHeight || dh;
+    var lo = opts.minAspect === undefined ? 0.5 : opts.minAspect;
+    var hi = opts.maxAspect === undefined ? 2 : opts.maxAspect;
+    var aspect = Math.max(lo, Math.min(hi, cw / ch));
+    var width = Math.round(Math.sqrt(area * aspect));
+    var height = Math.round(Math.sqrt(area / aspect));
+    return { width: width, height: height, portrait: height > width };
+  };
+
   /* ---------------------------------------------------------------------- */
   /* Procedural textures. Every sprite in every template comes from here.    */
   /* ---------------------------------------------------------------------- */
@@ -763,6 +799,17 @@
     try {
       if (typeof Phaser === 'undefined') throw new Error('Phaser failed to load (check the CDN or your network)');
       var game = new Phaser.Game(config);
+
+      // Scale.FIT always leaves bands on a screen whose shape differs from the
+      // canvas. Painting them in the game's own colour makes the frame read as
+      // the game rather than as a half-loaded page.
+      if (config.backgroundColor) {
+        try {
+          global.document.body.style.background = config.backgroundColor;
+          var host = global.document.getElementById(config.parent);
+          if (host) host.style.background = config.backgroundColor;
+        } catch (e) { /* a detached document during teardown */ }
+      }
 
       // Android/iOS: suspend audio + loop when the app is backgrounded.
       global.document.addEventListener('visibilitychange', function () {
