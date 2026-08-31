@@ -42,17 +42,18 @@
     STAR_COUNT: 90
   };
 
+  // Soft daylight palette: pale sky, warm accents, nothing near-black.
   var COLORS = {
-    bg: 0x070a18,
-    bgTop: 0x131a3a,
-    ship: 0x6cc7ff,
-    thruster: 0xffb03a,
-    bullet: 0x9df5ff,
-    rock: 0x8a8fa8,
-    rockSmall: 0xb0b6cc,
-    powerSpread: 0x38d39f,
-    powerShield: 0x6c7bff,
-    powerRapid: 0xffcc4d
+    bg: 0xfdf6ec,          // warm cream at the horizon
+    bgTop: 0xbfe3f5,       // pale sky blue overhead
+    ship: 0xff8a5c,        // warm coral hull
+    thruster: 0xffd166,    // soft gold flame
+    bullet: 0xff6b8a,      // rose bolt, readable on cream
+    rock: 0xc9b8a8,        // sandstone
+    rockSmall: 0xe0d3c5,   // lighter shard
+    powerSpread: 0x6fd6a8, // mint
+    powerShield: 0x8fb8f0, // periwinkle
+    powerRapid: 0xffc857   // honey
   };
 
   /* --- Procedural art. Every sprite is baked here at preload time. ------- */
@@ -77,7 +78,7 @@
     G.circle(scene, 'pu-rapid', 26, COLORS.powerRapid, { glow: true, shine: true });
 
     G.particle(scene, 'spark', 10, 0xffd27d);
-    G.circle(scene, 'star-dot', 3, 0xffffff);
+    G.circle(scene, 'star-dot', 3, 0xffffff);   // drifting motes, not stars
     G.gradient(scene, 'space-bg', 8, CFG.HEIGHT, COLORS.bgTop, COLORS.bg);
   }
 
@@ -107,7 +108,7 @@
       });
       // SHOP HOOK: coins collected in-run buy hull skins / bullet colours.
       MEAMUS.ui.button(this, W / 2, 396, 'SHOP  (soon)', () => {
-        MEAMUS.fx.floatText(this, W / 2, 396, 'Shop coming soon', '#93a0c8');
+        MEAMUS.fx.floatText(this, W / 2, 396, 'Shop coming soon', '#7d7469');
       }, { width: 220, fill: 0x1d2748 });
 
       MEAMUS.ui.bannerSlot(this, 'bottom');
@@ -278,16 +279,16 @@
     buildHud() {
       var W = this.scale.width;
       this.hudScore = MEAMUS.ui.label(this, 14, 14, 'SCORE 0', {
-        size: 18, mono: true, color: '#f5f7ff', originX: 0, originY: 0
+        size: 18, mono: true, color: '#2f2a24', originX: 0, originY: 0
       }).setDepth(900).setScrollFactor(0);
       this.hudLives = MEAMUS.ui.label(this, W - 14, 14, '', {
-        size: 18, mono: true, color: '#ff8fa0', originX: 1, originY: 0
+        size: 18, mono: true, color: '#c4503f', originX: 1, originY: 0
       }).setDepth(900).setScrollFactor(0);
       this.hudWave = MEAMUS.ui.label(this, W / 2, 14, 'WAVE 1', {
-        size: 16, mono: true, color: '#93a0c8', originY: 0
+        size: 16, mono: true, color: '#7d7469', originY: 0
       }).setDepth(900).setScrollFactor(0);
       this.hudCombo = MEAMUS.ui.label(this, W / 2, 40, '', {
-        size: 15, mono: true, color: '#ffcc4d', originY: 0
+        size: 15, mono: true, color: '#c9862b', originY: 0
       }).setDepth(900).setScrollFactor(0);
       this.refreshHud();
     }
@@ -336,7 +337,7 @@
       this.spawnTimer = this.time.addEvent({
         delay: this.spawnDelay, loop: true, callback: () => this.spawnRock()
       });
-      MEAMUS.fx.floatText(this, this.scale.width / 2, 120, 'WAVE ' + this.wave, '#6cc7ff');
+      MEAMUS.fx.floatText(this, this.scale.width / 2, 120, 'WAVE ' + this.wave, '#3d8fb8');
       // AD HOOK: a wave boundary is the natural interstitial slot.
       if (this.wave % MEAMUS.ads.interstitialEvery === 0) MEAMUS.ads.showInterstitial('wave-' + this.wave);
       this.refreshHud();
@@ -386,7 +387,7 @@
       var base = big ? CFG.SCORE_BIG : CFG.SCORE_SMALL;
       var gained = base * Math.min(this.combo, 5);
       this.score += gained;
-      MEAMUS.fx.floatText(this, x, y, '+' + gained, this.combo > 1 ? '#38d39f' : '#ffcc4d');
+      MEAMUS.fx.floatText(this, x, y, '+' + gained, this.combo > 1 ? '#2f8f68' : '#c9862b');
 
       if (big) {
         // Big rocks split into two smaller ones flung apart.
@@ -455,15 +456,15 @@
         this.spread = true;
         this.clearTimer('spreadTimer');
         this.spreadTimer = this.time.delayedCall(CFG.POWERUP_DURATION_MS, () => { this.spread = false; });
-        MEAMUS.fx.floatText(this, player.x, player.y - 30, 'SPREAD SHOT', '#38d39f');
+        MEAMUS.fx.floatText(this, player.x, player.y - 30, 'SPREAD SHOT', '#2f8f68');
       } else if (kind === 'rapid') {
         this.fireRate = CFG.RAPID_FIRE_RATE_MS;
         this.clearTimer('rapidTimer');
         this.rapidTimer = this.time.delayedCall(CFG.POWERUP_DURATION_MS, () => { this.fireRate = CFG.FIRE_RATE_MS; });
-        MEAMUS.fx.floatText(this, player.x, player.y - 30, 'RAPID FIRE', '#ffcc4d');
+        MEAMUS.fx.floatText(this, player.x, player.y - 30, 'RAPID FIRE', '#c9862b');
       } else {
         this.setShield(true);
-        MEAMUS.fx.floatText(this, player.x, player.y - 30, 'SHIELD UP', '#6c7bff');
+        MEAMUS.fx.floatText(this, player.x, player.y - 30, 'SHIELD UP', '#5570c9');
       }
     }
 
@@ -619,7 +620,7 @@
 
       MEAMUS.ui.title(this, W / 2, 108, isRecord ? 'NEW RECORD!' : 'RUN OVER', 40);
       MEAMUS.ui.label(this, W / 2, 172, 'SCORE  ' + score + '\nWAVE   ' + (data.wave || 1) + '\nBEST   ' + best, {
-        size: 20, mono: true, color: '#f5f7ff', lineSpacing: 8
+        size: 20, mono: true, color: '#2f2a24', lineSpacing: 8
       });
       if (isRecord) MEAMUS.sfx.win();
 
@@ -629,7 +630,7 @@
       MEAMUS.ui.button(this, W / 2, 364, 'WATCH AD: +1 LIFE', () => {
         MEAMUS.ads.showRewarded('revive',
           () => this.scene.start('GameScene'),
-          () => MEAMUS.fx.floatText(this, W / 2, 364, 'No ad available', '#ff5d6c'));
+          () => MEAMUS.fx.floatText(this, W / 2, 364, 'No ad available', '#c4503f'));
       }, { width: 240, fill: 0x1d2748 });
 
       MEAMUS.ui.button(this, W / 2, 428, 'MENU', () => this.scene.start('MenuScene'), {
@@ -683,7 +684,7 @@
     width: CFG.WIDTH,
     height: CFG.HEIGHT,
     parent: 'game-container',
-    backgroundColor: '#070a18',
+    backgroundColor: '#fdf6ec',
     physics: { default: 'arcade', arcade: { gravity: { y: 0 }, debug: false } },
     scene: [
       MEAMUS.scenes.makeBoot('PreloadScene'),

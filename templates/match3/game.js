@@ -34,7 +34,8 @@
     HINT_AFTER_MS: 6000      // idle time before the board suggests a move
   };
 
-  var GEM_COLORS = [0xff5d6c, 0x38d39f, 0x6c9dff, 0xffcc4d, 0xc07bff, 0x4de8ff];
+  // Muted candy tones: distinct in hue, none of them harsh.
+  var GEM_COLORS = [0xf2837f, 0x7fc9a3, 0x8fb3e8, 0xf3c96b, 0xc9a3e0, 0x6fc9d4];
   var GEM_KEYS = ['gem0', 'gem1', 'gem2', 'gem3', 'gem4', 'gem5'];
 
   function bakeTextures(scene) {
@@ -53,7 +54,7 @@
     G.rect(scene, 'cell', CFG.CELL - 2, CFG.CELL - 2, 0xffffff, { radius: 8 });
     G.rect(scene, 'selector', CFG.CELL, CFG.CELL, 0xffffff, { radius: 10 });
     G.particle(scene, 'shard', 12, 0xffffff);
-    G.gradient(scene, 'puzzle-bg', 8, CFG.HEIGHT, 0x1b2244, 0x0a0e1e);
+    G.gradient(scene, 'puzzle-bg', 8, CFG.HEIGHT, 0xeef4fa, 0xfdf7ef);
   }
 
   /* ======================================================================= */
@@ -364,7 +365,7 @@
               onComplete: () => { this.busy = false; }
             });
             MEAMUS.sfx.hurt();
-            MEAMUS.fx.floatText(this, this.cellX(b.c), this.cellY(b.r) - 20, 'no match', '#ff8fa0');
+            MEAMUS.fx.floatText(this, this.cellX(b.c), this.cellY(b.r) - 20, 'no match', '#c4503f');
           }
         }
       });
@@ -426,7 +427,7 @@
         this.score += gained;
         MEAMUS.sfx.match(this.cascade);
         if (this.cascade > 1) {
-          MEAMUS.fx.floatText(this, CFG.WIDTH / 2, 84, 'CASCADE x' + this.cascade, '#38d39f');
+          MEAMUS.fx.floatText(this, CFG.WIDTH / 2, 84, 'CASCADE x' + this.cascade, '#2f8f68');
         }
       }
 
@@ -447,7 +448,7 @@
 
       if (gained) {
         var mid = matches[Math.floor(matches.length / 2)];
-        MEAMUS.fx.floatText(this, this.cellX(mid.c), this.cellY(mid.r), '+' + gained, '#ffcc4d');
+        MEAMUS.fx.floatText(this, this.cellX(mid.c), this.cellY(mid.r), '+' + gained, '#c9862b');
       }
       this.refreshHud();
 
@@ -541,7 +542,7 @@
           if (this.grid[r][c].sprite) this.grid[r][c].sprite.setTexture(GEM_KEYS[this.grid[r][c].type]);
         }
       }
-      MEAMUS.fx.floatText(this, CFG.WIDTH / 2, 84, 'NO MOVES - RESHUFFLED', '#93a0c8');
+      MEAMUS.fx.floatText(this, CFG.WIDTH / 2, 84, 'NO MOVES - RESHUFFLED', '#7d7469');
     }
 
     /** True if any single adjacent swap would produce a match. */
@@ -601,9 +602,9 @@
     /* --- HUD + flow ------------------------------------------------------ */
     buildHud() {
       var W = this.scale.width;
-      this.hudScore = MEAMUS.ui.label(this, 22, 20, '', { size: 19, mono: true, color: '#f5f7ff', originX: 0, originY: 0 }).setDepth(900);
-      this.hudMoves = MEAMUS.ui.label(this, W - 22, 20, '', { size: 19, mono: true, color: '#ffcc4d', originX: 1, originY: 0 }).setDepth(900);
-      this.hudLevel = MEAMUS.ui.label(this, W / 2, 20, '', { size: 16, mono: true, color: '#93a0c8', originY: 0 }).setDepth(900);
+      this.hudScore = MEAMUS.ui.label(this, 22, 20, '', { size: 19, mono: true, color: '#2f2a24', originX: 0, originY: 0 }).setDepth(900);
+      this.hudMoves = MEAMUS.ui.label(this, W - 22, 20, '', { size: 19, mono: true, color: '#c9862b', originX: 1, originY: 0 }).setDepth(900);
+      this.hudLevel = MEAMUS.ui.label(this, W / 2, 20, '', { size: 16, mono: true, color: '#7d7469', originY: 0 }).setDepth(900);
       this.progressBg = this.add.graphics().setDepth(900);
       this.progressBar = this.add.graphics().setDepth(901);
       this.refreshHud();
@@ -642,7 +643,7 @@
       MEAMUS.ui.title(this, W / 2, H / 2 - 82, 'LEVEL ' + this.level + ' CLEAR', 28).setDepth(1001);
       MEAMUS.ui.label(this, W / 2, H / 2 - 20,
         'SCORE       ' + this.score + '\nMOVES LEFT  ' + this.moves + '\nNEXT TARGET ' + Math.round(this.target * CFG.TARGET_GROWTH),
-        { size: 17, mono: true, color: '#f5f7ff', lineSpacing: 8 }).setDepth(1001);
+        { size: 17, mono: true, color: '#2f2a24', lineSpacing: 8 }).setDepth(1001);
       MEAMUS.ui.button(this, W / 2, H / 2 + 78, 'NEXT LEVEL', () => {
         this.scene.start('GameScene', { level: this.level + 1, score: this.score });
       }, { width: 220 }).setDepth(1001);
@@ -702,7 +703,7 @@
       MEAMUS.ui.title(this, W / 2, 118, 'OUT OF MOVES', 40);
       MEAMUS.ui.label(this, W / 2, 196,
         'SCORE   ' + score + '\nLEVEL   ' + (data.level || 1) + '\nTARGET  ' + (data.target || 0) + '\nBEST    ' + best,
-        { size: 19, mono: true, color: '#f5f7ff', lineSpacing: 8 });
+        { size: 19, mono: true, color: '#2f2a24', lineSpacing: 8 });
       if (score > prevBest) MEAMUS.sfx.win();
 
       MEAMUS.ui.button(this, W / 2, 320, 'PLAY AGAIN', () => {
@@ -712,7 +713,7 @@
       MEAMUS.ui.button(this, W / 2, 384, 'WATCH AD: +5 MOVES', () => {
         MEAMUS.ads.showRewarded('extra-moves',
           () => this.scene.start('GameScene', { level: data.level || 1, score: score }),
-          () => MEAMUS.fx.floatText(this, W / 2, 384, 'No ad available', '#ff5d6c'));
+          () => MEAMUS.fx.floatText(this, W / 2, 384, 'No ad available', '#c4503f'));
       }, { width: 240, fill: 0x25305c });
       MEAMUS.ui.button(this, W / 2, 448, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: 0x25305c });
 
@@ -726,7 +727,7 @@
     width: CFG.WIDTH,
     height: CFG.HEIGHT,
     parent: 'game-container',
-    backgroundColor: '#0a0e1e',
+    backgroundColor: '#fdf7ef',
     // Match-3 is grid logic, not simulation: arcade physics stays idle here.
     physics: { default: 'arcade', arcade: { gravity: { y: 0 }, debug: false } },
     scene: [

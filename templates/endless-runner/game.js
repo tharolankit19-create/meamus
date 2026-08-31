@@ -39,18 +39,19 @@
     COIN_POOL: 26
   };
 
+  // Pastel dusk: peach sky, mint ground, nothing darker than mid-tone.
   var COLORS = {
-    sky: 0x120a24,
-    skyTop: 0x2a1152,
-    ground: 0x1b1036,
-    groundLine: 0xff4fd8,
-    player: 0x4de8ff,
-    spike: 0xff4f6d,
-    barrier: 0xffb03a,
-    coin: 0xffd85e,
-    shield: 0x6c7bff,
-    hill: 0x22124a,
-    hillFar: 0x1a0e3a
+    sky: 0xfff1e6,         // peach at the horizon
+    skyTop: 0xd9ecff,      // soft blue overhead
+    ground: 0xe8f3ec,      // pale mint
+    groundLine: 0x7fbfa0,  // sage seam
+    player: 0xff7a9c,      // rose runner
+    spike: 0xef6461,       // soft red hazard
+    barrier: 0xf0a04b,     // apricot beam
+    coin: 0xffcf5c,        // honey
+    shield: 0x7aa6f0,      // periwinkle
+    hill: 0xcfe4f5,        // near hills
+    hillFar: 0xe3eef8      // far hills
   };
 
   function bakeTextures(scene) {
@@ -238,13 +239,13 @@
     buildHud() {
       var W = this.scale.width;
       this.hudScore = MEAMUS.ui.label(this, 14, 14, '0 m', {
-        size: 20, mono: true, color: '#f5f7ff', originX: 0, originY: 0
+        size: 20, mono: true, color: '#2f2a24', originX: 0, originY: 0
       }).setDepth(900);
       this.hudCoins = MEAMUS.ui.label(this, W - 14, 14, '0 coins', {
-        size: 18, mono: true, color: '#ffd85e', originX: 1, originY: 0
+        size: 18, mono: true, color: '#c9862b', originX: 1, originY: 0
       }).setDepth(900);
       this.hudSpeed = MEAMUS.ui.label(this, W / 2, 14, '', {
-        size: 14, mono: true, color: '#93a0c8', originY: 0
+        size: 14, mono: true, color: '#7d7469', originY: 0
       }).setDepth(900);
     }
 
@@ -404,12 +405,12 @@
         this.score += CFG.COIN_VALUE;
         MEAMUS.currency.add(1);
         MEAMUS.sfx.coin();
-        MEAMUS.fx.floatText(this, x, y, '+' + CFG.COIN_VALUE, '#ffd85e');
+        MEAMUS.fx.floatText(this, x, y, '+' + CFG.COIN_VALUE, '#c9862b');
       } else {
         this.shield = true;
         this.shieldRing.setVisible(true);
         MEAMUS.sfx.match(2);
-        MEAMUS.fx.floatText(this, x, y, 'SHIELD', '#6c7bff');
+        MEAMUS.fx.floatText(this, x, y, 'SHIELD', '#5570c9');
       }
       this.refreshHud();
     }
@@ -517,7 +518,7 @@
       MEAMUS.ui.title(this, W / 2, 104, isRecord ? 'NEW RECORD!' : 'WIPEOUT', 42);
       MEAMUS.ui.label(this, W / 2, 178,
         'SCORE     ' + score + '\nDISTANCE  ' + (data.metres || 0) + ' m\nCOINS     ' + (data.coins || 0) + '\nBEST      ' + best,
-        { size: 19, mono: true, color: '#f5f7ff', lineSpacing: 8 });
+        { size: 19, mono: true, color: '#2f2a24', lineSpacing: 8 });
       if (isRecord) MEAMUS.sfx.win();
 
       MEAMUS.ui.button(this, W / 2, 300, 'RUN AGAIN', () => this.scene.start('GameScene'), { width: 240 });
@@ -525,7 +526,7 @@
       MEAMUS.ui.button(this, W / 2, 364, 'WATCH AD: CONTINUE', () => {
         MEAMUS.ads.showRewarded('continue',
           () => this.scene.start('GameScene'),
-          () => MEAMUS.fx.floatText(this, W / 2, 364, 'No ad available', '#ff5d6c'));
+          () => MEAMUS.fx.floatText(this, W / 2, 364, 'No ad available', '#c4503f'));
       }, { width: 240, fill: 0x2a1152 });
       MEAMUS.ui.button(this, W / 2, 428, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: 0x2a1152 });
 
@@ -542,7 +543,7 @@
     width: CFG.WIDTH,
     height: CFG.HEIGHT,
     parent: 'game-container',
-    backgroundColor: '#120a24',
+    backgroundColor: '#fff1e6',
     physics: { default: 'arcade', arcade: { gravity: { y: CFG.GRAVITY }, debug: false } },
     scene: [
       MEAMUS.scenes.makeBoot('PreloadScene'),
