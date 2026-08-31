@@ -157,17 +157,23 @@ const config = {
   },
 
   /**
-   * Anonymous guest sessions. Off by default: an account is required to
-   * build. Set OPEN_ACCESS=true to let visitors in without signing up.
+   * Anonymous guest sessions.
+   *
+   * null means "decide at runtime": an account is required when storage can
+   * hold one, and the anonymous path opens automatically when it cannot.
+   * Requiring a login that is impossible to complete leaves a dead site, so
+   * the product degrades to usable-without-accounts instead. Resolved in
+   * server/access.js. OPEN_ACCESS=true/false forces it either way.
    */
-  openAccess: (process.env.OPEN_ACCESS || 'false').trim() === 'true',
+  openAccessSetting: process.env.OPEN_ACCESS
+    ? process.env.OPEN_ACCESS.trim() === 'true'
+    : null,
 
   /**
-   * Template library access. "gated" (the default) requires an account for
-   * everything except the showcase, which has to stay public because it runs
-   * the landing page's demo loop. "open" lets anyone play all of them.
+   * Template library access. null follows the access model above: gated when
+   * accounts work, open when they cannot. TEMPLATE_ACCESS=open|gated forces it.
    */
-  templateAccess: (process.env.TEMPLATE_ACCESS || 'gated').trim(),
+  templateAccessSetting: (process.env.TEMPLATE_ACCESS || '').trim() || null,
 
   /**
    * Test mode: anyone can generate and play without signing up. A guest

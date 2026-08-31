@@ -11,6 +11,7 @@ const express = require('express');
 const config = require('./config');
 const db = require('./db');
 const middleware = require('./middleware');
+const access = require('./access');
 const bundler = require('./services/bundler');
 const templates = require('./services/templates');
 const { PLANS } = require('./routes/billing.routes');
@@ -72,8 +73,7 @@ app.get('/api/status', (req, res) => {
     storage: db.kind,
     storageDurable: db.durable !== false,
     serverless: config.serverless,
-    openAccess: config.openAccess,
-    templateAccess: config.templateAccess,
+    ...access.describe(),
     unlimited: config.quotas.unlimited,
     quotas: config.quotas,
     billingProvider: config.billing.provider,
@@ -85,11 +85,11 @@ app.get('/api/status', (req, res) => {
       // writes to /tmp, which is discarded between invocations, so accounts
       // are created and then vanish.
       ...(db.durable === false
-        ? ['Storage is not durable here, so signup is disabled. Building and playing still work. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.']
+        ? ['No durable storage, so accounts are off and the app is running open to everyone. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to turn accounts back on.']
         : []),
       // Unlimited behind a login is a plan; unlimited with no login at all is
       // an open door to the API key.
-      ...(config.quotas.unlimited && config.aiEnabled && config.openAccess
+      ...(config.quotas.unlimited && config.aiEnabled && access.openAccess()
         ? ['OPEN_ACCESS and UNLIMITED_GENERATIONS are both on with a model key set - anyone can spend your API credits without signing up.']
         : []),
       // Settings that were corrected at boot. Silent correction is how a
@@ -181,7 +181,7 @@ async function start() {
     console.log(`  ${url}`);
     console.log('');
     console.log(`  mode       ${config.aiEnabled ? `AI · ${config.llm.provider} · ${config.llm.model}` : 'TEMPLATE (no OPENROUTER_API_KEY)'}`);
-    console.log(`  access     ${config.openAccess ? 'open - no signup required' : 'account required'} · templates ${config.templateAccess}`);
+    console.log(`  access     ${access.openAccess() ? 'open - no signup required' : 'account required'} · templates ${access.templateAccess()}`);
     console.log(`  limits     ${config.rateLimit.max} req/min · generations ${config.quotas.unlimited ? 'unlimited' : `${config.quotas.guest}/${config.quotas.free}/${config.quotas.pro} per day`}`);
     console.log(`  templates  ${templates.list().length}`);
     console.log(`  billing    ${config.billing.provider}`);

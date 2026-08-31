@@ -8,8 +8,18 @@ import { el, icon, toast, playModal, add } from './ui.js';
 import { state, templatesApi, templatePlayUrl } from './api.js';
 import { openAuth } from './auth-dialog.js';
 
+/** True when this deployment cannot create accounts at all. */
+export function accountsOff() {
+  return Boolean(state.status && state.status.accountsAvailable === false);
+}
+
 /** Opens the sign-up dialog and routes the new account into the app. */
 export async function promptSignup(reason) {
+  if (accountsOff()) {
+    toast('Accounts are off here — everything is already unlocked, just start a prompt.', 'warn', 5000);
+    location.hash = '#/';
+    return null;
+  }
   if (reason) toast(reason, 'warn', 5000);
   const user = await openAuth('register');
   if (user) location.hash = '#/dashboard';
@@ -37,12 +47,17 @@ export function siteNav(active) {
     state.user && !state.user.isGuest
       ? el('button', { class: 'btn primary', onClick: () => { location.hash = '#/dashboard'; } },
         icon('grid', 'sm'), 'Dashboard')
-      : el('span', { class: 'row', style: { gap: '8px' } },
-        el('button', { class: 'btn ghost', onClick: () => openAuth('login') }, 'Log in'),
-        el('button', {
-          class: 'btn primary',
-          onClick: () => promptSignup()
-        }, state.user && state.user.isGuest ? 'Save my work' : 'Sign up free')));
+      : accountsOff()
+        // No sign-up button when signing up cannot succeed - send people to
+        // the thing that does work instead.
+        ? el('button', { class: 'btn primary', onClick: () => { location.hash = '#/'; } },
+          icon('sparkles', 'sm'), 'Start building')
+        : el('span', { class: 'row', style: { gap: '8px' } },
+          el('button', { class: 'btn ghost', onClick: () => openAuth('login') }, 'Log in'),
+          el('button', {
+            class: 'btn primary',
+            onClick: () => promptSignup()
+          }, state.user && state.user.isGuest ? 'Save my work' : 'Sign up free')));
 }
 
 export function siteFooter() {
@@ -82,8 +97,8 @@ export function renderMarketingTemplates(host) {
   marketingPage(host, {
     active: 'templates',
     title: 'Template library',
-    lede: 'Four complete games, each the reference build for its genre. Create a ' +
-      'free account to play them all and remix any one into your own with a prompt.',
+    lede: 'Four complete games, each the reference build for its genre. Play them, ' +
+      'then remix any one into your own with a prompt.',
     body: el('div', {}, grid)
   });
 

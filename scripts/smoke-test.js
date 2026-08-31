@@ -363,38 +363,50 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.ok(buffer.length > 20000, 'apk project is too small');
   });
 
-  await check('guest sessions are refused when open access is off', async () => {
-    // The route reads config at call time, so flipping the flags is enough.
+  await check('guest sessions are refused when an account is required', async () => {
     const config = require('../server/config');
-    const previous = { open: config.openAccess, test: config.testMode };
-    config.openAccess = false;
-    config.testMode = false;
+    const previous = config.openAccessSetting;
+    config.openAccessSetting = false;
     try {
       const { status, body } = await request('/api/auth/guest', { method: 'POST' });
       assert.strictEqual(status, 403);
       assert.strictEqual(body.code, 'guest_disabled');
     } finally {
-      config.openAccess = previous.open;
-      config.testMode = previous.test;
+      config.openAccessSetting = previous;
     }
   });
 
-  await check('signup is refused when storage cannot keep the account', async () => {
-    // Better a clear refusal than a token for an account that evaporates and
-    // leaves the user told they never signed up.
+  await check('losing durable storage opens access instead of locking everyone out', async () => {
+    // The failure this prevents: account required + accounts impossible = a
+    // site nobody can use.
+    const config = require('../server/config');
     const db = require('../server/db');
+    const previous = config.openAccessSetting;
     const original = Object.getOwnPropertyDescriptor(db, 'durable');
+    config.openAccessSetting = null;                 // back to automatic
     Object.defineProperty(db, 'durable', { value: false, configurable: true });
     try {
-      const { status, body } = await request('/api/auth/register', {
-        method: 'POST', body: { email: `nodurable-${Date.now()}@meamus.test`, password: 'supersecret123' }
+      const guest = await request('/api/auth/guest', { method: 'POST' });
+      assert.strictEqual(guest.status, 201, 'a visitor must still get a session');
+
+      const gen = await request('/api/generate', {
+        method: 'POST', token: guest.body.token, body: { prompt: 'a space shooter' }
       });
-      assert.strictEqual(status, 503);
-      assert.strictEqual(body.code, 'storage_not_durable');
-      assert.match(body.error, /without an account/i, 'the message should say the app still works');
+      assert.strictEqual(gen.status, 201, 'a visitor must still be able to build');
+
+      const list = await request('/api/templates');
+      assert.ok(list.body.templates.every((t) => t.playable), 'templates must open up too');
+
+      const signup = await request('/api/auth/register', {
+        method: 'POST', body: { email: `off-${Date.now()}@meamus.test`, password: 'supersecret123' }
+      });
+      assert.strictEqual(signup.status, 503);
+      assert.match(signup.body.error, /nothing is locked/i, 'the refusal must not contradict itself');
+      assert.doesNotMatch(signup.body.error, /keep building without an account - everything works/,
+        'the old contradictory wording is back');
     } finally {
-      if (original) Object.defineProperty(db, 'durable', original);
-      else delete db.durable;
+      config.openAccessSetting = previous;
+      if (original) Object.defineProperty(db, 'durable', original); else delete db.durable;
     }
   });
 
@@ -444,8 +456,8 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     // The showcase runs the landing page's demo loop, so it has to load with
     // no session at all; the rest is the reason to sign up.
     const config = require('../server/config');
-    const previous = config.templateAccess;
-    config.templateAccess = 'gated';
+    const previous = config.templateAccessSetting;
+    config.templateAccessSetting = 'gated';
     try {
       const anon = await request('/api/templates');
       const showcase = anon.body.templates.find((t) => t.showcase);
@@ -460,7 +472,7 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
       assert.strictEqual(locked.status, 401);
       assert.ok((await locked.text()).includes('Sign up free'), 'no sign-up panel in the gated frame');
     } finally {
-      config.templateAccess = previous;
+      config.templateAccessSetting = previous;
     }
   });
 

@@ -3,11 +3,11 @@
  * ========================================================================== */
 
 import { el, icon, toast, playModal } from './ui.js';
-import { state, templatesApi, templatePlayUrl } from './api.js';
+import { state, templatesApi, templatePlayUrl, ensureGuestSession } from './api.js';
 import { createComposer } from './composer.js';
 import { openAuth } from './auth-dialog.js';
 import { startProject } from './generate.js';
-import { siteNav, siteFooter, promptSignup } from './marketing.js';
+import { siteNav, siteFooter, promptSignup, accountsOff } from './marketing.js';
 
 const EXAMPLES = [
   'A space shooter where I tap to blast asteroids and grab power-ups',
@@ -39,11 +39,16 @@ export function renderLanding(root) {
     placeholder: 'A space shooter where I tap to blast asteroids…',
     submitLabel: 'Generate game',
     async onSubmit(text, attachmentIds, { mode }) {
-      // An account is required to build. The typed prompt survives the
-      // sign-up detour and generates as soon as it completes.
-      if (!state.user) {
+      // An account is required to build, unless this deployment cannot make
+      // one - then a session already exists and the prompt runs straight
+      // through. The typed prompt survives the sign-up detour either way.
+      if (!state.user && !accountsOff()) {
         const user = await openAuth('register');
         if (!user) { toast('Create a free account to generate your game', 'warn'); return; }
+      }
+      if (!state.user) {
+        await ensureGuestSession();
+        if (!state.user) { toast('Could not start a session. Reload and try again.', 'err'); return; }
       }
       composer.setBusy(true);
       try {
@@ -65,12 +70,14 @@ export function renderLanding(root) {
         el('div', { class: 'hero-inner' },
           el('span', { class: 'eyebrow' },
             icon('sparkles', 'sm'),
-            'Free account · unlimited games'),
+            state.status && state.status.openAccess
+              ? 'No sign-up needed · unlimited games'
+              : 'Free account · unlimited games'),
           el('h1', {}, 'Describe a game.', el('br'), 'Play it in seconds.'),
           el('p', { class: 'lede' },
             'meamus turns a sentence into a complete HTML5 game — art, physics, ' +
-            'touch controls and all. Create a free account and build as many as ' +
-            'you like — there is no daily limit.'),
+            'touch controls and all. Build as many as you like — there is no ' +
+            'daily limit.'),
           signupBlockedNotice(),
           composer.node,
           el('div', { class: 'chiprow', style: { marginTop: '16px', justifyContent: 'center' } },
@@ -113,17 +120,16 @@ export function renderLanding(root) {
  * everyone including the operator.
  */
 function signupBlockedNotice() {
-  if (!state.status || state.status.storageDurable !== false) return null;
+  if (!state.status || state.status.accountsAvailable !== false) return null;
   return el('div', {
     class: 'notice',
     style: { margin: '0 auto 18px', maxWidth: '620px', textAlign: 'left' }
   },
   icon('alert'),
   el('span', {},
-    el('strong', {}, 'Accounts are not available on this deployment yet. '),
-    'Sign-up is switched off because there is nowhere durable to save it. ',
-    'The demo below still plays. ',
-    el('span', { class: 'faint' }, '(Operator: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.)')));
+    el('strong', {}, 'Accounts are off on this deployment, so everything is unlocked instead. '),
+    'Type a prompt and build — no sign-up, no limits, every template playable. ',
+    el('span', { class: 'faint' }, '(Operator: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to turn accounts on.)')));
 }
 
 /**
