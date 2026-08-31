@@ -22,7 +22,6 @@ process.env.JWT_SECRET = 'test-secret-not-for-production-use-0123456789';
 process.env.NODE_ENV = 'test';
 process.env.RATE_LIMIT_MAX = '10000';
 process.env.TEST_MODE = 'true';
-process.env.OPEN_ACCESS = 'true';   // the guest-path checks below need it on
 
 // The suite must be hermetic: it creates and deletes accounts freely, so it
 // runs against the local JSON store and never a shared project. Set
@@ -70,8 +69,6 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
   let token = null;
   let gameId = null;
   let uploadIds = [];
-  let guestToken = null;
-  let guestGameId = null;
 
   await check('GET /api/status reports a usable service', async () => {
     const { status, body } = await request('/api/status');
@@ -112,59 +109,6 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
   await check('generation still requires a session token', async () => {
     const { status } = await request('/api/generate', { method: 'POST', body: { prompt: 'a space shooter' } });
     assert.strictEqual(status, 401);
-  });
-
-  await check('open access mints a guest session with no signup', async () => {
-    const { status, body } = await request('/api/auth/guest', { method: 'POST' });
-    assert.strictEqual(status, 201);
-    assert.ok(body.token);
-    assert.strictEqual(body.user.isGuest, true);
-    assert.strictEqual(body.user.plan, 'guest');
-    // null means no cap; a number means a real one. Zero would be a lockout.
-    assert.ok(body.user.quota === null || body.user.quota >= 1,
-      `a guest cannot generate with quota ${body.user.quota}`);
-    guestToken = body.token;
-  });
-
-  await check('a guest can generate and play without an account', async () => {
-    const gen = await request('/api/generate', {
-      method: 'POST', token: guestToken, body: { prompt: 'a fast arcade space shooter' }
-    });
-    assert.strictEqual(gen.status, 201, JSON.stringify(gen.body));
-    assert.ok(gen.body.spec.gameCode.javascript.length > 1000);
-    guestGameId = gen.body.game.id;
-
-    const play = await request(`/play/${guestGameId}?token=${guestToken}`, { raw: true });
-    assert.strictEqual(play.status, 200);
-    const html = await play.text();
-    assert.ok(html.includes('game-container'), 'the guest game did not render');
-  });
-
-  await check('a guest can export HTML but not an APK', async () => {
-    const html = await request(`/api/games/${guestGameId}/export/html`, { token: guestToken, raw: true });
-    assert.strictEqual(html.status, 200);
-
-    const apk = await request(`/api/games/${guestGameId}/export/apk`, { token: guestToken });
-    assert.strictEqual(apk.status, 402);
-    assert.strictEqual(apk.body.code, 'signup_required');
-
-    const upgrade = await request('/api/billing/checkout', { method: 'POST', token: guestToken, body: { plan: 'pro' } });
-    assert.strictEqual(upgrade.status, 402, 'a throwaway guest must not be able to buy a plan');
-  });
-
-  await check('registering from a guest session keeps that session\'s games', async () => {
-    const { status, body } = await request('/api/auth/register', {
-      method: 'POST', token: guestToken,
-      body: { email: 'upgraded@meamus.test', password: 'supersecret123', name: 'Upgraded' }
-    });
-    assert.strictEqual(status, 201, JSON.stringify(body));
-    assert.strictEqual(body.upgradedFromGuest, true);
-    assert.strictEqual(body.user.isGuest, false);
-    assert.strictEqual(body.user.plan, 'free');
-
-    const games = await request('/api/games', { token: body.token });
-    assert.ok(games.body.games.some((g) => g.id === guestGameId),
-      'the game made as a guest did not survive the upgrade');
   });
 
   await check('POST /api/auth/register creates an account', async () => {
@@ -568,6 +512,53 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     }
   });
 
+  await check('there is no anonymous path into the product', async () => {
+    // The guest session is gone: it had no durable home for its games and no
+    // way to buy credits, and it produced a signed-in-looking state that could
+    // not keep anything.
+    const guest = await request('/api/auth/guest', { method: 'POST' });
+    assert.strictEqual(guest.status, 404, 'the guest endpoint is still reachable');
+
+    for (const [method, path, body] of [
+      ['POST', '/api/generate', { prompt: 'a space shooter' }],
+      ['POST', '/api/build/plan', { prompt: 'a space shooter' }],
+      ['GET', '/api/games', null]
+    ]) {
+      const res = await request(path, { method, body });
+      assert.strictEqual(res.status, 401, `${method} ${path} let a signed-out caller through`);
+      assert.strictEqual(res.body.code, 'unauthorized');
+    }
+  });
+
+  await check('the sign-in methods on offer are declared', async () => {
+    const { status, body } = await request('/api/auth/methods');
+    assert.strictEqual(status, 200);
+    assert.strictEqual(body.password, true, 'password sign-in must always work');
+    assert.strictEqual(typeof body.google, 'boolean', 'the client needs to know whether to draw the button');
+    assert.ok(['supabase', 'local'].includes(body.provider));
+  });
+
+  await check('Google sign-in is refused honestly when it is not configured', async () => {
+    // This run has no Supabase, so the button must not be offered and the
+    // endpoint must say why rather than handing out a broken URL.
+    const methods = await request('/api/auth/methods');
+    const oauth = await request('/api/auth/oauth/google');
+    if (methods.body.google) {
+      assert.strictEqual(oauth.status, 200);
+      assert.ok(/\/auth\/v1\/authorize\?provider=google/.test(oauth.body.url), 'not a Supabase authorize URL');
+    } else {
+      assert.strictEqual(oauth.status, 503);
+      assert.strictEqual(oauth.body.code, 'oauth_unavailable');
+    }
+  });
+
+  await check('a signed-in account reports no guest flag at all', async () => {
+    const { body } = await request('/api/auth/me', { token });
+    assert.strictEqual(body.user.isGuest, undefined, 'the guest flag is still being sent');
+    assert.ok(body.user.credits > 0);
+    assert.strictEqual(body.user.plan, 'free');
+  });
+
   await check('the vendored Phaser build is served', async () => {
     const res = await request('/vendor/phaser.min.js', { raw: true });
     assert.strictEqual(res.status, 200, 'a game cannot boot without this file');
@@ -593,53 +584,6 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.ok(buffer.includes(Buffer.from('config.xml')), 'cordova config.xml missing');
     assert.ok(buffer.includes(Buffer.from('www/index.html')), 'www/index.html missing');
     assert.ok(buffer.length > 20000, 'apk project is too small');
-  });
-
-  await check('guest sessions are refused when an account is required', async () => {
-    const config = require('../server/config');
-    const previous = config.openAccessSetting;
-    config.openAccessSetting = false;
-    try {
-      const { status, body } = await request('/api/auth/guest', { method: 'POST' });
-      assert.strictEqual(status, 403);
-      assert.strictEqual(body.code, 'guest_disabled');
-    } finally {
-      config.openAccessSetting = previous;
-    }
-  });
-
-  await check('losing durable storage opens access instead of locking everyone out', async () => {
-    // The failure this prevents: account required + accounts impossible = a
-    // site nobody can use.
-    const config = require('../server/config');
-    const db = require('../server/db');
-    const previous = config.openAccessSetting;
-    const original = Object.getOwnPropertyDescriptor(db, 'durable');
-    config.openAccessSetting = null;                 // back to automatic
-    Object.defineProperty(db, 'durable', { value: false, configurable: true });
-    try {
-      const guest = await request('/api/auth/guest', { method: 'POST' });
-      assert.strictEqual(guest.status, 201, 'a visitor must still get a session');
-
-      const gen = await request('/api/generate', {
-        method: 'POST', token: guest.body.token, body: { prompt: 'a space shooter' }
-      });
-      assert.strictEqual(gen.status, 201, 'a visitor must still be able to build');
-
-      const list = await request('/api/templates');
-      assert.ok(list.body.templates.every((t) => t.playable), 'templates must open up too');
-
-      const signup = await request('/api/auth/register', {
-        method: 'POST', body: { email: `off-${Date.now()}@meamus.test`, password: 'supersecret123' }
-      });
-      assert.strictEqual(signup.status, 503);
-      assert.match(signup.body.error, /nothing is locked/i, 'the refusal must not contradict itself');
-      assert.doesNotMatch(signup.body.error, /keep building without an account - everything works/,
-        'the old contradictory wording is back');
-    } finally {
-      config.openAccessSetting = previous;
-      if (original) Object.defineProperty(db, 'durable', original); else delete db.durable;
-    }
   });
 
   await check('modifying a game without an API key fails honestly', async () => {

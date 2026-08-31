@@ -141,6 +141,18 @@ const config = {
   llm: buildLlmConfig(),
 
   auth: {
+    /**
+     * Where accounts live.
+     *
+     * 'supabase' means real identity - password hashes, email confirmation and
+     * Google sign-in are Supabase's job. 'local' is the offline path a fresh
+     * clone and the test suite take. AUTH_PROVIDER forces either.
+     */
+    get provider() {
+      const forced = (process.env.AUTH_PROVIDER || '').trim().toLowerCase();
+      if (forced === 'supabase' || forced === 'local') return forced;
+      return module.exports.supabase.enabled ? 'supabase' : 'local';
+    },
     secret: (process.env.JWT_SECRET || '').trim() || crypto.randomBytes(48).toString('hex'),
     secretIsEphemeral: !(process.env.JWT_SECRET || '').trim(),
     ttlHours: positive('JWT_TTL_HOURS', process.env.JWT_TTL_HOURS, 168)

@@ -3,7 +3,7 @@
  * ========================================================================== */
 
 import { $, el, clear, icon, toast } from './ui.js';
-import { state, loadStatus, loadSession, onChange, projects, ensureGuestSession } from './api.js';
+import { state, loadStatus, loadSession, onChange, projects, consumeOAuthFragment } from './api.js';
 import { renderLanding } from './landing.js';
 import { renderDashboard, renderTemplatesPage, renderPricing, sidebar } from './dashboard.js';
 import { renderWorkspace } from './workspace.js';
@@ -23,9 +23,7 @@ async function render() {
   const host = clear(root());
   document.body.classList.toggle('workspace-route', name === 'project');
 
-  // A guest is signed in but has not committed to anything, so the marketing
-  // pages stay their home rather than the app shell.
-  const browsing = !state.user || state.user.isGuest;
+  const browsing = !state.user;
 
   if (browsing) {
     switch (name) {
@@ -122,9 +120,15 @@ function renderAccount(host) {
   onChange(() => { /* state changes re-render through explicit calls */ });
 
   await loadStatus();
+  // A Google redirect lands here with the session in the fragment. Consume it
+  // before loadSession(), or the app decides nobody is signed in and bounces
+  // straight back to the landing page.
+  try {
+    await consumeOAuthFragment();
+  } catch (err) {
+    toast(`Google sign-in failed: ${err.message}`, 'err', 8000);
+  }
   await loadSession();
-  // In test mode nobody should hit a signup wall before their first game.
-  if (!state.user) await ensureGuestSession();
 
   // Warm the project list so the sidebar's recents are populated on first paint.
   if (state.user) {

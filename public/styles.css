@@ -635,3 +635,19 @@ dialog::backdrop { background: rgba(28, 24, 18, .38); backdrop-filter: blur(2px)
   text-transform: uppercase; color: var(--ink-3);
 }
 .msg.reply.asking .reply-head { color: var(--orange); }
+
+/* Google sign-in. Neutral by Google's brand rules: their mark, our surface. */
+.google-btn {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  font-weight: 560; background: var(--bg); border: 1px solid var(--line-strong);
+}
+.google-btn:hover { background: var(--surface); border-color: var(--ink-4); }
+.google-btn .gmark { display: inline-flex; line-height: 0; }
+
+.or-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 16px 0; color: var(--ink-4); font-size: 12px;
+}
+.or-divider::before, .or-divider::after {
+  content: ''; flex: 1; height: 1px; background: var(--line);
+}

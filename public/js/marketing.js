@@ -40,11 +40,7 @@ export function siteNav(active) {
       link('Pricing', '#/pricing', 'pricing'),
       link('Docs', '#/docs', 'docs')),
     el('span', { class: 'grow' }),
-    state.user && state.user.isGuest
-      ? el('button', { class: 'btn ghost', onClick: () => { location.hash = '#/dashboard'; } },
-        icon('grid', 'sm'), 'My games')
-      : null,
-    state.user && !state.user.isGuest
+    state.user
       ? el('button', { class: 'btn primary', onClick: () => { location.hash = '#/dashboard'; } },
         icon('grid', 'sm'), 'Dashboard')
       : accountsOff()
@@ -57,7 +53,7 @@ export function siteNav(active) {
           el('button', {
             class: 'btn primary',
             onClick: () => promptSignup()
-          }, state.user && state.user.isGuest ? 'Save my work' : 'Sign up free')));
+          }, 'Sign up free')));
 }
 
 export function siteFooter() {
@@ -161,7 +157,7 @@ function templateCard(template, gated) {
         el('button', {
           class: 'btn sm',
           onClick: () => {
-            if (!state.user || state.user.isGuest) {
+            if (!state.user) {
               if (!state.user) { promptSignup('Create a free account to remix a template'); return; }
             }
             location.hash = '#/dashboard';

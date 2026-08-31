@@ -59,6 +59,37 @@ export async function loadStatus() {
   return state.status;
 }
 
+/**
+ * Finish a Google sign-in.
+ *
+ * Supabase returns the session in the URL fragment, which never reaches a
+ * server - so the browser reads it, stores it, and scrubs it out of the address
+ * bar before anything can screenshot or log it.
+ */
+export async function consumeOAuthFragment() {
+  const raw = location.hash || '';
+  const at = raw.indexOf('access_token=');
+  if (at === -1) return null;
+
+  const params = new URLSearchParams(raw.slice(raw.indexOf('#', 1) + 1 || 1).replace(/^\/?/, ''));
+  const token = params.get('access_token');
+  const refresh = params.get('refresh_token');
+  const error = params.get('error_description') || params.get('error');
+
+  // Never leave credentials in the address bar or the back button's history.
+  history.replaceState(null, '', location.pathname + location.search + '#/dashboard');
+
+  if (error) throw new Error(error);
+  if (!token) return null;
+
+  setSession(token, null);
+  if (refresh) {
+    try { localStorage.setItem('meamus:refresh', refresh); } catch { /* private mode */ }
+  }
+  await loadSession();
+  return state.user;
+}
+
 export async function loadSession() {
   if (!state.token) return null;
   try {
@@ -74,27 +105,11 @@ export async function loadSession() {
 export const auth = {
   register: (body) => api('/auth/register', { method: 'POST', body }),
   login: (body) => api('/auth/login', { method: 'POST', body }),
-  guest: () => api('/auth/guest', { method: 'POST' })
+  methods: () => api('/auth/methods'),
+  google: (redirect) => api(`/auth/oauth/google?redirect=${encodeURIComponent(redirect)}`),
+  refresh: (refreshToken) => api('/auth/refresh', { method: 'POST', body: { refreshToken } })
 };
 
-/**
- * Test mode: mint a guest session so the first prompt works with no signup.
- * The guest is a real account server-side, so nothing downstream is special-
- * cased; registering later upgrades it in place and keeps the games.
- */
-export async function ensureGuestSession() {
-  // Off by default: an account is required to build. Only OPEN_ACCESS=true
-  // brings the anonymous path back.
-  const open = state.status && state.status.openAccess;
-  if (state.user || !open) return state.user;
-  try {
-    const payload = await auth.guest();
-    setSession(payload.token, payload.user);
-    return payload.user;
-  } catch {
-    return null;
-  }
-}
 
 export const projects = {
   list: () => api('/games'),

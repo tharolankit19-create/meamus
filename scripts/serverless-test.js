@@ -147,13 +147,6 @@ const req = (p, o = {}) => {
     }
   });
 
-  await check('a guest session works, so the app is still usable', async () => {
-    const { status, body } = await req('/api/auth/guest', { method: 'POST' });
-    assert.strictEqual(status, 201, `got ${status}: ${JSON.stringify(body)}`);
-    assert.strictEqual(body.user.isGuest, true);
-    if (!token) token = body.token;
-  });
-
   await check('every template plays, since accounts are impossible here', async () => {
     const list = await req('/api/templates');
     assert.ok(list.body.templates.every((t) => t.playable),
@@ -165,31 +158,15 @@ const req = (p, o = {}) => {
   });
 
   let gameId = null;
-  await check('generation and playback work end to end', async () => {
-    const gen = await req('/api/generate', {
-      method: 'POST', token, body: { prompt: 'a space shooter with asteroids' }
-    });
-    assert.strictEqual(gen.status, 201, `got ${gen.status}: ${JSON.stringify(gen.body)}`);
-    gameId = gen.body.game.id;
-
-    const play = await req(`/play/${gameId}?token=${token}`, { raw: true });
-    assert.strictEqual(play.status, 200, `/play returned ${play.status}`);
-    assert.ok((await play.text()).includes('game-container'));
-  });
-
-  await check('uploads write to the writable path', async () => {
-    const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-    const { status, body } = await req('/api/uploads', {
-      method: 'POST', token, body: { name: 'ref.png', dataUrl: png }
-    });
-    assert.strictEqual(status, 201, `got ${status}: ${JSON.stringify(body)}`);
-    assert.ok(fs.existsSync(path.join(config.dataDir, 'uploads')), 'the upload directory was not created');
-  });
-
-  await check('the HTML export still works', async () => {
-    const res = await req(`/api/games/${gameId}/export/html`, { token, raw: true });
-    assert.strictEqual(res.status, 200);
-    assert.ok((await res.text()).length > 20000);
+  await check('a deployment with no accounts says so loudly', async () => {
+    // With guest sessions gone, a non-durable deployment is genuinely unusable
+    // rather than degraded. The status endpoint has to make that obvious, and
+    // name the fix, or the operator sees a working-looking site nobody can use.
+    const { body } = await req('/api/status');
+    assert.strictEqual(body.storageDurable, false);
+    const warnings = (body.warnings || []).join(' ');
+    assert.match(warnings, /SUPABASE_URL/, 'the warnings never name the variable to set');
+    assert.match(warnings, /SUPABASE_SERVICE_ROLE_KEY/);
   });
 
   await check('an unknown API route returns JSON, not a platform 404', async () => {

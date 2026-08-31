@@ -7,6 +7,7 @@ import { state, projects, templatesApi, playUrl, setSession, billing, templatePl
 import { createComposer } from './composer.js';
 import { startProject } from './generate.js';
 import { openAuth } from './auth-dialog.js';
+import { takePrompt } from './landing.js';
 
 const GREETINGS = ['Let\'s build something', 'What are we making', 'Ready when you are'];
 
@@ -15,7 +16,7 @@ export function renderDashboard(root, { tab = 'projects' } = {}) {
   root.append(el('div', { class: 'app' }, sidebar('dashboard'), main));
 
   const greeting = GREETINGS[new Date().getDate() % GREETINGS.length];
-  const firstName = state.user.isGuest ? '' : (state.user.name || state.user.email).split(/[\s@]/)[0];
+  const firstName = (state.user.name || state.user.email || '').split(/[\s@]/)[0];
 
   const composer = createComposer({
     placeholder: 'Describe your next game… attach art or notes with +',
@@ -66,12 +67,20 @@ export function renderDashboard(root, { tab = 'projects' } = {}) {
         quotaLabel(state.user))),
     listHost]);
 
+  // A prompt typed on the landing page before signing in is waiting here. The
+  // sign-in detour should be invisible: the words come back, ready to send.
+  const pending = takePrompt();
+  if (pending) {
+    composer.setValue(pending);
+    composer.focus();
+  }
+
   loadTab(tab, listHost);
 }
 
 /* --- sidebar -------------------------------------------------------------- */
 export function sidebar(active) {
-  const initial = state.user.isGuest ? 'G' : (state.user.name || state.user.email).charAt(0).toUpperCase();
+  const initial = (state.user.name || state.user.email || 'P').charAt(0).toUpperCase();
 
   const recents = state.projects.slice(0, 6).map((project) => el('button', {
     class: 'side-item',
@@ -86,7 +95,7 @@ export function sidebar(active) {
     el('button', { class: 'workspace-pill', onClick: () => { location.hash = '#/account'; } },
       el('span', { class: 'avatar' }, initial),
       el('span', { class: 'nm grow', style: { textAlign: 'left' } },
-        state.user.isGuest ? 'Guest workspace' : (state.user.name || 'My workspace')),
+        state.user.name || 'My workspace'),
       icon('chevronDown', 'sm')),
 
     el('div', { style: { height: '10px' } }),
@@ -107,18 +116,7 @@ export function sidebar(active) {
       el('div', { class: 'side-label' }, 'Recent'),
       ...recents) : null,
 
-    state.user.isGuest
-      ? el('div', { class: 'upsell' },
-        el('h4', {}, 'Guest session'),
-        el('p', {}, 'Your games live in this browser only. Sign up to keep them.'),
-        el('button', {
-          class: 'btn primary sm block',
-          onClick: async () => {
-            const user = await openAuth('register');
-            if (user) window.dispatchEvent(new HashChangeEvent('hashchange'));
-          }
-        }, icon('user', 'sm'), 'Save my work'))
-      : state.user.plan === 'pro'
+    state.user.plan === 'pro'
         ? el('div', { class: 'upsell', style: { marginTop: 'auto' } },
           el('h4', {}, 'Pro plan'),
           el('p', {}, `${state.user.credits} credits left, plus Android APK export.`))
@@ -134,7 +132,7 @@ export function sidebar(active) {
       class: 'side-item',
       style: { marginTop: '6px' },
       onClick: () => { setSession(null, null); location.href = '/'; }
-    }, icon('user'), state.user.isGuest ? 'End guest session' : 'Sign out'));
+    }, icon('user'), 'Sign out'));
 }
 
 /* --- lists ---------------------------------------------------------------- */
@@ -303,10 +301,6 @@ export async function renderPricing(root) {
 }
 
 async function changePlan(planId) {
-  if (state.user.isGuest) {
-    const user = await openAuth('register');
-    if (!user) { toast('Create an account before upgrading', 'warn'); return; }
-  }
   try {
     const payload = planId === 'free' ? await billing.downgrade() : await billing.checkout(planId);
     if (payload.checkoutUrl) { location.href = payload.checkoutUrl; return; }
