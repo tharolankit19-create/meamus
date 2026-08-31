@@ -147,6 +147,8 @@
    */
   MEAMUS.viewport = function (designW, designH, opts) {
     opts = opts || {};
+    // Remembered so a resize can recompute with the same terms.
+    MEAMUS._viewportArgs = { designW: designW, designH: designH, opts: opts };
     var dw = designW || 800;
     var dh = designH || 600;
     var area = dw * dh;
@@ -830,8 +832,48 @@
         else if (active && active.scene.key !== 'MenuScene') active.scene.start('MenuScene');
       }, false);
 
+      /**
+       * Re-fit when the frame around the game changes size.
+       *
+       * A preview pane that is dragged narrower, or a phone rotated, used to
+       * leave the canvas at its boot-time shape and simply letterbox harder.
+       * This recomputes the viewport on the same terms it was first asked for
+       * and resizes the canvas to match.
+       *
+       * A menu or game-over screen lays itself out in create(), so it is
+       * restarted to pick up the new dimensions. A run in progress is not:
+       * throwing away someone's game to fix a layout is the worse trade, and
+       * those scenes anchor their HUD to the top edge, which survives.
+       */
+      var refit = null;
       global.addEventListener('resize', function () {
-        if (game.isBooted) game.scale.refresh();
+        if (!game.isBooted) return;
+        clearTimeout(refit);
+        refit = setTimeout(function () {
+          var args = MEAMUS._viewportArgs;
+          if (!args) { game.scale.refresh(); return; }
+
+          var next = MEAMUS.viewport(args.designW, args.designH, args.opts);
+          var dw = Math.abs(next.width - game.scale.width) / game.scale.width;
+          var dh = Math.abs(next.height - game.scale.height) / game.scale.height;
+          // Ignore the pixel or two a scrollbar costs; only real changes.
+          if (dw < 0.04 && dh < 0.04) { game.scale.refresh(); return; }
+
+          game.scale.resize(next.width, next.height);
+          // resize() updates the backing store but NOT displaySize's aspect
+          // ratio, which Phaser locks at boot. Without this the canvas becomes
+          // portrait while the CSS box carries on scaling to the original
+          // landscape shape - a 490x980 game displayed at 420x280.
+          if (game.scale.displaySize && game.scale.displaySize.setAspectRatio) {
+            game.scale.displaySize.setAspectRatio(next.width / next.height);
+          }
+          game.scale.refresh();
+          if (game.physics && game.physics.world && game.physics.world.setBounds) {
+            game.physics.world.setBounds(0, 0, next.width, next.height);
+          }
+          var active = game.scene.getScenes(true)[0];
+          if (active && active.scene.key !== 'GameScene') active.scene.restart();
+        }, 220);
       });
 
       global.MEAMUS_GAME = game;
