@@ -110,10 +110,12 @@ app.get('/api/status', (req, res) => {
       ...(db.durable === false
         ? ['No durable storage, so accounts are off and the app is running open to everyone. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to turn accounts back on.']
         : []),
-      // Unlimited behind a login is a plan; unlimited with no login at all is
-      // an open door to the API key.
-      ...(config.quotas.unlimited && config.aiEnabled && access.openAccess()
-        ? ['OPEN_ACCESS and UNLIMITED_GENERATIONS are both on with a model key set - anyone can spend your API credits without signing up.']
+      // Open access with a model key means strangers reach the API key. Credits
+      // bound how far each one gets, so the warning says which case this is.
+      ...(config.aiEnabled && access.openAccess()
+        ? [config.credits.enabled
+          ? `Access is open with a model key set. Credits cap each anonymous visitor at ${Math.floor(Math.round(config.credits.signupGrant / 4) / config.credits.costCreate)} generations, but a new session gets a fresh grant. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to require accounts.`
+          : 'Access is open with a model key set and credits are off - anyone can spend your API credits without signing up.']
         : []),
       // Settings that were corrected at boot. Silent correction is how a
       // rate limit of 0 turns into "the whole site is down" with no clue why.
