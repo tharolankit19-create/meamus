@@ -100,7 +100,10 @@ export const projects = {
   list: () => api('/games'),
   get: (id) => api(`/games/${id}`),
   create: (body) => api('/generate', { method: 'POST', body }),
-  chat: (id, body) => api(`/games/${id}/modify`, { method: 'POST', body }),
+  // The chat endpoint routes: a question is answered, a vague request is
+  // questioned back, anything else rebuilds. /modify is the direct build path.
+  chat: (id, body) => api(`/games/${id}/chat`, { method: 'POST', body }),
+  modify: (id, body) => api(`/games/${id}/modify`, { method: 'POST', body }),
   revert: (id) => api(`/games/${id}/revert`, { method: 'POST' }),
   patch: (id, body) => api(`/games/${id}`, { method: 'PATCH', body }),
   remove: (id) => api(`/games/${id}`, { method: 'DELETE' })

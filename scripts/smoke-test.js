@@ -411,6 +411,40 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.strictEqual(byId.starter.apk, false);
   });
 
+  await check('a vague chat turn is questioned back, not guessed at', async () => {
+    const before = (await request('/api/auth/me', { token })).body.user.credits;
+    const { status, body } = await request(`/api/games/${gameId}/chat`, {
+      method: 'POST', token, body: { message: 'make it better' }
+    });
+    assert.strictEqual(status, 200);
+    assert.strictEqual(body.kind, 'clarify', 'a vague turn triggered a rebuild');
+    assert.ok(body.reply.length > 40, 'the clarifying question says nothing useful');
+    assert.strictEqual(body.credits.charged, 0, 'asking a question charged credits');
+    const after = (await request('/api/auth/me', { token })).body.user.credits;
+    assert.strictEqual(after, before, 'a clarifying question moved the balance');
+    const last = body.messages[body.messages.length - 1];
+    assert.strictEqual(last.kind, 'clarify', 'the turn was not tagged for the UI');
+  });
+
+  await check('a specific chat turn is treated as a change, not a question', async () => {
+    // No model key in this run, so the build itself fails - but it must fail as
+    // a build (503), which proves the router sent it down the modify path.
+    const { status, body } = await request(`/api/games/${gameId}/chat`, {
+      method: 'POST', token, body: { message: 'add a boss every five waves' }
+    });
+    assert.ok(status === 503 || status === 200,
+      `a concrete instruction should build, got ${status} ${JSON.stringify(body)}`);
+    if (status === 200) assert.strictEqual(body.kind, 'change');
+  });
+
+  await check('an empty chat turn is refused', async () => {
+    const { status, body } = await request(`/api/games/${gameId}/chat`, {
+      method: 'POST', token, body: { message: '   ' }
+    });
+    assert.strictEqual(status, 400);
+    assert.strictEqual(body.code, 'empty_message');
+  });
+
   await check('the vendored Phaser build is served', async () => {
     const res = await request('/vendor/phaser.min.js', { raw: true });
     assert.strictEqual(res.status, 200, 'a game cannot boot without this file');

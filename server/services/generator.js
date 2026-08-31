@@ -259,4 +259,41 @@ async function modify(instruction, currentSpec, opts = {}) {
   return aiGenerate([message], issues);
 }
 
-module.exports = { generate, modify, templateGenerate, analysePrompt, titleFromPrompt };
+/**
+ * Answer a question about the player's own game.
+ *
+ * No schema and no rebuild: the spec goes in as context and plain prose comes
+ * back. This is what makes the workspace a conversation rather than a build
+ * queue, and it is why a question costs no credits.
+ */
+async function answer(question, currentSpec) {
+  if (!config.aiEnabled) {
+    const err = new SpecError('Answering questions needs a model API key. Add OPENROUTER_API_KEY to .env and restart.');
+    err.status = 503;
+    throw err;
+  }
+  const summary = {
+    title: currentSpec.gameConfig.title,
+    genre: currentSpec.gameConfig.genre,
+    difficulty: currentSpec.gameConfig.difficulty,
+    description: currentSpec.gameConfig.description,
+    controls: currentSpec.controls,
+    mechanics: currentSpec.mechanics,
+    sprites: (currentSpec.assets.sprites || []).map((s) => s.name || s.key || s.id)
+  };
+  const result = await llm.complete({
+    system: 'You answer questions about a Phaser 3 game the person you are talking to already owns. '
+      + 'Be brief - a few sentences. Use the spec you are given; if it does not cover something, say so '
+      + 'rather than inventing it. When a change would answer the question better than an explanation, '
+      + 'say what you would change and ask them to confirm. Never return code or JSON.',
+    messages: [{
+      role: 'user',
+      content: `Here is the current game spec:\n\n${JSON.stringify(summary, null, 2)}\n\n`
+        + `Their question: ${question}`
+    }],
+    maxTokens: 700
+  });
+  return { text: String(result.text || '').trim(), meta: { mode: 'chat', provider: result.provider } };
+}
+
+module.exports = { generate, modify, answer, templateGenerate, analysePrompt, titleFromPrompt };

@@ -8,6 +8,7 @@ const uploads = require('../services/uploads');
 const bundler = require('../services/bundler');
 const apk = require('../services/apk');
 const credits = require('../credits');
+const intent = require('../services/intent');
 const { requireAuth, requirePlan, enforceQuota, recordUsage, asyncRoute } = require('../middleware');
 
 /**
@@ -204,6 +205,91 @@ router.post('/games/:id/modify', requireAuth, costs('iterate'), enforceQuota, as
   const billed = credits.charge(req.user, 'iterate');
 
   res.json({
+    game: summarise(updated),
+    spec,
+    meta: updated.meta,
+    messages: updated.messages,
+    credits: { charged: billed.charged, balance: billed.balance },
+    quota: { used, limit: config.quotas.unlimited ? null : (config.quotas[req.user.plan] || config.quotas.free) }
+  });
+}));
+
+/**
+ * A chat turn.
+ *
+ * Not every message is a build order. A question about the game is answered
+ * and costs nothing; a request too vague to act on gets a question back rather
+ * than a guessed rewrite that the player then has to undo; anything else falls
+ * through to a real modify, which is what costs credits.
+ */
+router.post('/games/:id/chat', requireAuth, asyncRoute(async (req, res) => {
+  const game = ownedGame(req, res);
+  if (!game) return;
+
+  const text = String(req.body.message || req.body.instruction || '').trim();
+  if (!text) return res.status(400).json({ error: 'Say something first', code: 'empty_message' });
+
+  const verdict = intent.classify(text);
+
+  if (verdict.kind === 'clarify') {
+    const reply = intent.clarifyingQuestion(game.spec);
+    const updated = db.update('games', game.id, {
+      messages: appendMessages(game,
+        message('user', text),
+        message('assistant', reply, { kind: 'clarify', mode: 'chat' }))
+    });
+    return res.json({
+      kind: 'clarify', reply, messages: updated.messages,
+      credits: { charged: 0, balance: credits.balanceOf(req.user) }
+    });
+  }
+
+  if (verdict.kind === 'question') {
+    const { text: reply, meta } = await generator.answer(text, game.spec);
+    const updated = db.update('games', game.id, {
+      messages: appendMessages(game,
+        message('user', text),
+        message('assistant', reply, { kind: 'answer', mode: meta.mode }))
+    });
+    return res.json({
+      kind: 'answer', reply, messages: updated.messages,
+      credits: { charged: 0, balance: credits.balanceOf(req.user) }
+    });
+  }
+
+  // A real change. Same gate and same price as POST /games/:id/modify.
+  if (config.credits.enabled && !credits.canAfford(req.user, 'iterate')) {
+    return res.status(402).json({
+      error: `You need ${credits.costOf('iterate')} credits for this and have ${credits.balanceOf(req.user)}. Pick a plan to top up.`,
+      code: 'insufficient_credits',
+      balance: credits.balanceOf(req.user),
+      required: credits.costOf('iterate')
+    });
+  }
+
+  const attachments = uploads.resolve(req.body.attachmentIds, req.user.id);
+  const { spec, meta } = await generator.modify(text, game.spec, { attachments });
+
+  const versions = [
+    { spec: game.spec, meta: game.meta, instruction: null, savedAt: game.updatedAt },
+    ...(game.versions || [])
+  ].slice(0, MAX_VERSIONS);
+
+  const updated = db.update('games', game.id, {
+    spec,
+    meta: { ...meta, lastInstruction: text },
+    versions,
+    messages: appendMessages(game,
+      message('user', text, { attachments: attachments.map(uploads.publicView) }),
+      message('assistant', describeBuild(spec, meta), {
+        title: spec.gameConfig.title, kind: 'edit', mode: meta.mode
+      }))
+  });
+  const used = recordUsage(req.user);
+  const billed = credits.charge(req.user, 'iterate');
+
+  res.json({
+    kind: 'change',
     game: summarise(updated),
     spec,
     meta: updated.meta,

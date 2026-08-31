@@ -618,3 +618,20 @@ dialog::backdrop { background: rgba(28, 24, 18, .38); backdrop-filter: blur(2px)
 }
 .credit-chip.low { border-color: var(--orange-line); background: var(--orange-soft); color: var(--orange); }
 .credit-chip b { font-variant-numeric: tabular-nums; }
+
+/* An assistant turn that is prose - an answer, or a question back - rather
+   than a build. It must not look like a build card, which would claim a
+   rebuild that never happened. */
+.msg.reply { display: flex; justify-content: flex-start; }
+.msg.reply .bubble {
+  max-width: 92%; background: var(--bg); border: 1px solid var(--line);
+  border-radius: var(--r); padding: 11px 13px; color: var(--ink);
+  font-size: 13.5px; line-height: 1.6; white-space: pre-wrap;
+}
+.msg.reply.asking .bubble { border-color: var(--orange-line); background: var(--orange-soft); }
+.reply-head {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
+  font-size: 11.5px; font-weight: 600; letter-spacing: .02em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.msg.reply.asking .reply-head { color: var(--orange); }

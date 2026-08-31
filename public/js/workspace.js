@@ -161,12 +161,23 @@ export async function renderWorkspace(root, projectId) {
       const pending = el('div', { class: 'build-card' },
         el('div', { class: 'thinking' },
           el('span', { class: 'dots' }, el('i'), el('i'), el('i')),
-          el('span', {}, 'Applying your change…')));
+          el('span', {}, 'Reading your message…')));
       thread.append(pending);
       scrollThread();
 
       try {
-        const result = await projects.chat(data.game.id, { instruction: text, attachmentIds });
+        const result = await projects.chat(data.game.id, { message: text, attachmentIds });
+
+        // A question or a clarifying question changes the thread, not the game.
+        if (result.kind === 'answer' || result.kind === 'clarify') {
+          data.messages = result.messages || data.messages;
+          state.project = data;
+          composer.clearAll();
+          paintThread();
+          scrollThread();
+          return;
+        }
+
         data = {
           game: result.game, spec: result.spec, meta: result.meta,
           messages: result.messages || data.messages
@@ -227,9 +238,24 @@ export async function renderWorkspace(root, projectId) {
           el('div', {}, el('h4', {}, data.game.title), el('div', { class: 'sub' }, 'Ready')))));
     }
     for (const message of messages) {
-      thread.append(message.role === 'user' ? userBubble(message) : buildCard(message));
+      if (message.role === 'user') { thread.append(userBubble(message)); continue; }
+      // An answer or a clarifying question is prose, not a build - rendering it
+      // as a build card would claim a rebuild that never happened.
+      thread.append(message.kind === 'answer' || message.kind === 'clarify'
+        ? replyBubble(message)
+        : buildCard(message));
     }
     scrollThread();
+  }
+
+  /** A plain prose turn from the assistant: an answer, or a question back. */
+  function replyBubble(message) {
+    return el('div', { class: `msg reply ${message.kind === 'clarify' ? 'asking' : ''}` },
+      el('div', { class: 'bubble' },
+        el('div', { class: 'reply-head' },
+          icon(message.kind === 'clarify' ? 'alert' : 'sparkles', 'sm'),
+          el('span', {}, message.kind === 'clarify' ? 'Need one detail' : 'Answer')),
+        el('div', { class: 'reply-body' }, message.text)));
   }
 
   function userBubble(message) {
