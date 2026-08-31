@@ -699,3 +699,49 @@ dialog::backdrop { background: rgba(28, 24, 18, .38); backdrop-filter: blur(2px)
 .build-line-at { color: var(--ink-4); font-size: 11px; }
 .btn.danger { background: var(--red-soft); border-color: #f0c4c4; color: var(--red); }
 .btn.danger:hover:not(:disabled) { background: #fbe3e3; }
+
+/* --- setup screen: for the operator, not the player ------------------------ */
+.setup-wrap { min-height: 100vh; display: grid; place-items: center; padding: 32px 20px; background: var(--surface); }
+.setup-card {
+  max-width: 620px; width: 100%; background: var(--bg);
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 30px; box-shadow: var(--shadow-lg);
+}
+.setup-list { display: flex; flex-direction: column; gap: 12px; }
+.setup-item {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 13px 15px; border: 1px solid var(--orange-line);
+  background: var(--orange-soft); border-radius: var(--r);
+}
+.setup-key { font-family: var(--mono); font-size: 13px; font-weight: 640; color: var(--orange); }
+.setup-meta {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px;
+  margin-top: 18px; padding: 14px; border: 1px solid var(--line);
+  border-radius: var(--r); background: var(--bg-warm);
+}
+.setup-meta > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.setup-meta span {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--ink-3); font-weight: 600;
+}
+.setup-meta code, .setup-card code {
+  font-family: var(--mono); font-size: 12px; color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.setup-note {
+  margin-top: 18px; padding: 13px 15px; border-radius: var(--r);
+  border: 1px solid var(--line); background: var(--surface);
+  font-size: 13px; line-height: 1.6; color: var(--ink-2);
+}
+
+/* A variable that was set under the wrong name is the one cause of
+   "I configured it and nothing happened" that nothing else can surface. */
+.setup-typo {
+  margin-top: 18px; padding: 14px 15px; border-radius: var(--r);
+  border: 1px solid #f3c9c9; background: var(--red-soft);
+  display: flex; flex-direction: column; gap: 9px;
+}
+.setup-typo > strong { font-size: 13px; color: var(--red); }
+.setup-typo-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.setup-typo-row .wrong { color: var(--red); text-decoration: line-through; }
+.setup-typo-row .right { color: var(--green); font-weight: 640; }

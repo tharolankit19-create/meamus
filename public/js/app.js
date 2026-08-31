@@ -5,6 +5,7 @@
 import { $, el, clear, icon, toast } from './ui.js';
 import { state, loadStatus, loadSession, onChange, projects, consumeOAuthFragment } from './api.js';
 import { renderLanding } from './landing.js';
+import { setupRequired, renderSetup } from './setup.js';
 import { renderDashboard, renderTemplatesPage, renderPricing, sidebar } from './dashboard.js';
 import { renderWorkspace } from './workspace.js';
 import { openAuth } from './auth-dialog.js';
@@ -22,6 +23,14 @@ async function render() {
   const { name, params } = parseRoute();
   const host = clear(root());
   document.body.classList.toggle('workspace-route', name === 'project');
+
+  // Nothing else can work until the deployment is configured, so nothing else
+  // is shown. Offering a sign-up form that cannot succeed is what produced the
+  // "create your account / accounts are off" contradiction.
+  if (setupRequired()) {
+    renderSetup(host);
+    return;
+  }
 
   const browsing = !state.user;
 

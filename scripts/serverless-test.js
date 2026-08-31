@@ -107,12 +107,18 @@ const req = (p, o = {}) => {
     } else {
       assert.strictEqual(body.storage, 'json');
       assert.strictEqual(body.storageDurable, false, 'a /tmp store must not claim to be durable');
-      assert.ok(body.warnings.some((w) => /accounts are off/i.test(w)),
+      assert.ok(body.warnings.some((w) => /SUPABASE_URL/.test(w)),
         `no persistence warning: ${JSON.stringify(body.warnings)}`);
-      // The whole point: no accounts must not mean no product.
-      assert.strictEqual(body.openAccess, true, 'access should have opened automatically');
+      // The product used to open itself to everyone here. That produced a
+      // sign-up form offering free credits that errored on submit, and left
+      // the model key reachable without an account. It now reports itself as
+      // unconfigured and shows the operator what to set.
+      assert.strictEqual(body.openAccess, false, 'an unconfigured deployment opened itself up');
+      assert.strictEqual(body.setupRequired, true, 'the deployment does not admit it is unconfigured');
       assert.strictEqual(body.accountsAvailable, false);
-      assert.strictEqual(body.templateAccess, 'open');
+      // Gated, like everything else on an unconfigured deployment. Only the
+      // showcase template stays public, because it is the landing demo.
+      assert.strictEqual(body.templateAccess, 'gated');
     }
   });
 
@@ -147,17 +153,15 @@ const req = (p, o = {}) => {
     }
   });
 
-  await check('every template plays, since accounts are impossible here', async () => {
+  await check('an unconfigured deployment hands out nothing, not everything', async () => {
+    // The inverse of the old rule. When accounts cannot exist, the answer is
+    // to say so - not to unlock the whole library to anyone who finds the URL.
     const list = await req('/api/templates');
-    assert.ok(list.body.templates.every((t) => t.playable),
-      'gating the library behind an account that cannot exist locks it forever');
-    for (const template of list.body.templates) {
-      const res = await req(`/api/templates/${template.id}/play`, { raw: true });
-      assert.strictEqual(res.status, 200, `${template.id} answered ${res.status}`);
-    }
+    assert.strictEqual(list.body.gated, true, 'the library is open on an unconfigured deployment');
+    assert.ok(list.body.templates.every((t) => !t.playable || t.showcase),
+      'templates other than the showcase are playable without an account');
   });
 
-  let gameId = null;
   await check('a deployment with no accounts says so loudly', async () => {
     // With guest sessions gone, a non-durable deployment is genuinely unusable
     // rather than degraded. The status endpoint has to make that obvious, and
@@ -167,6 +171,53 @@ const req = (p, o = {}) => {
     const warnings = (body.warnings || []).join(' ');
     assert.match(warnings, /SUPABASE_URL/, 'the warnings never name the variable to set');
     assert.match(warnings, /SUPABASE_SERVICE_ROLE_KEY/);
+  });
+
+  await check('a misspelled variable is named, not silently ignored', async () => {
+    const { audit, didYouMean } = require('../server/env-audit');
+
+    // The one cause of "I set it and nothing happened" that no substring
+    // search can find. SUPERBASE does not contain SUPABASE.
+    for (const [typo, meant] of [
+      ['SUPERBASE_URL', 'SUPABASE_URL'],
+      ['SUPABSE_URL', 'SUPABASE_URL'],
+      ['SUPERBASE_SERVICE_ROLE_KEY', 'SUPABASE_SERVICE_ROLE_KEY'],
+      ['OPENROUTER_KEY', 'OPENROUTER_API_KEY'],
+      ['OPEN_ROUTER_API_KEY', 'OPENROUTER_API_KEY'],
+      ['JWT_SECRETT', 'JWT_SECRET']
+    ]) {
+      assert.strictEqual(didYouMean(typo), meant, `${typo} was not recognised as a typo`);
+    }
+
+    // A correct name is not a typo, and unrelated names are left alone.
+    assert.strictEqual(didYouMean('SUPABASE_URL'), null);
+    assert.strictEqual(didYouMean('MY_UNRELATED_THING'), null);
+
+    const result = audit({ SUPERBASE_URL: 'https://x.example', SUPABASE_URL: '', PATH: '/usr/bin' });
+    assert.deepStrictEqual(result.suspicious.map((x) => x.name), ['SUPERBASE_URL']);
+    assert.ok(!result.seen.includes('SUPABASE_URL'), 'an empty variable must not count as set');
+  });
+
+  await check('an unconfigured deployment refuses to pretend', async () => {
+    // It used to open the anonymous path instead, which produced a sign-up
+    // dialog offering free credits that errored on submit.
+    const { body } = await req('/api/status');
+    assert.strictEqual(body.setupRequired, true, 'the deployment claims to be ready');
+    assert.strictEqual(body.openAccess, false, 'an unconfigured deployment opened itself to everyone');
+    const keys = (body.setupMissing || []).map((m) => m.key);
+    assert.ok(keys.includes('SUPABASE_URL'), 'the fix is not named');
+    assert.ok(keys.includes('SUPABASE_SERVICE_ROLE_KEY'));
+    assert.ok(body.deployment, 'no deployment identity, so an operator cannot tell which one to fix');
+    assert.ok(typeof body.deployment.envCount === 'number');
+  });
+
+  await check('registering is refused while the deployment is unconfigured', async () => {
+    const { status, body } = await req('/api/auth/register', {
+      method: 'POST',
+      body: { email: `nope-${Date.now()}@example.com`, password: 'hunter2hunter2' }
+    });
+    assert.strictEqual(status, 503);
+    assert.strictEqual(body.code, 'storage_not_durable');
   });
 
   await check('an unknown API route returns JSON, not a platform 404', async () => {

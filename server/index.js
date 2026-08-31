@@ -15,6 +15,7 @@ const access = require('./access');
 const bundler = require('./services/bundler');
 const templates = require('./services/templates');
 const { PLANS } = require('./routes/billing.routes');
+const envAuditor = require('./env-audit');
 
 const app = express();
 
@@ -59,6 +60,8 @@ app.use('/api', middleware.rateLimit());
 
 /* --- API ----------------------------------------------------------------- */
 app.get('/api/status', (req, res) => {
+  // Recomputed per request so a redeploy is reflected without a restart.
+  const envAudit = envAuditor.audit();
   res.json({
     service: 'meamus',
     version: require('../package.json').version,
@@ -88,19 +91,25 @@ app.get('/api/status', (req, res) => {
     // Names only, never values. A key set under the wrong name - or on the
     // wrong Vercel environment - is invisible otherwise, and looks exactly
     // like a key that was never added.
-    envSeen: [
-      'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'ANTHROPIC_API_KEY',
-      'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'JWT_SECRET',
-      'OPEN_ACCESS', 'TEMPLATE_ACCESS', 'UNLIMITED_GENERATIONS', 'NODE_ENV'
-    ].filter((name) => (process.env[name] || '').trim().length > 0),
-    envUnexpected: Object.keys(process.env)
-      .filter((name) => /OPENROUTER|OPEN_ROUTER|SUPABASE|ANTHROPIC/i.test(name))
-      .filter((name) => ![
-        'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'OPENROUTER_BASE_URL',
-        'OPENROUTER_REFERER', 'OPENROUTER_TITLE', 'ANTHROPIC_API_KEY',
-        'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL',
-        'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'
-      ].includes(name)),
+    // Which deployment is answering. Env vars set on the wrong Vercel
+    // environment, or set after the last deploy, are invisible otherwise and
+    // look exactly like vars that were never added.
+    // Recomputed per request, so a redeploy is reflected without a restart.
+    deployment: {
+      vercelEnv: process.env.VERCEL_ENV || null,          // production | preview | development
+      branch: process.env.VERCEL_GIT_COMMIT_REF || null,
+      commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || null,
+      region: process.env.VERCEL_REGION || null,
+      envCount: envAudit.count
+    },
+    // Names only, never values. A key set under the wrong name - or on the
+    // wrong Vercel environment - is invisible otherwise, and looks exactly
+    // like a key that was never added.
+    envSeen: envAudit.seen,
+    // Names that look like a near miss for one the app reads. A misspelling is
+    // the one cause of "I set it and nothing happened" that no substring
+    // search would ever surface.
+    envSuspicious: envAudit.suspicious,
     warnings: [
       ...(config.aiEnabled ? [] : ['OPENROUTER_API_KEY is not set - generation runs in template mode.']),
       ...(config.testMode ? ['TEST_MODE is on - anyone can generate without signing up.'] : []),
