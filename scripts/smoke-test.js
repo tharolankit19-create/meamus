@@ -370,15 +370,19 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.strictEqual(last.kind, 'clarify', 'the turn was not tagged for the UI');
   });
 
-  await check('a specific chat turn is treated as a change, not a question', async () => {
-    // No model key in this run, so the build itself fails - but it must fail as
-    // a build (503), which proves the router sent it down the modify path.
+  await check('a specific chat turn is handed to the build pipeline, not built inline', async () => {
+    const before = (await request('/api/auth/me', { token })).body.user.credits;
     const { status, body } = await request(`/api/games/${gameId}/chat`, {
       method: 'POST', token, body: { message: 'add a boss every five waves' }
     });
-    assert.ok(status === 503 || status === 200,
-      `a concrete instruction should build, got ${status} ${JSON.stringify(body)}`);
-    if (status === 200) assert.strictEqual(body.kind, 'change');
+    assert.strictEqual(status, 200);
+    assert.strictEqual(body.kind, 'change', 'a concrete instruction was not treated as a change');
+    assert.strictEqual(body.instruction, 'add a boss every five waves');
+    // Crucially it has not built anything yet: a change is quoted and approved
+    // first, so there is exactly one build path rather than two that can drift.
+    assert.strictEqual(body.spec, undefined, 'the chat route built inline instead of quoting');
+    const after = (await request('/api/auth/me', { token })).body.user.credits;
+    assert.strictEqual(after, before, 'recognising a change charged for it');
   });
 
   await check('an empty chat turn is refused', async () => {

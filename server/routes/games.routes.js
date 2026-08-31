@@ -257,45 +257,13 @@ router.post('/games/:id/chat', requireAuth, asyncRoute(async (req, res) => {
     });
   }
 
-  // A real change. Same gate and same price as POST /games/:id/modify.
-  if (config.credits.enabled && !credits.canAfford(req.user, 'iterate')) {
-    return res.status(402).json({
-      error: `You need ${credits.costOf('iterate')} credits for this and have ${credits.balanceOf(req.user)}. Pick a plan to top up.`,
-      code: 'insufficient_credits',
-      balance: credits.balanceOf(req.user),
-      required: credits.costOf('iterate')
-    });
-  }
-
-  const attachments = uploads.resolve(req.body.attachmentIds, req.user.id);
-  const { spec, meta } = await generator.modify(text, game.spec, { attachments });
-
-  const versions = [
-    { spec: game.spec, meta: game.meta, instruction: null, savedAt: game.updatedAt },
-    ...(game.versions || [])
-  ].slice(0, MAX_VERSIONS);
-
-  const updated = db.update('games', game.id, {
-    spec,
-    meta: { ...meta, lastInstruction: text },
-    versions,
-    messages: appendMessages(game,
-      message('user', text, { attachments: attachments.map(uploads.publicView) }),
-      message('assistant', describeBuild(spec, meta), {
-        title: spec.gameConfig.title, kind: 'edit', mode: meta.mode
-      }))
-  });
-  const used = recordUsage(req.user);
-  const billed = credits.charge(req.user, 'iterate');
-
-  res.json({
+  // A real change is a build, and a build is quoted and approved before it
+  // runs. Saying so here and letting the client take it through /build/plan
+  // keeps one build path instead of two that can drift apart.
+  return res.json({
     kind: 'change',
-    game: summarise(updated),
-    spec,
-    meta: updated.meta,
-    messages: updated.messages,
-    credits: { charged: billed.charged, balance: billed.balance },
-    quota: { used, limit: config.quotas.unlimited ? null : (config.quotas[req.user.plan] || config.quotas.free) }
+    instruction: text,
+    balance: credits.balanceOf(req.user)
   });
 }));
 

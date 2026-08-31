@@ -124,6 +124,20 @@ export const projects = {
   remove: (id) => api(`/games/${id}`, { method: 'DELETE' })
 };
 
+/**
+ * The build pipeline: quote, approve, watch, stop.
+ *
+ * Deliberately four calls rather than one. The founder sees the price before
+ * it is spent, watches the work, and can call it off - none of which is
+ * possible when a build is a single blocking request.
+ */
+export const builds = {
+  plan: (body) => api('/build/plan', { method: 'POST', body }),
+  start: (planId) => api('/build/start', { method: 'POST', body: { planId } }),
+  poll: (buildId) => api(`/build/${buildId}`),
+  stop: (buildId) => api(`/build/${buildId}/stop`, { method: 'POST' })
+};
+
 export const templatesApi = {
   list: () => api('/templates'),
   get: (id) => api(`/templates/${id}`)

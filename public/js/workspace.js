@@ -3,7 +3,8 @@
  * ========================================================================== */
 
 import { el, icon, toast, clear, playModal, relativeTime, escapeHtml, quotaLabel, creditChip } from './ui.js';
-import { state, projects, playUrl, download } from './api.js';
+import { state, projects, builds, playUrl, download } from './api.js';
+import { confirmBuild, watchBuild, buildPanel, humanMs } from './build.js';
 import { createComposer } from './composer.js';
 
 const TABS = [
@@ -178,34 +179,60 @@ export async function renderWorkspace(root, projectId) {
           return;
         }
 
-        data = {
-          game: result.game, spec: result.spec, meta: result.meta,
-          messages: result.messages || data.messages
-        };
+        // A change is a build: quoted, approved, then watched. The pending
+        // card becomes the live panel so the clock and the stop button land
+        // where the founder is already looking.
+        const plan = await builds.plan({ prompt: text, attachmentIds, gameId: data.game.id });
+        if (!await confirmBuild(plan)) {
+          pending.remove();
+          scrollThread();
+          return;
+        }
+
+        const { buildId } = await builds.start(plan.planId);
+        const panel = buildPanel(buildId);
+        pending.replaceWith(panel.node);
+        scrollThread();
+
+        const finished = await watchBuild(buildId, (tick) => { panel.update(tick); scrollThread(); });
+        panel.done();
+
+        if (finished.state === 'stopped') {
+          thread.append(el('div', { class: 'notice' }, icon('alert'),
+            el('span', {}, 'Build stopped. Nothing was charged.')));
+          scrollThread();
+          return;
+        }
+        if (finished.state === 'failed') throw new Error(finished.error || 'The build failed');
+
+        data = { game: finished.game, spec: finished.spec, meta: finished.meta, messages: data.messages };
         state.project = data;
-        if (state.user) state.user.usage = result.quota.used;
         composer.clearAll();
         view.frameKey += 1;
-        if (state.user && result.credits) {
-          state.user.credits = result.credits.balance;
+        if (state.user && finished.credits) {
+          state.user.credits = finished.credits.balance;
           // A chip painted once at mount goes stale and contradicts the chat.
           if (creditsChip) creditsChip.refresh();
           meter.textContent = `${quotaLabel(state.user)} · Enter to send, Shift+Enter for a new line`;
         }
-        paintThread();
         paintStage();
-        // The thread should end on a result, not on a progress word. The chat
-        // is the record of what was done, so it says so plainly.
+
+        // The thread ends on a result, not a progress word, and says what the
+        // build actually produced.
         thread.append(el('div', { class: 'done-line' },
           icon('check', 'sm'),
-          el('span', {}, 'Task complete — ' + (result.spec.gameConfig.title || 'your game') + ' rebuilt.'),
-          result.credits && result.credits.charged
-            ? el('span', { class: 'faint' }, ` ${result.credits.charged} credits · ${result.credits.balance} left`)
+          el('span', {}, `Task complete — ${finished.spec.gameConfig.title} rebuilt in ${humanMs(finished.elapsedMs)}.`),
+          finished.credits && finished.credits.charged
+            ? el('span', { class: 'faint' }, ` ${finished.credits.charged} credits · ${finished.credits.balance} left`)
             : null));
         scrollThread();
         toast('Task complete', 'ok');
       } catch (err) {
-        pending.replaceWith(el('div', { class: 'notice' }, icon('alert'), el('span', {}, err.message)));
+        if (pending.isConnected) {
+          pending.replaceWith(el('div', { class: 'notice' }, icon('alert'), el('span', {}, err.message)));
+        } else {
+          thread.append(el('div', { class: 'notice' }, icon('alert'), el('span', {}, err.message)));
+        }
         scrollThread();
       } finally {
         view.busy = false;

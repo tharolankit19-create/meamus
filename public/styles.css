@@ -651,3 +651,51 @@ dialog::backdrop { background: rgba(28, 24, 18, .38); backdrop-filter: blur(2px)
 .or-divider::before, .or-divider::after {
   content: ''; flex: 1; height: 1px; background: var(--line);
 }
+
+/* --- build confirmation: the price before it is spent ---------------------- */
+.build-confirm { max-width: 460px; }
+.quote {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  padding: 14px; border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--bg-warm);
+}
+.quote-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.quote-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3); font-weight: 600; }
+.quote-cell strong { font-size: 24px; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.quote-sub { font-size: 12px; color: var(--ink-3); }
+
+.plan-steps { margin-top: 14px; display: flex; flex-direction: column; gap: 9px; }
+.plan-step { display: flex; gap: 10px; align-items: flex-start; }
+.plan-step > div { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.plan-step strong {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--orange); font-weight: 640;
+}
+.plan-dot {
+  width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: none;
+  background: var(--orange-line); border: 1.5px solid var(--orange);
+}
+
+/* --- the live build: clock, phase log, stop -------------------------------- */
+.build-live .build-head { align-items: center; gap: 10px; }
+.build-clock {
+  font-size: 13px; font-weight: 600; color: var(--ink-2);
+  font-variant-numeric: tabular-nums; flex: none;
+}
+.build-phase { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.build-log { border-top: 1px solid var(--line); max-height: 220px; overflow: auto; }
+.build-line {
+  display: grid; grid-template-columns: 84px 1fr auto; gap: 8px; align-items: baseline;
+  padding: 7px 12px; font-size: 12px; border-bottom: 1px solid var(--line);
+}
+.build-line:last-child { border-bottom: 0; }
+.build-line-phase {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
+  font-weight: 640; color: var(--ink-3);
+}
+.build-line.repair .build-line-phase, .build-line.stopping .build-line-phase { color: var(--orange); }
+.build-line.ship .build-line-phase { color: var(--green); }
+.build-line-detail { color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
+.build-line-at { color: var(--ink-4); font-size: 11px; }
+.btn.danger { background: var(--red-soft); border-color: #f0c4c4; color: var(--red); }
+.btn.danger:hover:not(:disabled) { background: #fbe3e3; }

@@ -22,14 +22,20 @@ export function renderDashboard(root, { tab = 'projects' } = {}) {
     placeholder: 'Describe your next game… attach art or notes with +',
     autofocus: true,
     submitLabel: 'Generate game',
-    async onSubmit(text, attachmentIds, { mode }) {
+    async onSubmit(text, attachmentIds) {
       composer.setBusy(true);
       try {
-        await startProject(text, attachmentIds, mode);
+        // The live panel replaces the project grid while the agents work, so
+        // the progress is where the founder is already looking.
+        await startProject(text, attachmentIds, { host: listHost });
       } catch (err) {
-        toast(err.code === 'quota_exceeded'
-          ? `${err.message}`
-          : err.message, 'err', 7000);
+        if (err.code === 'insufficient_credits') {
+          toast(err.message, 'warn', 7000);
+          location.hash = '#/pricing';
+        } else {
+          toast(err.message, 'err', 7000);
+        }
+        loadTab('projects', listHost);
       } finally {
         composer.setBusy(false);
       }
