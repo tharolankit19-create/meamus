@@ -563,6 +563,76 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.strictEqual(body.user.plan, 'free');
   });
 
+  await check('a game that throws on boot is refused, not shipped', async () => {
+    const smoke = require('../server/services/smoke');
+    const wrap = (body) => `
+class GameScene extends Phaser.Scene {
+  constructor(){ super({key:'GameScene'}); }
+  create(){ ${body} }
+  update(){}
+}
+new Phaser.Game({ type: Phaser.AUTO, width: 800, height: 600, scene: [GameScene] });`;
+
+    // The failure modes that reached players as a black screen with an error
+    // overlay. Parsing catches none of them.
+    for (const [label, body] of [
+      ['a helper that does not exist', "MEAMUS.ui.megaButton(this, 1, 1, 'GO', function(){});"],
+      ['an undefined variable', 'this.add.text(1, 1, LEVEL_NAME);'],
+      ['a null dereference', 'var p = null; p.setVelocity(1, 0);']
+    ]) {
+      assert.throws(() => smoke.boot(wrap(body)), /threw/, `${label} was allowed through`);
+    }
+
+    // A config that would never render anything.
+    assert.throws(() => smoke.boot('class S extends Phaser.Scene {}'), /never called new Phaser.Game/);
+    assert.throws(
+      () => smoke.boot('new Phaser.Game({ type: Phaser.AUTO, width: 8, height: 6, scene: [] });'),
+      /no scenes/
+    );
+  });
+
+  await check('every bundled template survives the boot test', async () => {
+    const smoke = require('../server/services/smoke');
+    const tpl = require('../server/services/templates');
+    for (const entry of tpl.list()) {
+      const full = tpl.get(entry.id);
+      const result = smoke.boot(full.spec.gameCode.javascript);
+      assert.ok(result.scenes.length >= 3,
+        `${entry.id} booted only ${result.scenes.length} scenes`);
+    }
+  });
+
+  await check('the boot test reports where the failure is', async () => {
+    const smoke = require('../server/services/smoke');
+    try {
+      smoke.boot(`
+class GameScene extends Phaser.Scene {
+  constructor(){ super({key:'GameScene'}); }
+  create(){ this.add.text(1, 1, MISSING_THING); }
+}
+new Phaser.Game({ type: Phaser.AUTO, width: 8, height: 6, scene: [GameScene] });`);
+      assert.fail('a throwing game was accepted');
+    } catch (err) {
+      assert.match(err.message, /MISSING_THING is not defined/);
+      assert.ok(err.detail && err.detail.line > 0, 'no line number, so the fix has no address');
+    }
+  });
+
+  await check('the sandbox has no filesystem, network or process access', async () => {
+    const smoke = require('../server/services/smoke');
+    // Generated code is untrusted. It must not be able to reach anything.
+    for (const probe of ['require', 'process', 'globalThis.process', 'module']) {
+      const code = `
+class GameScene extends Phaser.Scene {
+  constructor(){ super({key:'GameScene'}); }
+  create(){ if (typeof ${probe} !== 'undefined' && ${probe}) { throw new Error('REACHABLE'); } }
+}
+new Phaser.Game({ type: Phaser.AUTO, width: 8, height: 6, scene: [GameScene] });`;
+      const result = smoke.boot(code);
+      assert.ok(result.ok, `${probe} was reachable from generated code`);
+    }
+  });
+
   await check('the vendored Phaser build is served', async () => {
     const res = await request('/vendor/phaser.min.js', { raw: true });
     assert.strictEqual(res.status, 200, 'a game cannot boot without this file');

@@ -16,6 +16,7 @@ const llm = require('./llm');
 const research = require('./research');
 const templates = require('./templates');
 const { extractJson, normaliseSpec, SpecError } = require('./validator');
+const smoke = require('./smoke');
 
 /* ------------------------------------------------------------------------ */
 /* Prompt analysis (shared by both paths)                                    */
@@ -194,9 +195,24 @@ async function aiGenerate(messages, extraIssues = [], onStep) {
     }
 
     try {
-      if (onStep) onStep({ attempt, total: MAX_BUILD_ATTEMPTS, phase: 'review', detail: 'Checking the code parses and runs' });
+      if (onStep) onStep({ attempt, total: MAX_BUILD_ATTEMPTS, phase: 'review', detail: 'Checking the code parses' });
       const raw = extractJson(response.text);
       const { spec, issues } = normaliseSpec(raw, { source: 'ai' });
+
+      // Second check, and the one that matters: actually boot it.
+      //
+      // Parsing only proves the file is well-formed. A game that parses and
+      // then throws in create() is exactly what reached players as a black
+      // screen with an error overlay - and they were charged for it. Every
+      // scene is constructed and run here before the build is allowed out.
+      if (onStep) onStep({ attempt, total: MAX_BUILD_ATTEMPTS, phase: 'test', detail: 'Booting every scene' });
+      try {
+        const result = smoke.boot(spec.gameCode.javascript);
+        issues.push(`Booted ${result.scenes.length} scenes without throwing.`);
+      } catch (err) {
+        const where = err.detail ? ` (game.js line ${err.detail.line})` : '';
+        throw new SpecError(`The game does not run: ${err.message}${where}`, ['gameCode.javascript']);
+      }
 
       if (response.stopReason === 'length') {
         issues.push('The model hit its output limit - raise LLM_MAX_TOKENS if the game feels truncated.');
@@ -232,11 +248,16 @@ async function aiGenerate(messages, extraIssues = [], onStep) {
         { role: 'assistant', content: response.text },
         {
           role: 'user',
-          content: `That build was rejected by the code review: ${err.message}\n\n`
+          content: `That build was rejected: ${err.message}\n\n`
             + 'Return the complete corrected GameSpec JSON. The gameCode.javascript field '
-            + 'must be a complete, parseable Phaser 3 game of at least 200 lines with a full '
-            + 'boot, preload, menu, game and game-over flow. Do not return a stub, a summary, '
-            + 'or a partial file.'
+            + 'must be a complete Phaser 3 game of at least 200 lines with a full boot, '
+            + 'preload, menu, game and game-over flow. Do not return a stub, a summary, '
+            + 'or a partial file.\n\n'
+            + 'It is not enough for the code to parse — every scene is constructed and its '
+            + 'init/preload/create run, then update() is ticked, and any throw fails the '
+            + 'build. So: declare every variable you use, create a texture before drawing '
+            + 'with it, guard anything that can be null in update(), and only call MEAMUS '
+            + 'helpers that exist. If you are unsure a helper exists, use plain Phaser.'
         }
       ];
     }

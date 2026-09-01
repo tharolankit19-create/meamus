@@ -193,6 +193,14 @@ const PHASE_COPY = {
       'A stub or a half-file is rejected rather than shipped.'
     ]
   },
+  test: {
+    title: 'Test-running the game',
+    hints: [
+      'Every scene is booted and ticked before you ever see it.',
+      'A game that throws on start is sent back, not shipped.',
+      'This is the check that stops black screens reaching you.'
+    ]
+  },
   repair: {
     title: 'Fixing what the review caught',
     hints: [
@@ -282,6 +290,7 @@ export function buildStage() {
       index = 0;
       paintHint();
       node.classList.toggle('is-repair', phase === 'repair');
+      node.classList.toggle('is-test', phase === 'test');
     },
     done() { if (timer) clearInterval(timer); }
   };

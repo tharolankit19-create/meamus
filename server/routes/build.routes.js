@@ -74,7 +74,8 @@ router.post('/build/plan', requireAuth, asyncRoute(async (req, res) => {
       { phase: 'analyse', label: 'Read the brief and pick the genre, mechanics and controls' },
       { phase: 'build', label: 'Write the complete Phaser 3 game' },
       { phase: 'review', label: 'Check it parses, starts a game and is not a stub' },
-      { phase: 'repair', label: `Fix and re-review, up to ${estimate.attempts} attempts` },
+      { phase: 'test', label: 'Boot every scene and tick it — a game that throws is sent back' },
+      { phase: 'repair', label: `Fix and re-test, up to ${estimate.attempts} attempts` },
       { phase: 'ship', label: 'Bundle it and open the preview' }
     ]
   });

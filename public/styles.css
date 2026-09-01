@@ -879,3 +879,10 @@ dialog::backdrop { background: rgba(28, 24, 18, .38); backdrop-filter: blur(2px)
   border-radius: var(--r); overflow: hidden;
 }
 @media (max-width: 860px) { .first-build { grid-template-columns: 1fr; } }
+
+/* The boot test is the check that stops black screens, so it reads as a
+   distinct phase rather than more reviewing. */
+.build-line.test .build-line-phase { color: var(--green); }
+.build-stage.is-test .stage-mark {
+  background: var(--green-soft); color: var(--green); border-color: #c3e7d0;
+}
