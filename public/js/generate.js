@@ -6,9 +6,10 @@
  * a price, then watches the agents work with a clock and a stop button.
  * ========================================================================== */
 
-import { toast, el } from './ui.js';
+import { el } from './ui.js';
 import { state, projects, builds } from './api.js';
-import { confirmBuild, watchBuild } from './build.js';
+import { confirmBuild } from './build.js';
+import * as watcher from './watcher.js';
 
 /**
  * Quote a build, ask, run it.
@@ -30,7 +31,13 @@ export async function startProject(text, attachmentIds = [], opts = {}) {
   // tab lost the whole thing.
   const { buildId, gameId } = await builds.start(plan.planId);
 
-  state.pendingBuild = { buildId, gameId, prompt: text, startedAt: Date.now() };
+  // Polling belongs to the watcher, not to whichever screen happened to start
+  // the build. The founder can walk off to the pricing page and the build still
+  // finishes, still lands in their library, and still tells them about it.
+  const info = { buildId, gameId, prompt: text, startedAt: Date.now() };
+  watcher.track(info);
+
+  state.pendingBuild = info;
   state.projectsLoaded = false;   // the list has a new row it has not seen
   location.hash = `#/project/${gameId}`;
   void opts;
@@ -38,26 +45,49 @@ export async function startProject(text, attachmentIds = [], opts = {}) {
 }
 
 /**
- * Watch a build that is already running and land its result.
+ * Watch a build to completion from a mounted view.
  *
- * Split out from startProject so the workspace can pick up a build it did not
- * start - the founder navigated in, or came back to a tab they had left.
+ * Subscribes to the watcher rather than polling: the workspace can pick up a
+ * build it did not start, and can be torn down mid-build without killing it.
+ * The founder leaving is not a reason to stop the work.
  */
-export async function attachToBuild(buildId, { onTick } = {}) {
-  const view = await watchBuild(buildId, onTick);
+export function attachToBuild(buildId, { onTick, gameId, prompt } = {}) {
+  // Idempotent: a build the watcher already owns is not restarted, and one it
+  // has never seen (a change started from the workspace) is picked up here.
+  watcher.track({ buildId, gameId, prompt });
+  return new Promise((resolve) => {
+    // `subscribe` replays the last known state synchronously, so a build that
+    // has already finished settles this before `stop` exists. Hence the let and
+    // the settled flag rather than the obvious `const stop = subscribe(...)`,
+    // which threw "Cannot access 'stop' before initialization" on exactly that
+    // path - a build fast enough to beat the screen that started it.
+    let stop = null;
+    let settled = false;
 
-  if (view.state === 'stopped') {
-    toast('Build stopped. Nothing was charged.', 'warn', 5000);
-    return view;
-  }
-  if (view.state === 'failed') {
-    toast(view.error || 'The build failed', 'err', 8000);
-    return view;
-  }
+    const settle = (view) => {
+      if (settled) return;
+      settled = true;
+      // Reporting is the caller's job - it knows whether it has a chat thread
+      // to write into or only a corner of the screen. Announcing here too would
+      // say the same thing twice.
+      if (view.state === 'done') {
+        if (state.user && view.credits) state.user.credits = view.credits.balance;
+        state.projectsLoaded = false;
+      }
+      if (stop) stop();
+      resolve(view);
+    };
 
-  if (state.user && view.credits) state.user.credits = view.credits.balance;
-  state.projectsLoaded = false;
-  return view;
+    stop = watcher.subscribe(buildId, (view) => {
+      // 'released' means the screen holding this went away. The build has not -
+      // the watcher keeps it and will announce it - so this just stops here.
+      if (view.state === 'released') { settle(view); return; }
+      if (onTick) onTick(view);
+      if (view.state !== 'running') settle(view);
+    });
+
+    if (settled) stop();
+  });
 }
 
 /** A one-line summary of what a finished build produced, for the chat. */

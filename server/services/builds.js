@@ -75,13 +75,20 @@ function get(buildId, userId) {
   return build;
 }
 
-/** Append a progress line. This is what the chat renders while it works. */
-function step(build, { phase, detail, attempt, total }) {
+/**
+ * Append a progress line. This is what the chat renders while it works.
+ *
+ * `agent` is who is speaking - Designer, Coder, Tester, Reviewer, Improver.
+ * The crew reports it; the single-model path does not, and those lines fall
+ * back to the phase name.
+ */
+function step(build, { phase, detail, attempt, total, agent }) {
   if (!build) return;
   build.steps.push({
     at: Date.now() - build.startedAt,
     phase,
     detail,
+    agent: agent || null,
     attempt: attempt || null,
     total: total || null
   });

@@ -21,6 +21,8 @@ const builds = require('../services/builds');
 const estimator = require('../services/estimate');
 const generator = require('../services/generator');
 const uploads = require('../services/uploads');
+const agents = require('../services/agents');
+const hype = require('../services/hype');
 const { requireAuth, asyncRoute } = require('../middleware');
 
 const router = express.Router();
@@ -44,6 +46,29 @@ function describeBuild(spec, meta) {
   ];
   if (meta.attempts > 1) bits.push(`${meta.attempts} attempts`);
   return bits.join(' · ');
+}
+
+/**
+ * The assistant turn a finished build leaves in the thread.
+ *
+ * The crew's own account of what it did is the body, because "what did you
+ * actually change?" is the first thing anyone asks and a stats line does not
+ * answer it. The stats line survives as a subtitle, and the transcript rides
+ * along so re-opening the project replays who did what instead of showing an
+ * empty chat above a finished game.
+ */
+function buildMessage(spec, meta, kind) {
+  const stats = describeBuild(spec, meta);
+  const body = meta.crew ? agents.summarise(meta) : stats;
+  return message('assistant', body, {
+    title: spec.gameConfig.title,
+    kind,
+    mode: meta.mode,
+    stats,
+    crew: meta.crew === true,
+    transcript: meta.transcript || null,
+    issues: (meta.issues || []).length ? meta.issues : null
+  });
 }
 
 /**
@@ -167,6 +192,25 @@ router.post('/build/start', requireAuth, asyncRoute(async (req, res) => {
 }));
 
 /**
+ * The ship phase, one line per artifact.
+ *
+ * Counted off the finished spec, so "6 sprites" means the spec holds six. An
+ * artifact with nothing in it is skipped rather than reported as empty.
+ */
+function shipSteps(build, spec) {
+  const say = (detail) => builds.step(build, { phase: 'ship', detail, agent: 'Bundler' });
+  const lines = spec.gameCode.javascript.split('\n').length;
+
+  say(`Saving game.js — ${lines} lines`);
+  if (spec.assets.sprites.length) {
+    say(`Saving ${spec.assets.sprites.length} sprite${spec.assets.sprites.length > 1 ? 's' : ''} — drawn in code`);
+  }
+  const audio = (spec.assets && spec.assets.audio) || [];
+  if (audio.length) say(`Saving ${audio.length} sound cue${audio.length > 1 ? 's' : ''} — synthesised at runtime`);
+  say(`Bundling index.html — ${spec.gameConfig.title}`);
+}
+
+/**
  * The build itself. Runs after the response has been sent, reporting each
  * phase into the build so the chat can show what is happening.
  */
@@ -174,7 +218,9 @@ async function run(build, plan, user) {
   const attachments = uploads.resolve(plan.attachmentIds, user.id);
   const onStep = (s) => {
     if (build.stopRequested) return;
-    builds.step(build, { phase: s.phase, detail: s.detail, attempt: s.attempt, total: s.total });
+    builds.step(build, {
+      phase: s.phase, detail: s.detail, agent: s.agent, attempt: s.attempt, total: s.total
+    });
   };
 
   builds.step(build, { phase: 'analyse', detail: 'Reading the brief' });
@@ -202,7 +248,12 @@ async function run(build, plan, user) {
     return builds.fail(build, 'Stopped after the build finished but before it was saved');
   }
 
-  builds.step(build, { phase: 'ship', detail: `Bundling ${spec.gameConfig.title}` });
+  // Name what was actually produced, one line per artifact.
+  //
+  // "Bundling…" for four seconds tells the founder nothing. These lines are
+  // written after the fact, from the finished spec, so every number in them is
+  // real - nothing here is a progress bar pretending to know the future.
+  shipSteps(build, spec);
 
   // Charge on real usage, only now that there is a game to charge for.
   const owed = estimator.creditsForUsage(meta.usage, plan.kind);
@@ -220,9 +271,7 @@ async function run(build, plan, user) {
       meta: { ...meta, lastInstruction: plan.prompt },
       versions,
       status: 'ready',
-      messages: appendMessage(existing, message('assistant', describeBuild(spec, meta), {
-        title: spec.gameConfig.title, kind: 'edit', mode: meta.mode
-      }))
+      messages: appendMessage(existing, buildMessage(spec, meta, 'edit'))
     });
   } else {
     game = db.update('games', build.gameId, {
@@ -230,9 +279,7 @@ async function run(build, plan, user) {
       meta,
       status: 'ready',
       title: spec.gameConfig.title,
-      messages: appendMessage(existing, message('assistant', describeBuild(spec, meta), {
-        title: spec.gameConfig.title, kind: 'build', mode: meta.mode
-      }))
+      messages: appendMessage(existing, buildMessage(spec, meta, 'build'))
     });
   }
 
@@ -240,6 +287,12 @@ async function run(build, plan, user) {
     game: { id: game.id, title: spec.gameConfig.title, genre: spec.gameConfig.genre },
     spec,
     meta,
+    // The thread as it now stands, so the watching screen shows the same chat
+    // a reload would show rather than a version only it knows about.
+    messages: game.messages || [],
+    // What the popup says if the founder is elsewhere when this lands.
+    hype: hype.lineFor(spec, game.id),
+    summary: meta.crew ? agents.summarise(meta) : describeBuild(spec, meta),
     credits: { charged: billed.charged, balance: billed.balance }
   });
 }

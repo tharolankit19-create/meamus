@@ -136,9 +136,18 @@ async function check(name, fn) {
   delete process.env.ANTHROPIC_API_KEY;
 
   const llm = require('../server/services/llm');
+  const config = require('../server/config');
   const generator = require('../server/services/generator');
 
   console.log(`\nmeamus provider test  (mock OpenRouter on :${port})\n`);
+
+  // The wire-shape checks below are about the call that produces a GameSpec.
+  // The crew wraps that call in a designer before it and a reviewer after, so
+  // they run with the crew off and get asserted on again, as a crew, at the end
+  // of this file. Testing the shape through the crew would mean every
+  // assertion had to guess which of four calls it meant.
+  const crewDefault = config.build.crew;
+  config.build.crew = false;
 
   await check('capabilities come from the live catalogue', async () => {
     const caps = await llm.capabilities();
@@ -220,6 +229,62 @@ async function check(name, fn) {
     assert.strictEqual(message.content[0].image_url.url, 'data:image/png;base64,QUJD');
     assert.strictEqual(message.content[1].type, 'text');
     assert.strictEqual(ignoredImages.length, 0);
+  });
+
+  /* --- the crew ---------------------------------------------------------- */
+
+  await check('the crew runs designer, coder and reviewer against the provider', async () => {
+    config.build.crew = true;
+    captured.length = 0;
+    const { meta } = await generator.generate('a game where you dodge falling blocks', { allowFallback: false });
+
+    assert.strictEqual(meta.crew, true, 'the crew path did not run');
+    assert.ok(captured.length >= 3, `expected at least 3 model calls, got ${captured.length}`);
+
+    const systems = captured.map((c) => c.body.messages[0].content);
+    assert.ok(/game designer/i.test(systems[0]), 'the designer did not go first');
+    assert.ok(/meamus/.test(systems[1]), 'the coder did not follow the designer');
+    assert.ok(
+      systems.some((sys) => /You review Phaser 3 game code/.test(sys)),
+      'the reviewer never ran'
+    );
+
+    // The coder must be told to build the designer's brief, not to start over.
+    const coderPrompt = captured[1].body.messages[1].content;
+    assert.ok(/do not\s*\n?substitute your own game/i.test(coderPrompt.replace(/\s+/g, ' ')),
+      'the coder was not held to the brief');
+  });
+
+  await check('crew usage is summed across every agent, not just the coder', async () => {
+    captured.length = 0;
+    const { meta } = await generator.generate('dodge blocks', { allowFallback: false });
+    // Each mocked call reports 5500 tokens, so anything that only counted one
+    // agent would under-bill the founder by the cost of the other two.
+    assert.strictEqual(meta.usage.total_tokens, 5500 * captured.length,
+      `usage ${meta.usage.total_tokens} does not cover ${captured.length} calls`);
+  });
+
+  await check('the crew coder receives the founder attachments', async () => {
+    captured.length = 0;
+    const { meta } = await generator.generate('build from these notes', {
+      allowFallback: false,
+      attachments: [
+        { kind: 'text', name: 'plan.md', text: '- boss at wave 4' },
+        { kind: 'image', mime: 'image/png', base64: 'AAAA', name: 'mood.png' }
+      ]
+    });
+    const coderPrompt = captured[1].body.messages[1].content;
+    assert.ok(coderPrompt.includes('plan.md'), 'the attached file never reached the coder');
+    assert.ok(coderPrompt.includes('boss at wave 4'), 'the attached file body was dropped');
+    assert.ok(
+      meta.issues.some((i) => /cannot read images/i.test(i) && /mood\.png/.test(i)),
+      `an unreadable image was not surfaced: ${JSON.stringify(meta.issues)}`
+    );
+    // The designer works from the sentence alone - it must not be billed for
+    // the attachments the coder needs.
+    assert.ok(!captured[0].body.messages[1].content.includes('boss at wave 4'),
+      'the designer was sent the attachments too');
+    config.build.crew = crewDefault;
   });
 
   await check('an unknown model falls back to safe assumptions', async () => {

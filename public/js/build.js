@@ -10,8 +10,6 @@
 import { el, icon, modal, clear, spinner } from './ui.js';
 import { builds, state } from './api.js';
 
-const POLL_MS = 600;
-
 /** "2m 30s", "45s" - short enough to sit in a button. */
 export function humanSeconds(totalSeconds) {
   const s = Math.max(0, Math.round(totalSeconds));
@@ -75,20 +73,29 @@ export function confirmBuild(plan) {
   });
 }
 
+/* Polling lives in watcher.js, not here. It used to be a loop a view owned,
+   which meant a build only survived as long as the screen that started it -
+   navigate away and the poll ran against a detached DOM and nobody was ever
+   told the game was ready. One loop per build, owned by the page, fixed that;
+   a second loop here would quietly bring the problem back. */
+
 /**
- * Watch a build to completion.
+ * One line in the build log.
  *
- * @param {string} buildId
- * @param {(view:object) => void} onTick called on every poll, for the live UI
- * @returns {Promise<object>} the finished build view
+ * The label is whoever is speaking. With the crew that is a name — Designer,
+ * Coder, Tester — because "the Tester found this" is a sentence a person can
+ * follow, and "test" is a word on a screen. Without a crew it falls back to the
+ * phase, which is all the single-model path knows.
+ *
+ * Exported so a finished project can replay the same lines from its saved
+ * transcript instead of showing an empty chat above a working game.
  */
-export async function watchBuild(buildId, onTick) {
-  for (;;) {
-    const view = await builds.poll(buildId);
-    if (onTick) onTick(view);
-    if (view.state !== 'running') return view;
-    await new Promise((r) => setTimeout(r, POLL_MS));
-  }
+export function buildLine(step) {
+  const attempt = step.attempt ? ` ${step.attempt}/${step.total}` : '';
+  return el('div', { class: `build-line ${step.phase}${step.agent ? ' has-agent' : ''}` },
+    el('span', { class: 'build-line-phase' }, (step.agent || step.phase) + attempt),
+    el('span', { class: 'build-line-detail' }, step.detail),
+    el('span', { class: 'build-line-at mono' }, humanMs(step.at)));
 }
 
 /**
@@ -134,13 +141,7 @@ export function buildPanel(buildId, { onStop } = {}) {
     update(view) {
       base = view.elapsedMs;
       baseAt = Date.now();
-      for (const step of view.steps.slice(drawn)) {
-        const attempt = step.attempt ? ` ${step.attempt}/${step.total}` : '';
-        log.append(el('div', { class: `build-line ${step.phase}` },
-          el('span', { class: 'build-line-phase' }, step.phase + attempt),
-          el('span', { class: 'build-line-detail' }, step.detail),
-          el('span', { class: 'build-line-at mono' }, humanMs(step.at))));
-      }
+      for (const step of view.steps.slice(drawn)) log.append(buildLine(step));
       drawn = view.steps.length;
       const last = view.steps[view.steps.length - 1];
       if (last) phase.textContent = last.detail;
@@ -178,9 +179,18 @@ const PHASE_COPY = {
       'Grounding the design in real games from the same genre.'
     ]
   },
+  design: {
+    title: 'Designing your game',
+    hints: [
+      'The designer settles the genre, the core loop and the fail state first.',
+      'Three to six mechanics, all reachable in the first thirty seconds.',
+      'The coder builds this brief — it does not get to invent a different game.'
+    ]
+  },
   build: {
     title: 'Writing the game',
     hints: [
+      'Writing game.js — the scenes, the physics and the whole loop.',
       'Every sprite is drawn in code — nothing is downloaded.',
       'Sound is synthesised at runtime, so the file stays small.',
       'Keyboard, mouse and touch controls are written together.'
@@ -189,8 +199,16 @@ const PHASE_COPY = {
   review: {
     title: 'Reviewing the code',
     hints: [
-      'The code is parsed before it ever reaches your browser.',
+      'A reviewer reads the game back against the brief it was built from.',
+      'It is looking for controls that do nothing and scores that cannot go up.',
       'A stub or a half-file is rejected rather than shipped.'
+    ]
+  },
+  improve: {
+    title: 'Applying the review',
+    hints: [
+      'Only what the reviewer flagged is changed — nothing else is touched.',
+      'If a fix breaks the game, the version that passed is the one you get.'
     ]
   },
   test: {
@@ -209,8 +227,11 @@ const PHASE_COPY = {
     ]
   },
   ship: {
-    title: 'Bundling your game',
-    hints: ['One self-contained HTML file. It runs offline, on any browser.']
+    title: 'Saving your game',
+    hints: [
+      'Writing game.js, the sprites and the sound cues into one file.',
+      'One self-contained HTML file. It runs offline, on any browser.'
+    ]
   },
   stopping: { title: 'Stopping', hints: ['Nothing will be charged for a stopped build.'] }
 };

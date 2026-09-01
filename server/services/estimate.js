@@ -23,7 +23,22 @@ const SHAPE = {
   completionTokens: 14000,
   // A change re-sends the current spec and returns a whole new one.
   editPromptTokens: 9000,
-  editCompletionTokens: 12000
+  editCompletionTokens: 12000,
+
+  // The crew is not one call. Before the coder runs there is a designer, and
+  // after it there is a reviewer that reads the whole game back. Quoting only
+  // the coder would under-quote every build by roughly a third, and the founder
+  // would be charged more than the number they approved.
+  designerPromptTokens: 1400,
+  designerCompletionTokens: 700,
+  reviewerPromptTokens: 9000,
+  reviewerCompletionTokens: 600,
+
+  // The improver only runs when the reviewer finds something worth fixing, so
+  // it belongs in the worst case, not the expected one. It re-sends the spec
+  // and returns a whole new one, exactly like an edit.
+  improverPromptTokens: 9000,
+  improverCompletionTokens: 12000
 };
 
 /** Output tokens per second, measured against Nemotron 3.5 Lightning. */
@@ -58,24 +73,52 @@ function estimate(kind, opts = {}) {
   const completionTokens = isEdit ? SHAPE.editCompletionTokens : SHAPE.completionTokens;
   const oneAttempt = promptTokens + completionTokens;
 
-  // Best case is one clean attempt. Worst case is the review loop using its
-  // full budget, which is what the founder is really agreeing to.
-  const attempts = Math.max(1, config.build.maxAttempts);
-  const worstTokens = oneAttempt * attempts;
+  // The crew adds a designer before the coder and a reviewer after it on a
+  // fresh build. Both run every time, so they are part of the expected cost,
+  // not the worst case.
+  const crew = config.build.crew && !isEdit;
+  const crewFixed = crew
+    ? SHAPE.designerPromptTokens + SHAPE.designerCompletionTokens
+      + SHAPE.reviewerPromptTokens + SHAPE.reviewerCompletionTokens
+    : 0;
+  // The improver runs only when the reviewer finds something actionable.
+  const crewImprover = crew
+    ? SHAPE.improverPromptTokens + SHAPE.improverCompletionTokens
+    : 0;
 
-  const seconds = Math.round(completionTokens / TOKENS_PER_SECOND);
+  const expectedTokens = oneAttempt + crewFixed;
+
+  // Best case is one clean attempt. Worst case is the repair loop using its
+  // full budget and the improver running too, which is what the founder is
+  // really agreeing to.
+  const attempts = Math.max(1, config.build.maxAttempts);
+  const worstTokens = (oneAttempt * attempts) + crewFixed + crewImprover;
+
+  // Time is output-bound. The designer and reviewer are short and run once, so
+  // they are added once rather than multiplied through the retry budget; the
+  // improver is a full rewrite and only lands in the worst case.
+  const perAttemptSeconds = Math.round(completionTokens / TOKENS_PER_SECOND);
+  const crewSeconds = crew
+    ? Math.round((SHAPE.designerCompletionTokens + SHAPE.reviewerCompletionTokens) / TOKENS_PER_SECOND)
+    : 0;
+  const improverSeconds = crew ? Math.round(SHAPE.improverCompletionTokens / TOKENS_PER_SECOND) : 0;
+  const seconds = perAttemptSeconds + crewSeconds;
 
   return {
     kind,
     pricePerMillionTokens: config.credits.perMillionTokens,
-    tokens: { expected: oneAttempt, worstCase: worstTokens, prompt: promptTokens, completion: completionTokens },
-    credits: { expected: creditsFor(oneAttempt, kind), worstCase: creditsFor(worstTokens, kind) },
+    crew,
+    tokens: { expected: expectedTokens, worstCase: worstTokens, prompt: promptTokens, completion: completionTokens },
+    credits: { expected: creditsFor(expectedTokens, kind), worstCase: creditsFor(worstTokens, kind) },
     floor: isEdit ? config.credits.costIterate : config.credits.costCreate,
-    seconds: { expected: seconds, worstCase: seconds * attempts },
+    seconds: { expected: seconds, worstCase: (perAttemptSeconds * attempts) + crewSeconds + improverSeconds },
     attempts,
     note: `${config.credits.perMillionTokens} credits per million tokens, with a `
       + `${isEdit ? config.credits.costIterate : config.credits.costCreate}-credit minimum. `
-      + `You are charged on what the build actually uses. The worst case is the review loop needing all ${attempts} attempts.`
+      + `You are charged on what the build actually uses. `
+      + (crew
+        ? `A designer and a reviewer run either side of the coder on every build. The worst case is the repair loop needing all ${attempts} attempts and the reviewer sending the game back.`
+        : `The worst case is the review loop needing all ${attempts} attempts.`)
   };
 }
 

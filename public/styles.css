@@ -895,3 +895,80 @@ dialog::backdrop { background: rgba(28, 24, 18, .38); backdrop-filter: blur(2px)
   color: var(--ink-3); background: var(--bg-warm);
 }
 .project-card.is-building { border-color: var(--orange-line); }
+
+/* --- the crew's account of the build -------------------------------------- */
+
+/* Each agent speaks under its own name. "Designer" is a sentence a person can
+   follow; "design" is a word on a screen. */
+.build-line.has-agent .build-line-phase { text-transform: none; letter-spacing: 0; font-size: 11.5px; color: var(--ink-2); }
+.build-line.design .build-line-phase { color: var(--orange); }
+.build-line.review .build-line-phase { color: var(--ink-2); }
+.build-line.improve .build-line-phase { color: var(--orange); }
+
+.build-summary {
+  padding: 12px 14px 2px; border-top: 1px solid var(--line);
+  font-size: 13.5px; line-height: 1.55; color: var(--ink-2);
+}
+.build-summary p { margin: 0 0 8px; }
+.build-summary strong { color: var(--ink); }
+
+.build-issues { padding: 0 14px 10px; display: flex; flex-direction: column; gap: 6px; }
+.build-issue {
+  display: flex; gap: 8px; align-items: flex-start;
+  font-size: 12.5px; color: #8a4408;
+}
+.build-issue svg { flex: none; margin-top: 2px; color: var(--orange); }
+
+/* Interesting the first time, noise the twentieth. The founder decides which
+   of those they are on. */
+.transcript { border-top: 1px solid var(--line); }
+.transcript > summary {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 9px 14px; font-size: 12px; color: var(--ink-3);
+  list-style: none; user-select: none;
+}
+.transcript > summary::-webkit-details-marker { display: none; }
+.transcript > summary:hover { color: var(--ink-2); background: var(--bg-warm); }
+.transcript > summary svg { flex: none; color: var(--ink-4); }
+.transcript[open] > summary { border-bottom: 1px solid var(--line); }
+.transcript .build-log { border-top: 0; max-height: 260px; }
+
+/* --- "your game is ready" ------------------------------------------------- */
+
+/* A card in the corner, not a modal. A build finishing is not a reason to
+   throw away whatever the founder was reading - so this waits instead. It also
+   never expires: a game somebody waited two minutes for should not disappear
+   because they looked at something else. */
+.ready-card {
+  position: relative; display: flex; gap: 12px; align-items: flex-start;
+  padding: 14px 38px 14px 14px; border-radius: var(--r);
+  border: 1px solid #bfe6cd; background: var(--bg);
+  box-shadow: var(--shadow-lg); animation: rise .22s ease;
+}
+.ready-card.err { border-color: #f3cfcf; }
+.ready-card.out { transition: opacity .18s, transform .18s; opacity: 0; transform: translateY(6px); }
+
+.ready-mark {
+  flex: none; display: grid; place-items: center;
+  width: 38px; height: 38px; border-radius: 11px;
+  background: var(--green-soft); color: var(--green); border: 1px solid #c3e7d0;
+}
+.ready-card.err .ready-mark { background: var(--red-soft); color: var(--red); border-color: #f0c4c4; }
+
+.ready-body { min-width: 0; }
+.ready-title { display: block; font-size: 14px; color: var(--ink); }
+.ready-line { margin: 3px 0 10px; font-size: 13px; line-height: 1.45; color: var(--ink-2); overflow-wrap: anywhere; }
+.ready-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+
+.ready-x {
+  position: absolute; top: 8px; right: 8px;
+  display: grid; place-items: center; width: 24px; height: 24px;
+  border: 0; border-radius: 7px; background: transparent; cursor: pointer;
+  color: var(--ink-4);
+}
+.ready-x:hover { background: var(--bg-warm); color: var(--ink-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ready-card { animation: none; }
+  .ready-card.out { transition: none; }
+}

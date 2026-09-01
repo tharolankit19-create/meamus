@@ -17,6 +17,7 @@ const research = require('./research');
 const templates = require('./templates');
 const { extractJson, normaliseSpec, SpecError } = require('./validator');
 const smoke = require('./smoke');
+const agents = require('./agents');
 
 /* ------------------------------------------------------------------------ */
 /* Prompt analysis (shared by both paths)                                    */
@@ -301,6 +302,27 @@ async function generate(prompt, opts = {}) {
     const refs = opts.research === false
       ? { used: false, references: [], categories: [] }
       : await research.referencesFor(prompt);
+
+    // The crew path: a designer briefs a coder, a tester boots it, a reviewer
+    // critiques it, an improver applies the review, and the tester has the last
+    // word. Every handoff is reported, so the chat shows who did what.
+    if (config.build.crew) {
+      const result = await agents.buildWithCrew(prompt, {
+        researchBlock: research.toPromptBlock(refs),
+        // Reference art goes to the coder, in whatever shape this model takes.
+        buildCoderMessage: (text) => llm.buildUserMessage(text, attachments, caps),
+        onStep: opts.onStep
+      });
+      result.meta.research = {
+        used: refs.used,
+        categories: refs.categories,
+        count: refs.references.length,
+        titles: refs.references.map((r) => r.title),
+        source: 'FreeToGame',
+        sourceUrl: 'https://www.freetogame.com'
+      };
+      return result;
+    }
 
     const { message, ignoredImages } = llm.buildUserMessage(
       buildUserMessage(prompt, analysis, research.toPromptBlock(refs)), attachments, caps

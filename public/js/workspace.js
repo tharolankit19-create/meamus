@@ -4,8 +4,9 @@
 
 import { el, icon, toast, clear, playModal, relativeTime, escapeHtml, quotaLabel, creditChip } from './ui.js';
 import { state, projects, builds, playUrl, download } from './api.js';
-import { confirmBuild, watchBuild, buildPanel, buildStage, artifactChips, humanMs } from './build.js';
+import { confirmBuild, buildPanel, buildLine, buildStage, artifactChips, humanMs } from './build.js';
 import { attachToBuild } from './generate.js';
+import * as watcher from './watcher.js';
 import { createComposer } from './composer.js';
 
 const TABS = [
@@ -40,10 +41,15 @@ export async function renderWorkspace(root, projectId) {
 
   // A build started from the dashboard hands the workspace its id, so the
   // founder lands here and watches it rather than watching a card elsewhere.
-  const pending = state.pendingBuild && state.pendingBuild.gameId === projectId
+  // A build in flight for this game, whether this screen started it or the
+  // founder wandered off and came back. Coming back to your own build and
+  // finding a dead "Still building" panel is the version of this that loses
+  // people, so the watcher is asked too, not just the create flow.
+  const inFlight = watcher.forGame(projectId);
+  const pending = (state.pendingBuild && state.pendingBuild.gameId === projectId)
     ? state.pendingBuild
-    : null;
-  if (pending) state.pendingBuild = null;
+    : (inFlight ? inFlight.info : null);
+  if (state.pendingBuild && state.pendingBuild.gameId === projectId) state.pendingBuild = null;
 
   const view = {
     tab: 'preview',
@@ -230,14 +236,22 @@ export async function renderWorkspace(root, projectId) {
         view.building = stage;
         paintStage();
 
-        const finished = await watchBuild(buildId, (tick) => {
-          panel.update(tick);
-          stage.update(tick);
-          scrollThread();
+        const finished = await attachToBuild(buildId, {
+          gameId: data.game.id,
+          prompt: text,
+          onTick: (tick) => {
+            panel.update(tick);
+            stage.update(tick);
+            scrollThread();
+          }
         });
         panel.done();
         stage.done();
         view.building = null;
+
+        // The founder navigated away. The build carries on and the watcher
+        // will tell them when it lands; there is nothing left to draw here.
+        if (finished.state === 'released') return;
 
         if (finished.state === 'stopped') {
           thread.append(el('div', { class: 'notice' }, icon('alert'),
@@ -247,9 +261,19 @@ export async function renderWorkspace(root, projectId) {
         }
         if (finished.state === 'failed') throw new Error(finished.error || 'The build failed');
 
-        data = { game: finished.game, spec: finished.spec, meta: finished.meta, messages: data.messages };
+        data = {
+          game: finished.game,
+          spec: finished.spec,
+          meta: finished.meta,
+          messages: finished.messages || data.messages
+        };
         state.project = data;
         composer.clearAll();
+        // The live panel is replaced by the saved turn, so what is on screen is
+        // what a reload would show. Two versions of the same chat is how a
+        // thread starts lying about itself.
+        panel.node.remove();
+        paintThread();
         view.frameKey += 1;
         if (state.user && finished.credits) {
           state.user.credits = finished.credits.balance;
@@ -343,14 +367,28 @@ export async function renderWorkspace(root, projectId) {
 
   function buildCard(message) {
     const isLatest = message === data.messages[data.messages.length - 1];
+    // With the crew, the body is the account of what it did and `stats` is the
+    // one-line shape. Older messages have neither, so the text falls back into
+    // the subtitle exactly as it did before.
+    const subtitle = message.stats || message.text;
+    const body = message.stats ? message.text : null;
+
     return el('div', { class: `build-card ${isLatest ? 'live' : ''}` },
       el('div', { class: 'build-head' },
         el('span', { class: 'ic' }, icon(message.kind === 'edit' ? 'pencil' : 'sparkles', 'sm')),
         el('div', { style: { minWidth: '0' } },
           el('h4', { title: message.title || data.game.title }, message.title || data.game.title),
-          el('div', { class: 'sub' }, message.text)),
+          el('div', { class: 'sub' }, subtitle)),
         el('span', { class: 'grow' }),
         el('span', { class: 'faint small nowrap' }, relativeTime(message.createdAt))),
+
+      body ? el('div', { class: 'build-summary' }, ...summaryLines(body)) : null,
+      (message.issues || []).length
+        ? el('div', { class: 'build-issues' },
+          message.issues.map((text) => el('div', { class: 'build-issue' }, icon('alert', 'sm'), el('span', {}, text))))
+        : null,
+      (message.transcript || []).length ? transcriptBlock(message.transcript) : null,
+
       isLatest
         ? el('div', { class: 'build-actions' },
           el('button', {
@@ -366,6 +404,41 @@ export async function renderWorkspace(root, projectId) {
             onClick: () => playModal(data.game.title, playUrl(data.game.id))
           }, icon('play', 'sm'), 'Preview'))
         : null);
+  }
+
+  /**
+   * The summary body, one paragraph per line.
+   *
+   * The crew writes `**Title** — pitch` on the first line. Rendering the two
+   * asterisks literally would be worse than plain text, so that one marker is
+   * honoured and nothing else is: this is a summary, not a markdown document,
+   * and anything more would need escaping the whole string first.
+   */
+  function summaryLines(text) {
+    return String(text).split('\n').filter(Boolean).map((line) => {
+      const bold = line.match(/^\*\*(.+?)\*\*(.*)$/);
+      return bold
+        ? el('p', {}, el('strong', {}, bold[1]), bold[2])
+        : el('p', {}, line);
+    });
+  }
+
+  /**
+   * The crew's handoffs, replayed.
+   *
+   * Collapsed by default. It is genuinely interesting the first time and noise
+   * on the twentieth, and the founder is the one who gets to decide which of
+   * those they are on.
+   */
+  function transcriptBlock(transcript) {
+    const details = el('details', { class: 'transcript' },
+      el('summary', {}, icon('layers', 'sm'),
+        el('span', {}, `${transcript.length} steps · Designer → Coder → Tester → Reviewer`)),
+      el('div', { class: 'build-log' },
+        transcript.map((entry) => buildLine({
+          phase: entry.phase, detail: entry.detail, agent: entry.agent, at: entry.at
+        }))));
+    return details;
   }
 
   /* --- publish popover --------------------------------------------------- */
@@ -481,6 +554,9 @@ export async function renderWorkspace(root, projectId) {
     view.busy = false;
     composer.setBusy(false);
 
+    // Same as above: this screen is gone, the build is not.
+    if (finished.state === 'released') return;
+
     if (finished.state !== 'done') {
       thread.append(el('div', { class: 'notice' }, icon('alert'),
         el('span', {}, finished.state === 'stopped'
@@ -501,6 +577,11 @@ export async function renderWorkspace(root, projectId) {
     view.frameKey += 1;
     if (creditsChip) creditsChip.refresh();
     paintStage();
+
+    // Same reason as above: the saved turn replaces the live panel, so the
+    // thread on screen and the thread on the server are the same thread.
+    panel.node.remove();
+    paintThread();
 
     thread.append(el('div', { class: 'done-line' },
       icon('check', 'sm'),

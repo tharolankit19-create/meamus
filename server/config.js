@@ -189,6 +189,13 @@ const config = {
   },
 
   build: {
+    /**
+     * The Hermes crew: designer -> coder -> tester -> reviewer -> improver ->
+     * tester. More model calls than a single-shot build, and better games,
+     * because no one agent has to design, write and critique in one breath.
+     * Set AGENT_CREW=false for the single-call path.
+     */
+    crew: (process.env.AGENT_CREW || 'true').trim() !== 'false',
     // How many times the review loop hands a rejected build back to the model.
     maxAttempts: positive('BUILD_MAX_ATTEMPTS', process.env.BUILD_MAX_ATTEMPTS, 3),
     // A build the founder has approved but never started is dropped after this.

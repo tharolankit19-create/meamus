@@ -10,6 +10,7 @@ import { renderDashboard, renderTemplatesPage, renderPricing, sidebar } from './
 import { renderWorkspace } from './workspace.js';
 import { openAuth } from './auth-dialog.js';
 import { renderMarketingTemplates, renderMarketingPricing, renderDocs } from './marketing.js';
+import * as watcher from './watcher.js';
 
 const root = () => $('#root');
 
@@ -21,6 +22,14 @@ function parseRoute() {
 
 async function render() {
   const { name, params } = parseRoute();
+
+  // The view about to be thrown away may be watching a build. Builds outlive
+  // views on purpose - the founder can start one and go and read the pricing
+  // page - so the subscription is dropped here and the watcher takes over
+  // announcing the result. Skipping this leaves a screen nobody can see
+  // holding the only claim on a finished game.
+  watcher.releaseAll();
+
   const host = clear(root());
   document.body.classList.toggle('workspace-route', name === 'project');
 
