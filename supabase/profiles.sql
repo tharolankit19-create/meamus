@@ -1,7 +1,8 @@
 -- ===========================================================================
 -- meamus: real accounts on Supabase Auth
 --
--- Run once in the Supabase SQL editor, after schema.sql.
+-- Applied to the live project on 2026-09-01 as migration `meamus_profiles`.
+-- Re-runnable: every statement is idempotent.
 --
 -- Identity lives in auth.users, which Supabase owns: it holds the password
 -- hash, the email confirmation state and the Google identity link. This file
@@ -69,9 +70,18 @@ create trigger profiles_touch
   before update on public.profiles
   for each row execute function public.touch_updated_at();
 
--- RLS on. A signed-in user may read and update their own row, but the columns
--- that cost money are not theirs to set: the grant below is deliberately
--- limited to display fields, so a browser cannot award itself credits.
+-- RLS on.
+--
+-- Verified after applying this on the live project: anon and authenticated end
+-- up with NO table privileges on profiles at all - a freshly created table does
+-- not inherit Supabase's default grants - so a browser cannot read or write it
+-- by any path. Every read and write goes through the server with the
+-- service-role key.
+--
+-- The policies below are therefore belt-and-braces: they define the intended
+-- rule if a grant is ever added, and they cost nothing while none exists. They
+-- are deliberately NOT accompanied by a grant, because the app never queries
+-- this table from a browser and a grant would be attack surface for no gain.
 alter table public.profiles enable row level security;
 
 drop policy if exists profiles_select_own on public.profiles;
@@ -83,8 +93,9 @@ create policy profiles_update_own_name on public.profiles
   for update using (auth.uid() = id) with check (auth.uid() = id);
 
 -- Credits, plan and billing are written only by the server, which uses the
--- service-role key and bypasses RLS. Revoking them at the column level means a
--- stolen access token still cannot mint credits.
+-- service-role key. This revoke is a no-op on a fresh table (there is no grant
+-- to take away) and is kept so the intent survives if someone later runs a
+-- blanket `grant all on all tables in schema public to authenticated`.
 revoke update (credits, plan, billing, usage) on public.profiles from authenticated, anon;
 
 -- Backfill for any account created before this file was run.
