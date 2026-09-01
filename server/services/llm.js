@@ -191,6 +191,26 @@ async function post(url, headers, payload) {
   }
 }
 
+/**
+ * What a rate limit should say.
+ *
+ * On a `:free` model this is not an edge case, it is the failure. OpenRouter
+ * caps the free tier per minute and per day, and a build is three to five calls
+ * deep, so a founder can hit it halfway through their second game. "openrouter
+ * error (429): rate limit exceeded" tells them nothing they can act on, so this
+ * names the tier they are on and the two ways out.
+ */
+function rateLimitMessage(detail) {
+  const free = /:free$/.test(config.llm.model);
+  if (!free) {
+    return `The model is rate limited right now. Wait a minute and try again. (${detail})`;
+  }
+  return 'The free tier for ' + config.llm.model + ' is rate limited, and this build asked for '
+    + 'more than it allows right now. Wait a minute and try again, or switch OPENROUTER_MODEL to '
+    + config.llm.model.replace(/:free$/, '') + ' — the same model on the paid tier, at about '
+    + `$0.09 per million input tokens. (${detail})`;
+}
+
 async function readError(response) {
   const text = await response.text();
   let detail = text.slice(0, 600);
@@ -230,9 +250,9 @@ async function callOpenRouter({ messages, system, maxTokens, jsonSchema }) {
 
   if (!response.ok) {
     const detail = await readError(response);
-    const status = response.status === 429 ? 429
-      : response.status === 401 || response.status === 403 ? 401
-        : response.status >= 500 ? 502 : 400;
+    if (response.status === 429) throw new LlmError(rateLimitMessage(detail), 429);
+    const status = response.status === 401 || response.status === 403 ? 401
+      : response.status >= 500 ? 502 : 400;
     throw new LlmError(`${config.llm.provider} error (${response.status}): ${detail}`, status);
   }
 

@@ -137,12 +137,15 @@
    * cannot produce a shape the layouts were never built for.
    *
    * A game whose levels are hand-authored at a fixed shape - a 25-wide tile
-   * grid, say - passes a narrower clamp so it keeps a playable tile size
-   * instead of being squeezed into a portrait it was never drawn for.
+   * grid, say - can pass maxWidth/maxHeight instead of fighting the aspect.
+   * Clamping the canvas to the world it is looking at means the world always
+   * fills or exceeds the view, so a scrolling camera has somewhere to go and
+   * never leaves an empty margin. That is what lets a wide level be played in
+   * portrait: the level does not shrink, the view moves across it.
    *
    * @param {number} designW the width the game was tuned at
    * @param {number} designH the height the game was tuned at
-   * @param {{minAspect?:number, maxAspect?:number}} [opts]
+   * @param {{minAspect?:number, maxAspect?:number, maxWidth?:number, maxHeight?:number}} [opts]
    * @returns {{width:number, height:number, portrait:boolean}}
    */
   MEAMUS.viewport = function (designW, designH, opts) {
@@ -159,6 +162,9 @@
     var aspect = Math.max(lo, Math.min(hi, cw / ch));
     var width = Math.round(Math.sqrt(area * aspect));
     var height = Math.round(Math.sqrt(area / aspect));
+    // Never look at more than there is to see.
+    if (opts.maxWidth) width = Math.min(width, Math.round(opts.maxWidth));
+    if (opts.maxHeight) height = Math.min(height, Math.round(opts.maxHeight));
     return { width: width, height: height, portrait: height > width };
   };
 
@@ -801,6 +807,10 @@
     try {
       if (typeof Phaser === 'undefined') throw new Error('Phaser failed to load (check the CDN or your network)');
       var game = new Phaser.Game(config);
+      // A handle on the running game. Phaser 3 keeps no global registry, so
+      // without this there is no way to inspect a live game from outside it -
+      // which is what measuring the canvas against the real screen needs.
+      MEAMUS.game = game;
 
       // Scale.FIT always leaves bands on a screen whose shape differs from the
       // canvas. Painting them in the game's own colour makes the frame read as

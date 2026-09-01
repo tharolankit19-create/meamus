@@ -93,10 +93,18 @@ function buildLlmConfig() {
     provider: 'openrouter',
     apiKey: openrouterKey,
     enabled: Boolean(openrouterKey),
-    // NVIDIA Nemotron 3.5 Lightning: 262k context, 131k max output, cheap, and
-    // it honours structured outputs - which is what keeps a 3B-active model
-    // emitting a spec that parses first try.
-    model: process.env.OPENROUTER_MODEL || 'nvidia/nemotron-3.5-lightning',
+    // NVIDIA Nemotron 3 Super 120B, free tier: 262k context, 235k max output,
+    // and - the reason it is the default rather than one of the other free
+    // NVIDIA models - it is the only free NVIDIA model that honours structured
+    // outputs. Without a schema the model answers with prose around the JSON
+    // and the spec has to be scraped back out of it, which is where malformed
+    // games come from. A free model that cannot be held to the schema is not
+    // cheaper; it just fails later.
+    //
+    // The free tier is rate limited (see OPENROUTER_MODEL in .env.example), so
+    // a busy deployment should point this at the paid twin, which is the same
+    // model without the :free suffix.
+    model: process.env.OPENROUTER_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free',
     baseUrl: (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, ''),
     maxTokens: positive('LLM_MAX_TOKENS', process.env.LLM_MAX_TOKENS, 32000),
     temperature: num(process.env.LLM_TEMPERATURE, 0.6),

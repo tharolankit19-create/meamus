@@ -89,14 +89,14 @@ const server = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
 
     if (req.url.endsWith('/models')) {
-      // Mirrors the real catalogue entry for Nemotron 3.5 Lightning.
+      // Mirrors the real catalogue entry for Nemotron 3 Super 120B (free tier).
       return res.end(JSON.stringify({
         data: [{
-          id: 'nvidia/nemotron-3.5-lightning',
+          id: 'nvidia/nemotron-3-super-120b-a12b:free',
           context_length: 262144,
           architecture: { input_modalities: ['text'], output_modalities: ['text'] },
           supported_parameters: ['max_tokens', 'response_format', 'structured_outputs', 'temperature', 'seed'],
-          top_provider: { max_completion_tokens: 131072 }
+          top_provider: { max_completion_tokens: 235929 }
         }]
       }));
     }
@@ -152,9 +152,9 @@ async function check(name, fn) {
   await check('capabilities come from the live catalogue', async () => {
     const caps = await llm.capabilities();
     assert.strictEqual(caps.source, 'catalogue');
-    assert.strictEqual(caps.images, false, 'Nemotron Lightning takes text only');
+    assert.strictEqual(caps.images, false, 'Nemotron 3 Super takes text only');
     assert.strictEqual(caps.structuredOutputs, true);
-    assert.strictEqual(caps.maxOutput, 131072);
+    assert.strictEqual(caps.maxOutput, 235929);
   });
 
   await check('generation posts an OpenAI-shaped chat completion', async () => {
@@ -165,7 +165,7 @@ async function check(name, fn) {
     assert.strictEqual(req.headers.authorization, 'Bearer sk-or-test-key');
     assert.strictEqual(req.headers['x-title'], 'meamus');
     assert.ok(req.headers['http-referer'], 'missing the OpenRouter attribution header');
-    assert.strictEqual(req.body.model, 'nvidia/nemotron-3.5-lightning');
+    assert.strictEqual(req.body.model, 'nvidia/nemotron-3-super-120b-a12b:free');
     assert.strictEqual(req.body.messages[0].role, 'system');
     assert.ok(req.body.messages[0].content.includes('meamus'), 'system prompt was not sent');
     assert.strictEqual(req.body.messages[1].role, 'user');
