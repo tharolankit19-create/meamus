@@ -198,6 +198,52 @@ const req = (p, o = {}) => {
     assert.ok(!result.seen.includes('SUPABASE_URL'), 'an empty variable must not count as set');
   });
 
+  await check('a variable that exists but is blank is reported as blank', async () => {
+    const { audit } = require('../server/env-audit');
+
+    // The failure state that looks correct from a dashboard. Bulk-importing an
+    // example env file creates every name in it; its secrets ship deliberately
+    // blank, so the list looks complete while the server receives nothing.
+    const result = audit({
+      OPENROUTER_API_KEY: 'sk-real',
+      SUPABASE_URL: '',
+      SUPABASE_SERVICE_ROLE_KEY: '   ',
+      JWT_SECRET: ''
+    });
+    assert.deepStrictEqual(
+      result.empty.sort(),
+      ['JWT_SECRET', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_URL'],
+      'a present-but-blank variable was not reported as blank'
+    );
+    assert.deepStrictEqual(result.seen, ['OPENROUTER_API_KEY']);
+    assert.deepStrictEqual(result.suspicious, [], 'a correct name must not be called a typo');
+
+    // Absent is a different state from blank, and must not be conflated.
+    const absent = audit({ OPENROUTER_API_KEY: 'sk-real' });
+    assert.deepStrictEqual(absent.empty, [], 'a variable that does not exist was reported as blank');
+  });
+
+  await check('example-file defaults left in place are flagged', async () => {
+    const { audit } = require('../server/env-audit');
+    const risky = audit({
+      TEST_MODE: 'true', NODE_ENV: 'development', DATA_DIR: './server/data'
+    }).risky.map((r) => r.name).sort();
+    assert.deepStrictEqual(risky, ['DATA_DIR', 'NODE_ENV', 'TEST_MODE']);
+
+    // Correct production values are not flagged.
+    assert.deepStrictEqual(
+      audit({ TEST_MODE: 'false', NODE_ENV: 'production', DATA_DIR: '/tmp/meamus-data' }).risky, []
+    );
+  });
+
+  await check('a relative DATA_DIR is overridden rather than obeyed into EROFS', async () => {
+    // ./server/data is the .env.example default and is read-only on a
+    // serverless host, so honouring it means every write fails.
+    const { body } = await req('/api/status');
+    assert.strictEqual(body.serverless, true);
+    assert.ok(!body.warnings.some((w) => /EROFS/i.test(w)), 'the server crashed on a read-only path');
+  });
+
   await check('an unconfigured deployment refuses to pretend', async () => {
     // It used to open the anonymous path instead, which produced a sign-up
     // dialog offering free credits that errored on submit.

@@ -745,3 +745,26 @@ dialog::backdrop { background: rgba(28, 24, 18, .38); backdrop-filter: blur(2px)
 .setup-typo-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .setup-typo-row .wrong { color: var(--red); text-decoration: line-through; }
 .setup-typo-row .right { color: var(--green); font-weight: 640; }
+
+/* A variable that exists with a blank value is the worst failure state: the
+   dashboard looks complete and the server receives nothing. Loudest block. */
+.setup-blank {
+  margin-bottom: 18px; padding: 15px 16px; border-radius: var(--r);
+  border: 1.5px solid var(--red); background: var(--red-soft);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.setup-blank > strong { font-size: 14px; color: var(--red); }
+.setup-blank-keys { display: flex; flex-wrap: wrap; gap: 7px; margin: 4px 0 6px; }
+.setup-blank-keys code {
+  font-family: var(--mono); font-size: 12px; font-weight: 640;
+  padding: 5px 9px; border-radius: var(--r-sm);
+  background: var(--bg); border: 1px solid #f0c4c4; color: var(--red);
+}
+.setup-risky {
+  margin-top: 16px; padding: 13px 15px; border-radius: var(--r);
+  border: 1px solid var(--orange-line); background: var(--orange-soft);
+  display: flex; flex-direction: column; gap: 7px;
+}
+.setup-risky > strong { font-size: 13px; color: var(--orange); }
+.setup-risky-row { display: flex; flex-direction: column; gap: 2px; }
+.setup-risky-row code { font-family: var(--mono); font-size: 12px; font-weight: 620; color: var(--orange); }

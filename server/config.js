@@ -116,8 +116,20 @@ const SERVERLESS = Boolean(
 );
 
 function defaultDataDir() {
-  if (process.env.DATA_DIR) return process.env.DATA_DIR;
-  return SERVERLESS ? '/tmp/meamus-data' : './server/data';
+  const configured = (process.env.DATA_DIR || '').trim();
+  if (!configured) return SERVERLESS ? '/tmp/meamus-data' : './server/data';
+
+  // A serverless filesystem is read-only apart from /tmp. DATA_DIR=./server/data
+  // is the .env.example default, and honouring it on Vercel means every write
+  // fails with EROFS. The configured value is ignored rather than obeyed into a
+  // crash, and config.problems records that it happened.
+  if (SERVERLESS && !path.isAbsolute(configured)) {
+    configProblems.push(
+      `DATA_DIR is "${configured}", which is read-only on a serverless host. Using /tmp/meamus-data instead.`
+    );
+    return '/tmp/meamus-data';
+  }
+  return configured;
 }
 
 const config = {

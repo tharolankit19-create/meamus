@@ -9,9 +9,23 @@
  * it went to a different environment, or it went in after the last deploy. A
  * plain "SUPABASE_URL is not set" cannot tell those apart.
  *
- * So this reports names - never values - and, crucially, flags names that look
- * like a near miss for one the app reads. SUPERBASE_URL and SUPBASE_URL are
- * both perfectly plausible typos that no substring search would ever catch.
+ * So this reports names - never values - and distinguishes three states that
+ * look identical from the outside:
+ *
+ *   set        the name is there and carries a value
+ *   EMPTY      the name is there and the value is blank
+ *   missing    the name is not there at all
+ *
+ * The middle one is the trap. Bulk-importing a .env.example into a host
+ * creates every name in it, and the secrets in that file are deliberately
+ * blank - so the dashboard shows a full, correct-looking list while the server
+ * sees nothing. Reporting only "not set" makes that indistinguishable from
+ * never having added it, which is how an operator ends up certain they
+ * configured something that was never configured.
+ *
+ * It also flags names that look like a near miss for one the app reads.
+ * SUPERBASE_URL and SUPBASE_URL are both plausible typos that no substring
+ * search would catch.
  */
 
 /** Everything the app reads, and whether the product works without it. */
@@ -76,13 +90,35 @@ function didYouMean(name) {
   return null;
 }
 
+/** Values that are almost certainly a .env.example default left in place. */
+const DANGEROUS_DEFAULTS = [
+  { name: 'TEST_MODE', when: (v) => v === 'true',
+    why: 'Test mode lets anyone generate without an account. Set it to false in production.' },
+  { name: 'NODE_ENV', when: (v) => v === 'development',
+    why: 'This deployment is serving production traffic as development.' },
+  { name: 'DATA_DIR', when: (v) => v.startsWith('.') || v.startsWith('./'),
+    why: 'A relative data directory is read-only on a serverless host. Remove it and let the server choose.' }
+];
+
 /**
  * @param {NodeJS.ProcessEnv} [env]
- * @returns {{seen:string[], suspicious:Array<{name:string,didYouMean:string}>, count:number}}
+ * @returns {{seen:string[], empty:string[], suspicious:Array<{name:string,didYouMean:string}>,
+ *            risky:Array<{name:string,why:string}>, count:number}}
  */
 function audit(env = process.env) {
   const names = Object.keys(env);
-  const seen = KNOWN.filter((name) => String(env[name] || '').trim().length > 0);
+  const has = (name) => Object.prototype.hasOwnProperty.call(env, name);
+  const value = (name) => String(env[name] === undefined || env[name] === null ? '' : env[name]).trim();
+
+  const seen = KNOWN.filter((name) => value(name).length > 0);
+
+  // Present but blank. The name exists, so the dashboard looks right and the
+  // server still gets nothing.
+  const empty = KNOWN.filter((name) => has(name) && value(name).length === 0);
+
+  const risky = DANGEROUS_DEFAULTS
+    .filter((rule) => value(rule.name) && rule.when(value(rule.name)))
+    .map((rule) => ({ name: rule.name, why: rule.why }));
 
   const suspicious = names
     .filter((name) => !KNOWN.includes(name))
@@ -91,7 +127,7 @@ function audit(env = process.env) {
     .map((name) => ({ name, didYouMean: didYouMean(name) }))
     .filter((entry) => entry.didYouMean !== null);
 
-  return { seen, suspicious, count: names.length };
+  return { seen, empty, suspicious, risky, count: names.length };
 }
 
-module.exports = { audit, didYouMean, KNOWN };
+module.exports = { audit, didYouMean, KNOWN, DANGEROUS_DEFAULTS };

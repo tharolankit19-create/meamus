@@ -34,7 +34,8 @@ function deploymentLine() {
 export function renderSetup(root) {
   const missing = (state.status && state.status.setupMissing) || [];
   const seen = (state.status && state.status.envSeen) || [];
-  const d = (state.status && state.status.deployment) || {};
+  const empty = (state.status && state.status.envEmpty) || [];
+  const risky = (state.status && state.status.envRisky) || [];
 
   root.append(el('div', { class: 'setup-wrap' },
     el('div', { class: 'setup-card' },
@@ -49,10 +50,37 @@ export function renderSetup(root) {
         + 'Until the database is connected, nobody can sign in — so the product is '
         + 'showing you this instead of a sign-up form that would fail.'),
 
+      // The loudest thing on the page when it applies, because it is the one
+      // state that looks correct from the dashboard: the name is there, the
+      // value is not. Bulk-importing an example env file does exactly this.
+      empty.length
+        ? el('div', { class: 'setup-blank' },
+          el('strong', {}, empty.length === 1
+            ? 'One variable exists but has no value'
+            : `${empty.length} variables exist but have no value`),
+          el('p', { class: 'small', style: { margin: '2px 0 4px' } },
+            'They show up in your dashboard, which is why this looks configured. '
+            + 'The server receives an empty string for each one.'),
+          el('div', { class: 'setup-blank-keys' },
+            empty.map((name) => el('code', {}, name))),
+          el('span', { class: 'muted small' },
+            'Open each one, paste the real value, save, then redeploy.'))
+        : null,
+
       el('div', { class: 'setup-list' },
-        missing.map((item) => el('div', { class: 'setup-item' },
-          el('code', { class: 'setup-key' }, item.key),
-          el('span', { class: 'muted small' }, item.why)))),
+        missing
+          .filter((item) => !empty.includes(item.key))
+          .map((item) => el('div', { class: 'setup-item' },
+            el('code', { class: 'setup-key' }, item.key),
+            el('span', { class: 'muted small' }, item.why)))),
+
+      risky.length
+        ? el('div', { class: 'setup-risky' },
+          el('strong', {}, 'Left at an example-file default'),
+          risky.map((item) => el('div', { class: 'setup-risky-row' },
+            el('code', {}, item.name),
+            el('span', { class: 'muted small' }, item.why))))
+        : null,
 
       // The single most useful thing this screen can say: you did set a
       // variable, it is just not the name the app reads.

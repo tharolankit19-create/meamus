@@ -110,6 +110,12 @@ app.get('/api/status', (req, res) => {
     // the one cause of "I set it and nothing happened" that no substring
     // search would ever surface.
     envSuspicious: envAudit.suspicious,
+    // Present but blank. Bulk-importing a .env.example creates every name in
+    // it, and its secrets are deliberately blank - so the dashboard looks
+    // complete while the server sees nothing.
+    envEmpty: envAudit.empty,
+    // Values that are almost certainly an example-file default left in place.
+    envRisky: envAudit.risky,
     warnings: [
       ...(config.aiEnabled ? [] : ['OPENROUTER_API_KEY is not set - generation runs in template mode.']),
       ...(config.testMode ? ['TEST_MODE is on - anyone can generate without signing up.'] : []),
