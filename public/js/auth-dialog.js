@@ -1,6 +1,6 @@
 /* Sign-in / sign-up modal. Resolves to the user, or null if dismissed. */
 
-import { el, icon, modal, toast } from './ui.js';
+import { el, icon, modal, toast, withBusy } from './ui.js';
 import { auth, setSession, state } from './api.js';
 
 /** Google's mark, inlined: an external image would be blocked or slow. */
@@ -20,6 +20,18 @@ export function openAuth(mode = 'login') {
   return new Promise((resolve) => {
     let current = mode;
     let settled = null;
+    let done = false;
+
+    // Resolve the moment the account exists, not when the dialog has finished
+    // closing. Waiting on the close event meant the caller could not start
+    // navigating until the dialog had gone, which is the pause that read as
+    // "it logged me in and then jumped somewhere".
+    const finish = (user) => {
+      if (done) return;
+      done = true;
+      settled = user;
+      resolve(user);
+    };
 
     const { dialog, close } = modal((closeFn) => {
       const title = el('h2', { style: { fontSize: '21px', marginBottom: '4px' } });
@@ -82,20 +94,36 @@ export function openAuth(mode = 'login') {
           event.preventDefault();
           submit.disabled = true;
           errorBox.classList.add('hide');
+          const release = withBusy(
+            submit,
+            current === 'register' ? 'Creating account\u2026' : 'Signing in\u2026'
+          );
           try {
             const payload = await auth[current]({
               email: emailInput.value,
               password: passwordInput.value,
               name: nameField.querySelector('input').value || undefined
             });
+
+            // An account that needs email confirmation has no session yet.
+            if (payload.confirmationRequired) {
+              release();
+              errorBox.textContent = payload.message
+                || 'Account created. Check your email to confirm it, then sign in.';
+              errorBox.classList.remove('hide');
+              errorBox.classList.add('is-info');
+              current = 'login';
+              paint();
+              errorBox.classList.remove('hide');
+              return;
+            }
+
             setSession(payload.token, payload.user);
-            settled = payload.user;
-            toast(
-              payload.upgradedFromGuest ? 'Account created — your games were saved to it.'
-                : current === 'register' ? 'Account created — start building.'
-                  : 'Signed in',
-              'ok');
+            // Hand the caller the account first, then close. The dashboard is
+            // already rendering behind the dialog as it fades.
+            finish(payload.user);
             closeFn();
+            toast(current === 'register' ? 'Account created — start building.' : 'Signed in', 'ok');
           } catch (err) {
             // A deployment without durable storage refuses signup on purpose;
             // say so plainly instead of looking like a broken form.
@@ -104,7 +132,7 @@ export function openAuth(mode = 'login') {
               : err.message;
             errorBox.classList.remove('hide');
           } finally {
-            submit.disabled = false;
+            release();
           }
         }
       },
@@ -127,7 +155,8 @@ export function openAuth(mode = 'login') {
       return form;
     });
 
-    dialog.addEventListener('close', () => resolve(settled));
+    // Dismissing without signing in resolves null.
+    dialog.addEventListener('close', () => finish(settled));
     void close;
   });
 }

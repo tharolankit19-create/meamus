@@ -3,7 +3,7 @@
  * Used on the landing hero, the dashboard, and the workspace chat.
  * ========================================================================== */
 
-import { el, icon, toast, clear } from './ui.js';
+import { el, icon, toast, clear, spinner } from './ui.js';
 import { api } from './api.js';
 
 const MAX_FILES = 6;
@@ -207,7 +207,10 @@ export function createComposer(opts) {
       busy = value;
       textarea.disabled = value;
       modeSelect.disabled = value;
-      clear(sendBtn).append(value ? el('span', { class: 'spinner' }) : icon('arrowUp'));
+      // A ring in place of the arrow: the button itself carries the state, so
+      // the eye does not have to leave the thing that was just clicked.
+      clear(sendBtn).append(value ? spinner() : icon('arrowUp'));
+      sendBtn.classList.toggle('is-busy', Boolean(value));
       syncSend();
     }
   };

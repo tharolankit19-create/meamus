@@ -7,7 +7,7 @@
  * workspace (changes) so both behave identically.
  * ========================================================================== */
 
-import { el, icon, modal } from './ui.js';
+import { el, icon, modal, clear, spinner } from './ui.js';
 import { builds, state } from './api.js';
 
 const POLL_MS = 600;
@@ -155,4 +155,158 @@ export function buildPanel(buildId, { onStop } = {}) {
       node.classList.remove('live');
     }
   };
+}
+
+
+/* --------------------------------------------------------------------------
+ * The stage while a build runs.
+ *
+ * An empty frame for two minutes reads as a hang. This fills it with the one
+ * thing that is actually true at each moment: the phase the agents are in.
+ *
+ * The hints rotate, but they are not filler - each set is tied to the phase on
+ * screen, so reading them tells you something about what is happening rather
+ * than about the product. They pause on hover and on focus, and can be paused
+ * outright; with prefers-reduced-motion they do not rotate at all.
+ * ------------------------------------------------------------------------ */
+
+const PHASE_COPY = {
+  analyse: {
+    title: 'Reading your brief',
+    hints: [
+      'Picking the genre, the core loop and the control scheme.',
+      'Grounding the design in real games from the same genre.'
+    ]
+  },
+  build: {
+    title: 'Writing the game',
+    hints: [
+      'Every sprite is drawn in code — nothing is downloaded.',
+      'Sound is synthesised at runtime, so the file stays small.',
+      'Keyboard, mouse and touch controls are written together.'
+    ]
+  },
+  review: {
+    title: 'Reviewing the code',
+    hints: [
+      'The code is parsed before it ever reaches your browser.',
+      'A stub or a half-file is rejected rather than shipped.'
+    ]
+  },
+  repair: {
+    title: 'Fixing what the review caught',
+    hints: [
+      'The failure is handed back with the reason, not just retried.',
+      'Only the attempts that produced something are charged for.'
+    ]
+  },
+  ship: {
+    title: 'Bundling your game',
+    hints: ['One self-contained HTML file. It runs offline, on any browser.']
+  },
+  stopping: { title: 'Stopping', hints: ['Nothing will be charged for a stopped build.'] }
+};
+
+const DEFAULT_PHASE = { title: 'Working', hints: ['Setting up the build.'] };
+
+export function buildStage() {
+  const mark = el('div', { class: 'stage-mark' }, icon('gamepad', 'lg'));
+  const title = el('h3', { class: 'stage-title' }, 'Setting up');
+  const hint = el('p', { class: 'stage-hint' }, '');
+  const dots = el('div', { class: 'stage-dots' });
+
+  let hints = DEFAULT_PHASE.hints;
+  let index = 0;
+  let paused = false;
+  let timer = null;
+
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function paintHint() {
+    hint.classList.remove('in');
+    // Next frame, so the animation restarts rather than being a no-op.
+    requestAnimationFrame(() => {
+      hint.textContent = hints[index] || '';
+      hint.classList.add('in');
+    });
+    clear(dots).append(...hints.map((_, i) => el('span', {
+      class: `stage-dot ${i === index ? 'on' : ''}`
+    })));
+    dots.classList.toggle('hide', hints.length < 2);
+  }
+
+  function advance() {
+    if (paused || hints.length < 2) return;
+    index = (index + 1) % hints.length;
+    paintHint();
+  }
+
+  const pauseBtn = el('button', {
+    class: 'stage-pause', type: 'button',
+    title: 'Pause the hints', 'aria-label': 'Pause the hints',
+    onClick: () => {
+      paused = !paused;
+      pauseBtn.classList.toggle('on', paused);
+      pauseBtn.title = paused ? 'Resume the hints' : 'Pause the hints';
+    }
+  }, icon('pause', 'sm'));
+
+  const node = el('div', { class: 'build-stage' },
+    el('div', { class: 'stage-inner-block' },
+      mark,
+      el('div', { class: 'stage-live', role: 'status', 'aria-live': 'polite' }, title),
+      hint,
+      el('div', { class: 'stage-foot' }, dots, hints.length > 1 ? pauseBtn : pauseBtn)));
+
+  // Rotation pauses while a pointer or keyboard focus is on the stage, so
+  // nobody loses a line they were halfway through reading.
+  node.addEventListener('mouseenter', () => { paused = true; });
+  node.addEventListener('mouseleave', () => { if (!pauseBtn.classList.contains('on')) paused = false; });
+
+  if (!reduced) timer = setInterval(advance, 3800);
+  paintHint();
+
+  let lastPhase = null;
+  return {
+    node,
+    /** Drive the stage from the real build steps. */
+    update(view) {
+      const step = view.steps[view.steps.length - 1];
+      const phase = (step && step.phase) || 'analyse';
+      if (phase === lastPhase) return;
+      lastPhase = phase;
+
+      const copy = PHASE_COPY[phase] || DEFAULT_PHASE;
+      title.textContent = copy.title;
+      hints = copy.hints;
+      index = 0;
+      paintHint();
+      node.classList.toggle('is-repair', phase === 'repair');
+    },
+    done() { if (timer) clearInterval(timer); }
+  };
+}
+
+/**
+ * What a finished build actually produced, as chips.
+ *
+ * Reported from the spec rather than narrated, so the numbers are checkable
+ * against the code the founder can open in the next tab.
+ */
+export function artifactChips(view) {
+  const spec = view.spec;
+  if (!spec) return null;
+  const chips = [
+    ['file', 'game.js', `${spec.gameCode.javascript.split('\n').length} lines`],
+    ['image', 'sprites', `${spec.assets.sprites.length}`],
+    ['bolt', 'mechanics', `${spec.mechanics.length}`]
+  ];
+  if (view.meta && view.meta.attempts > 1) {
+    chips.push(['refresh', 'attempts', String(view.meta.attempts)]);
+  }
+  return el('div', { class: 'artifact-chips' },
+    chips.map(([ic, name, value]) => el('span', { class: 'artifact-chip' },
+      icon(ic, 'sm'),
+      el('code', {}, name),
+      el('b', {}, value))));
 }

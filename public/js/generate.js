@@ -8,7 +8,7 @@
 
 import { toast, el, clear } from './ui.js';
 import { state, projects, builds } from './api.js';
-import { confirmBuild, watchBuild, buildPanel } from './build.js';
+import { confirmBuild, watchBuild, buildPanel, buildStage, artifactChips } from './build.js';
 
 /**
  * Quote a build, ask, run it.
@@ -26,10 +26,21 @@ export async function startProject(text, attachmentIds = [], opts = {}) {
 
   const { buildId } = await builds.start(plan.planId);
   const panel = buildPanel(buildId);
-  if (opts.host) { clear(opts.host).append(panel.node); }
+  const stage = buildStage();
 
-  const view = await watchBuild(buildId, (tick) => panel.update(tick));
+  // The first build has no preview to stale out, so the stage sits beside the
+  // log: what is happening on the left, why it takes a moment on the right.
+  if (opts.host) {
+    clear(opts.host);
+    opts.host.style.gridTemplateColumns = '1fr';
+    opts.host.append(el('div', { class: 'first-build' },
+      panel.node,
+      el('div', { class: 'first-build-stage' }, stage.node)));
+  }
+
+  const view = await watchBuild(buildId, (tick) => { panel.update(tick); stage.update(tick); });
   panel.done();
+  stage.done();
 
   if (view.state === 'stopped') {
     toast('Build stopped. Nothing was charged.', 'warn', 5000);
@@ -45,6 +56,7 @@ export async function startProject(text, attachmentIds = [], opts = {}) {
 
   const spent = view.credits ? ` · ${view.credits.charged} credits, ${view.credits.balance} left` : '';
   toast(`Task complete — "${view.spec.gameConfig.title}" is ready${spent}`, 'ok', 6000);
+  void artifactChips;
 
   location.hash = `#/project/${view.game.id}`;
   return view;

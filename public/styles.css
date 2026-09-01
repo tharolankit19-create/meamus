@@ -768,3 +768,114 @@ dialog::backdrop { background: rgba(28, 24, 18, .38); backdrop-filter: blur(2px)
 .setup-risky > strong { font-size: 13px; color: var(--orange); }
 .setup-risky-row { display: flex; flex-direction: column; gap: 2px; }
 .setup-risky-row code { font-family: var(--mono); font-size: 12px; font-weight: 620; color: var(--orange); }
+
+/* --- progress that reads as progress --------------------------------------- */
+/* A disabled button looks like a click that was ignored. A spinning one looks
+   like work in flight, which is what a network round trip actually is. */
+.spin { display: inline-flex; line-height: 0; }
+.spin svg { animation: spin-rotate .7s linear infinite; }
+@keyframes spin-rotate { to { transform: rotate(360deg); } }
+.btn.is-busy { opacity: 1; cursor: progress; }
+.btn.is-busy:disabled { opacity: .92; }
+@media (prefers-reduced-motion: reduce) {
+  .spin svg { animation-duration: 2.4s; }
+}
+
+/* An informational message in the error slot - "check your email" is not a
+   failure, and colouring it like one makes a successful signup feel broken. */
+.form-error.is-info {
+  color: var(--ink-2); background: var(--surface); border-color: var(--line-strong);
+}
+
+/* --- route entrance --------------------------------------------------------
+   A view that appears instantly reads as a jump-cut. A short rise-and-fade
+   reads as arrival, which is what signing in actually is. Deliberately under
+   200ms: any longer and it stops being polish and starts being a wait. */
+@keyframes view-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.app, .setup-wrap, .ws-shell { animation: view-enter .18s cubic-bezier(.22,.7,.3,1) both; }
+
+/* Sidebar placeholders while the project list is still in flight. */
+.side-item.skeleton-row { pointer-events: none; padding: 8px 10px; }
+.side-item.skeleton-row .skeleton { display: block; height: 13px; width: 100%; border-radius: 5px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .app, .setup-wrap, .ws-shell { animation: none; }
+}
+
+/* --- the stage while a build runs ------------------------------------------
+   An empty frame for two minutes reads as a hang. This shows the phase the
+   agents are actually in, so the wait is legible rather than blank. */
+.build-stage {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  padding: 28px; text-align: center; background: var(--bg-warm);
+}
+.stage-inner-block { max-width: 380px; display: flex; flex-direction: column; align-items: center; }
+
+.stage-mark {
+  width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center;
+  background: var(--orange-soft); color: var(--orange);
+  border: 1px solid var(--orange-line); margin-bottom: 18px;
+  animation: stage-pulse 2.1s ease-in-out infinite;
+}
+@keyframes stage-pulse {
+  0%, 100% { transform: scale(1);    box-shadow: 0 0 0 0 var(--orange-ring); }
+  50%      { transform: scale(1.05); box-shadow: 0 0 0 12px transparent; }
+}
+
+.stage-live { font-size: 16px; font-weight: 620; letter-spacing: -.01em; color: var(--ink); }
+.stage-title { margin: 0; font: inherit; }
+.stage-hint {
+  margin: 8px 0 0; min-height: 40px; font-size: 13.5px; line-height: 1.55;
+  color: var(--ink-3); opacity: 0; transform: translateY(4px);
+}
+.stage-hint.in { animation: hint-in .34s cubic-bezier(.22,.7,.3,1) forwards; }
+@keyframes hint-in { to { opacity: 1; transform: none; } }
+
+.stage-foot { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
+.stage-dots { display: flex; gap: 6px; }
+.stage-dots.hide { visibility: hidden; }
+.stage-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong);
+  transition: background .25s ease, width .25s ease;
+}
+.stage-dot.on { background: var(--orange); width: 16px; border-radius: 3px; }
+.stage-pause {
+  display: grid; place-items: center; width: 24px; height: 24px; padding: 0;
+  border: 0; border-radius: 6px; background: transparent; color: var(--ink-4); cursor: pointer;
+}
+.stage-pause:hover { background: var(--surface-2); color: var(--ink-2); }
+.stage-pause.on { color: var(--orange); background: var(--orange-soft); }
+
+.build-stage.is-repair .stage-mark {
+  background: var(--red-soft); color: var(--red); border-color: #f0c4c4;
+}
+
+/* What the build actually produced, stated rather than narrated. */
+.artifact-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
+.artifact-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 9px; border-radius: 999px; font-size: 11.5px;
+  border: 1px solid var(--line); background: var(--bg-warm); color: var(--ink-3);
+}
+.artifact-chip code { font-family: var(--mono); font-size: 11px; color: var(--ink-2); }
+.artifact-chip b { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-mark { animation: none; }
+  .stage-hint.in { animation: none; opacity: 1; transform: none; }
+}
+
+/* The first build has no preview to replace, so the log and the stage sit
+   side by side: what is happening, and why it takes a moment. */
+.first-build {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px;
+  align-items: stretch;
+}
+.first-build-stage {
+  position: relative; min-height: 260px; border: 1px solid var(--line);
+  border-radius: var(--r); overflow: hidden;
+}
+@media (max-width: 860px) { .first-build { grid-template-columns: 1fr; } }

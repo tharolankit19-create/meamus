@@ -36,6 +36,44 @@ export function add(node, children) {
 
 export const clear = (node) => { while (node.firstChild) node.firstChild.remove(); return node; };
 
+/**
+ * A button that shows its own work.
+ *
+ * A disabled button is not feedback - it looks like the click was ignored.
+ * This swaps in a spinner and a verb ("Creating account…") for the duration,
+ * so a network round trip reads as progress rather than a frozen form, and
+ * restores the exact original content afterwards.
+ */
+export function withBusy(button, busyLabel) {
+  const original = [...button.childNodes];
+  let released = false;
+
+  clear(button).append(spinner(), document.createTextNode(busyLabel));
+  button.disabled = true;
+  button.classList.add('is-busy');
+
+  return () => {
+    if (released) return;
+    released = true;
+    button.disabled = false;
+    button.classList.remove('is-busy');
+    clear(button).append(...original);
+  };
+}
+
+/** Indeterminate progress ring. Honours prefers-reduced-motion via CSS. */
+export function spinner(size = 'sm') {
+  return el('span', {
+    class: `spin ${size}`,
+    'aria-hidden': 'true',
+    html: '<svg viewBox="0 0 20 20" width="14" height="14">'
+      + '<circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" '
+      + 'stroke-opacity=".22" stroke-width="2.5"/>'
+      + '<path d="M10 2.5a7.5 7.5 0 0 1 7.5 7.5" fill="none" stroke="currentColor" '
+      + 'stroke-width="2.5" stroke-linecap="round"/></svg>'
+  });
+}
+
 /* --- icons --------------------------------------------------------------- */
 const PATHS = {
   spark: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
@@ -56,6 +94,7 @@ const PATHS = {
   monitor: '<rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>',
   phone: '<rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18.5h2"/>',
   refresh: '<path d="M21 12a9 9 0 11-2.6-6.4"/><path d="M21 3v6h-6"/>',
+  pause: '<rect x="7" y="5" width="3.5" height="14" rx="1"/><rect x="13.5" y="5" width="3.5" height="14" rx="1"/>',
   external: '<path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 010 18a15 15 0 010-18"/>',
   share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4"/><path d="M15.4 6.5l-6.8 4"/>',

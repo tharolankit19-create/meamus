@@ -7,6 +7,8 @@ export const state = {
   user: null,
   status: null,
   projects: [],
+  projectsLoaded: false,   // false means "not fetched yet", not "empty"
+
   templates: [],
   project: null,      // { game, spec, meta, messages } in the workspace
   ready: false

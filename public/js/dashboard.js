@@ -13,7 +13,8 @@ const GREETINGS = ['Let\'s build something', 'What are we making', 'Ready when y
 
 export function renderDashboard(root, { tab = 'projects' } = {}) {
   const main = el('main', { class: 'main' });
-  root.append(el('div', { class: 'app' }, sidebar('dashboard'), main));
+  const side = sidebar('dashboard');
+  root.append(el('div', { class: 'app' }, side, main));
 
   const greeting = GREETINGS[new Date().getDate() % GREETINGS.length];
   const firstName = (state.user.name || state.user.email || '').split(/[\s@]/)[0];
@@ -81,6 +82,7 @@ export function renderDashboard(root, { tab = 'projects' } = {}) {
     composer.focus();
   }
 
+  listHost.__side = side;
   loadTab(tab, listHost);
 }
 
@@ -88,12 +90,30 @@ export function renderDashboard(root, { tab = 'projects' } = {}) {
 export function sidebar(active) {
   const initial = (state.user.name || state.user.email || 'P').charAt(0).toUpperCase();
 
-  const recents = state.projects.slice(0, 6).map((project) => el('button', {
-    class: 'side-item',
-    onClick: () => { location.hash = `#/project/${project.id}`; }
-  }, icon('gamepad', 'sm'), el('span', { class: 'nm' }, project.title)));
+  // Straight after signing in the list has not arrived yet. Skeleton rows hold
+  // the space so the sidebar settles rather than jolting when it does.
+  const recentsHost = el('div', { class: 'recents-list' });
 
-  return el('aside', { class: 'sidebar' },
+  /**
+   * Straight after signing in the list has not arrived yet, so skeleton rows
+   * hold the space. Repainted when it lands, rather than left to jolt - and
+   * exported on the node so loadTab can call it without a full re-render.
+   */
+  function paintRecents() {
+    clear(recentsHost).append(...(state.projects.length
+      ? state.projects.slice(0, 6).map((project) => el('button', {
+        class: 'side-item',
+        onClick: () => { location.hash = `#/project/${project.id}`; }
+      }, icon('gamepad', 'sm'), el('span', { class: 'nm' }, project.title)))
+      : state.projectsLoaded
+        ? []
+        : Array.from({ length: 3 }, () =>
+          el('div', { class: 'side-item skeleton-row' }, el('span', { class: 'skeleton' })))));
+  }
+  paintRecents();
+  const recents = state.projects.length || !state.projectsLoaded ? [recentsHost] : [];
+
+  const node = el('aside', { class: 'sidebar' },
     el('div', { class: 'side-head' },
       el('a', { class: 'brand', href: '#/dashboard' },
         el('span', { class: 'brand-mark' }, icon('gamepad')), 'meamus')),
@@ -139,6 +159,9 @@ export function sidebar(active) {
       style: { marginTop: '6px' },
       onClick: () => { setSession(null, null); location.href = '/'; }
     }, icon('user'), 'Sign out'));
+
+  node.paintRecents = paintRecents;
+  return node;
 }
 
 /* --- lists ---------------------------------------------------------------- */
@@ -156,6 +179,10 @@ async function loadTab(tab, host) {
 
     const { games } = await projects.list();
     state.projects = games;
+    state.projectsLoaded = true;
+    // The sidebar is already on screen holding skeleton rows. Repaint it in
+    // place rather than leaving them until the next full render.
+    if (host.__side && host.__side.paintRecents) host.__side.paintRecents();
     if (!games.length) {
       clear(host);
       host.style.gridTemplateColumns = '1fr';

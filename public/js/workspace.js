@@ -4,7 +4,7 @@
 
 import { el, icon, toast, clear, playModal, relativeTime, escapeHtml, quotaLabel, creditChip } from './ui.js';
 import { state, projects, builds, playUrl, download } from './api.js';
-import { confirmBuild, watchBuild, buildPanel, humanMs } from './build.js';
+import { confirmBuild, watchBuild, buildPanel, buildStage, artifactChips, humanMs } from './build.js';
 import { createComposer } from './composer.js';
 
 const TABS = [
@@ -42,7 +42,8 @@ export async function renderWorkspace(root, projectId) {
     device: 'desktop',
     chatOpen: true,
     busy: false,
-    frameKey: 0
+    frameKey: 0,
+    building: null   // the live stage that replaces the preview during a build
   };
 
   /* --- stage (right side) ---------------------------------------------- */
@@ -51,8 +52,14 @@ export async function renderWorkspace(root, projectId) {
 
   function paintStage() {
     clear(stageInner);
-    stageInner.style.padding = view.tab === 'preview' ? '14px' : '0';
+    stageInner.style.padding = view.building ? '0' : (view.tab === 'preview' ? '14px' : '0');
     stageInner.style.alignItems = view.tab === 'preview' ? 'center' : 'stretch';
+
+    if (view.building) {
+      stageInner.style.padding = '0';
+      stageInner.append(view.building.node);
+      return;
+    }
 
     if (view.tab === 'preview') {
       stageInner.append(el('div', { class: `frame-shell ${view.device === 'phone' ? 'phone' : ''}` },
@@ -194,8 +201,20 @@ export async function renderWorkspace(root, projectId) {
         pending.replaceWith(panel.node);
         scrollThread();
 
-        const finished = await watchBuild(buildId, (tick) => { panel.update(tick); scrollThread(); });
+        // The preview is stale for the whole build. Rather than leave it there
+        // looking live, it becomes a stage that reports the real phase.
+        const stage = buildStage();
+        view.building = stage;
+        paintStage();
+
+        const finished = await watchBuild(buildId, (tick) => {
+          panel.update(tick);
+          stage.update(tick);
+          scrollThread();
+        });
         panel.done();
+        stage.done();
+        view.building = null;
 
         if (finished.state === 'stopped') {
           thread.append(el('div', { class: 'notice' }, icon('alert'),
@@ -225,6 +244,9 @@ export async function renderWorkspace(root, projectId) {
           finished.credits && finished.credits.charged
             ? el('span', { class: 'faint' }, ` ${finished.credits.charged} credits · ${finished.credits.balance} left`)
             : null));
+        // What it produced, as checkable numbers rather than a claim.
+        const chips = artifactChips(finished);
+        if (chips) thread.append(chips);
         scrollThread();
         toast('Task complete', 'ok');
       } catch (err) {
