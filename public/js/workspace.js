@@ -5,6 +5,7 @@
 import { el, icon, toast, clear, playModal, relativeTime, escapeHtml, quotaLabel, creditChip } from './ui.js';
 import { state, projects, builds, playUrl, download } from './api.js';
 import { confirmBuild, watchBuild, buildPanel, buildStage, artifactChips, humanMs } from './build.js';
+import { attachToBuild } from './generate.js';
 import { createComposer } from './composer.js';
 
 const TABS = [
@@ -37,6 +38,13 @@ export async function renderWorkspace(root, projectId) {
     clear(shell);
   }
 
+  // A build started from the dashboard hands the workspace its id, so the
+  // founder lands here and watches it rather than watching a card elsewhere.
+  const pending = state.pendingBuild && state.pendingBuild.gameId === projectId
+    ? state.pendingBuild
+    : null;
+  if (pending) state.pendingBuild = null;
+
   const view = {
     tab: 'preview',
     device: 'desktop',
@@ -58,6 +66,21 @@ export async function renderWorkspace(root, projectId) {
     if (view.building) {
       stageInner.style.padding = '0';
       stageInner.append(view.building.node);
+      return;
+    }
+
+    // A game whose build has not landed yet has no spec to preview, no code to
+    // show and no spec to inspect. Say so rather than rendering an empty frame.
+    if (!data.spec) {
+      stageInner.style.padding = '28px';
+      stageInner.append(el('div', { class: 'empty', style: { maxWidth: '420px' } },
+        el('div', { class: 'feature-icon', style: { margin: '0 auto 14px' } }, icon('sparkles', 'lg')),
+        el('h2', { style: { fontSize: '17px' } },
+          data.game.status === 'failed' ? 'That build did not finish' : 'Still building'),
+        el('p', { class: 'muted' },
+          data.game.status === 'failed'
+            ? (data.game.description || 'Send the prompt again to retry.')
+            : 'This game is being built. It will appear here the moment it lands.')));
       return;
     }
 
@@ -126,7 +149,7 @@ export async function renderWorkspace(root, projectId) {
     el('a', { class: 'brand', href: '#/dashboard', title: 'Back to dashboard' },
       el('span', { class: 'brand-mark' }, icon('gamepad'))),
     el('span', { class: 'ws-title', title: data.game.title }, data.game.title),
-    el('span', { class: 'tag' }, data.game.genre),
+    data.game.genre ? el('span', { class: 'tag' }, data.game.genre) : null,
     el('button', {
       class: 'btn icon sq hide-sm', title: 'Toggle the chat panel', 'aria-label': 'Toggle the chat panel',
       onClick: () => {
@@ -426,6 +449,69 @@ export async function renderWorkspace(root, projectId) {
 
   paintThread();
   paintStage();
+
+  // A build already in flight for this game: show it here, live, from the
+  // moment the workspace opens.
+  if (pending) watchFirstBuild(pending);
+
+  /**
+   * Attach to the build that brought us here.
+   *
+   * The founder can close the tab at any point - the game row already exists
+   * server-side and the build keeps going, so nothing is lost either way.
+   */
+  async function watchFirstBuild(info) {
+    view.busy = true;
+    composer.setBusy(true);
+
+    const panel = buildPanel(info.buildId);
+    thread.append(panel.node);
+    const stage = buildStage();
+    view.building = stage;
+    paintStage();
+    scrollThread();
+
+    const finished = await attachToBuild(info.buildId, {
+      onTick: (tick) => { panel.update(tick); stage.update(tick); scrollThread(); }
+    }).catch((err) => ({ state: 'failed', error: err.message }));
+
+    panel.done();
+    stage.done();
+    view.building = null;
+    view.busy = false;
+    composer.setBusy(false);
+
+    if (finished.state !== 'done') {
+      thread.append(el('div', { class: 'notice' }, icon('alert'),
+        el('span', {}, finished.state === 'stopped'
+          ? 'Build stopped. Nothing was charged.'
+          : (finished.error || 'The build failed.'))));
+      paintStage();
+      scrollThread();
+      return;
+    }
+
+    data = {
+      game: finished.game,
+      spec: finished.spec,
+      meta: finished.meta,
+      messages: finished.messages || data.messages
+    };
+    state.project = data;
+    view.frameKey += 1;
+    if (creditsChip) creditsChip.refresh();
+    paintStage();
+
+    thread.append(el('div', { class: 'done-line' },
+      icon('check', 'sm'),
+      el('span', {}, `Task complete — ${finished.spec.gameConfig.title} is ready in ${humanMs(finished.elapsedMs)}.`),
+      finished.credits && finished.credits.charged
+        ? el('span', { class: 'faint' }, ` ${finished.credits.charged} credits · ${finished.credits.balance} left`)
+        : null));
+    const chips = artifactChips(finished);
+    if (chips) thread.append(chips);
+    scrollThread();
+  }
 }
 
 async function safeDownload(path) {

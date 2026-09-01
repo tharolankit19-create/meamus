@@ -8,6 +8,7 @@ export const state = {
   status: null,
   projects: [],
   projectsLoaded: false,   // false means "not fetched yet", not "empty"
+  pendingBuild: null,      // a build the workspace should attach to on open
 
   templates: [],
   project: null,      // { game, spec, meta, messages } in the workspace

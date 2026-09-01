@@ -25,6 +25,41 @@ const { requireAuth, asyncRoute } = require('../middleware');
 
 const router = express.Router();
 const MAX_VERSIONS = 10;
+const MAX_MESSAGES = 200;
+
+const message = (role, text, extra = {}) => ({
+  id: db.id('msg'), role, text, createdAt: new Date().toISOString(), ...extra
+});
+
+const appendMessage = (game, entry) =>
+  [...((game && game.messages) || []), entry].slice(-MAX_MESSAGES);
+
+/** A one-line summary of what the build produced, for the chat. */
+function describeBuild(spec, meta) {
+  const bits = [
+    `${spec.gameConfig.genre} · ${spec.gameConfig.difficulty}`,
+    `${spec.gameCode.javascript.split('\n').length} lines`,
+    `${spec.assets.sprites.length} sprites`,
+    `${spec.mechanics.length} mechanics`
+  ];
+  if (meta.attempts > 1) bits.push(`${meta.attempts} attempts`);
+  return bits.join(' · ');
+}
+
+/**
+ * A readable name for the row that exists before the model has named the game.
+ * Replaced by the real title the moment the build lands.
+ */
+function titleFromPrompt(prompt) {
+  const cleaned = String(prompt || '')
+    .replace(/^(make|create|build|generate|i want|give me)\s+(me\s+)?(a|an|the)?\s*/i, '')
+    .replace(/[^a-zA-Z0-9 '-]/g, ' ')
+    .trim();
+  if (cleaned.length < 3) return 'New game';
+  const words = cleaned.split(/\s+/).slice(0, 4)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+  return words.join(' ') || 'New game';
+}
 
 /* --- plan ----------------------------------------------------------------- */
 
@@ -92,12 +127,39 @@ router.post('/build/start', requireAuth, asyncRoute(async (req, res) => {
     });
   }
 
+  // A new game gets its row NOW, before a single token is spent.
+  //
+  // It used to be inserted only when the build finished, so closing the tab
+  // mid-build lost the game entirely - it never appeared under My games and
+  // there was nothing to come back to. The row exists from the start, marked
+  // building, and the build fills it in.
+  let gameId = plan.gameId;
+  if (!gameId) {
+    const now = new Date().toISOString();
+    const placeholder = db.insert('games', {
+      id: db.id('gam'),
+      userId: req.user.id,
+      prompt: plan.prompt,
+      title: titleFromPrompt(plan.prompt),
+      status: 'building',
+      spec: null,
+      meta: null,
+      versions: [],
+      messages: [message('user', plan.prompt)],
+      isPublic: false,
+      createdAt: now,
+      updatedAt: now
+    });
+    gameId = placeholder.id;
+  }
+
   const { buildId, build } = builds.start(req.user.id, {
-    kind: plan.kind, prompt: plan.prompt, gameId: plan.gameId, estimate: plan.estimate
+    kind: plan.kind, prompt: plan.prompt, gameId, estimate: plan.estimate
   });
 
-  // Answer immediately; the work continues and the browser polls for it.
-  res.status(202).json({ buildId, state: build.state, estimate: plan.estimate });
+  // The gameId comes back immediately so the browser can open the workspace
+  // and watch the build there, rather than waiting on the dashboard.
+  res.status(202).json({ buildId, gameId, state: build.state, estimate: plan.estimate });
 
   run(build, plan, req.user).catch((err) => {
     builds.fail(build, err.message);
@@ -118,13 +180,27 @@ async function run(build, plan, user) {
   builds.step(build, { phase: 'analyse', detail: 'Reading the brief' });
   if (build.stopRequested) return builds.fail(build, 'Stopped before the model was called');
 
-  const existing = plan.gameId ? db.find('games', (g) => g.id === plan.gameId) : null;
+  const existing = db.find('games', (g) => g.id === build.gameId);
 
-  const { spec, meta } = plan.kind === 'iterate'
-    ? await generator.modify(plan.prompt, existing.spec, { attachments, onStep })
-    : await generator.generate(plan.prompt, { attachments, onStep });
+  let spec;
+  let meta;
+  try {
+    ({ spec, meta } = plan.kind === 'iterate'
+      ? await generator.modify(plan.prompt, existing.spec, { attachments, onStep })
+      : await generator.generate(plan.prompt, { attachments, onStep }));
+  } catch (err) {
+    // The row already exists, so it has to say what happened rather than sit
+    // in "building" forever.
+    if (plan.kind === 'create') {
+      db.update('games', build.gameId, { status: 'failed', error: err.message });
+    }
+    throw err;
+  }
 
-  if (build.stopRequested) return builds.fail(build, 'Stopped after the build finished but before it was saved');
+  if (build.stopRequested) {
+    if (plan.kind === 'create') db.update('games', build.gameId, { status: 'stopped' });
+    return builds.fail(build, 'Stopped after the build finished but before it was saved');
+  }
 
   builds.step(build, { phase: 'ship', detail: `Bundling ${spec.gameConfig.title}` });
 
@@ -132,7 +208,6 @@ async function run(build, plan, user) {
   const owed = estimator.creditsForUsage(meta.usage, plan.kind);
   const billed = credits.chargeExact(user, owed);
 
-  const now = new Date().toISOString();
   let game;
 
   if (plan.kind === 'iterate') {
@@ -141,20 +216,23 @@ async function run(build, plan, user) {
       ...(existing.versions || [])
     ].slice(0, MAX_VERSIONS);
     game = db.update('games', existing.id, {
-      spec, meta: { ...meta, lastInstruction: plan.prompt }, versions
+      spec,
+      meta: { ...meta, lastInstruction: plan.prompt },
+      versions,
+      status: 'ready',
+      messages: appendMessage(existing, message('assistant', describeBuild(spec, meta), {
+        title: spec.gameConfig.title, kind: 'edit', mode: meta.mode
+      }))
     });
   } else {
-    game = db.insert('games', {
-      id: db.id('gam'),
-      userId: user.id,
-      prompt: plan.prompt,
+    game = db.update('games', build.gameId, {
       spec,
       meta,
-      versions: [],
-      messages: [],
-      isPublic: false,
-      createdAt: now,
-      updatedAt: now
+      status: 'ready',
+      title: spec.gameConfig.title,
+      messages: appendMessage(existing, message('assistant', describeBuild(spec, meta), {
+        title: spec.gameConfig.title, kind: 'build', mode: meta.mode
+      }))
     });
   }
 

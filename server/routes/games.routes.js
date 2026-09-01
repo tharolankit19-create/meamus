@@ -43,23 +43,55 @@ function appendMessages(game, ...entries) {
 }
 
 /** List view - the full spec is heavy, so summaries omit gameCode. */
+/**
+ * The card shape.
+ *
+ * A row now exists from the moment a build starts, so this has to describe a
+ * game that has no spec yet. Without that, closing the tab mid-build lost the
+ * game entirely; with it, the row is listed as building and fills itself in.
+ */
 function summarise(game) {
-  return {
+  const spec = game.spec;
+  const status = game.status || (spec ? 'ready' : 'building');
+
+  const base = {
     id: game.id,
-    title: game.spec.gameConfig.title,
-    genre: game.spec.gameConfig.genre,
-    description: game.spec.gameConfig.description,
-    difficulty: game.spec.gameConfig.difficulty,
-    estimatedPlayTime: game.spec.gameConfig.estimatedPlayTime,
+    status,
     prompt: game.prompt,
-    mode: game.meta.mode,
     isPublic: game.isPublic === true,
-    versionCount: (game.versions || []).length + 1,
     messageCount: (game.messages || []).length,
-    codeLines: game.spec.gameCode.javascript.split('\n').length,
-    spriteCount: game.spec.assets.sprites.length,
     createdAt: game.createdAt,
     updatedAt: game.updatedAt
+  };
+
+  if (!spec) {
+    return {
+      ...base,
+      title: game.title || 'New game',
+      genre: null,
+      description: status === 'failed'
+        ? (game.error || 'That build did not finish.')
+        : 'Building…',
+      difficulty: null,
+      estimatedPlayTime: null,
+      mode: null,
+      versionCount: 0,
+      codeLines: 0,
+      spriteCount: 0
+    };
+  }
+
+  return {
+    ...base,
+    title: spec.gameConfig.title,
+    genre: spec.gameConfig.genre,
+    description: spec.gameConfig.description,
+    difficulty: spec.gameConfig.difficulty,
+    estimatedPlayTime: spec.gameConfig.estimatedPlayTime,
+    mode: (game.meta && game.meta.mode) || null,
+    versionCount: (game.versions || []).length + 1,
+    codeLines: spec.gameCode.javascript.split('\n').length,
+    spriteCount: spec.assets.sprites.length
   };
 }
 

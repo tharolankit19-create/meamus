@@ -6,9 +6,9 @@
  * a price, then watches the agents work with a clock and a stop button.
  * ========================================================================== */
 
-import { toast, el, clear } from './ui.js';
+import { toast, el } from './ui.js';
 import { state, projects, builds } from './api.js';
-import { confirmBuild, watchBuild, buildPanel, buildStage, artifactChips } from './build.js';
+import { confirmBuild, watchBuild } from './build.js';
 
 /**
  * Quote a build, ask, run it.
@@ -24,41 +24,39 @@ export async function startProject(text, attachmentIds = [], opts = {}) {
 
   if (!await confirmBuild(plan)) return null;
 
-  const { buildId } = await builds.start(plan.planId);
-  const panel = buildPanel(buildId);
-  const stage = buildStage();
+  // The server creates the game row before it spends a token and hands back
+  // its id, so the workspace can open straight away. Building on the dashboard
+  // meant the founder watched a card instead of their game, and closing the
+  // tab lost the whole thing.
+  const { buildId, gameId } = await builds.start(plan.planId);
 
-  // The first build has no preview to stale out, so the stage sits beside the
-  // log: what is happening on the left, why it takes a moment on the right.
-  if (opts.host) {
-    clear(opts.host);
-    opts.host.style.gridTemplateColumns = '1fr';
-    opts.host.append(el('div', { class: 'first-build' },
-      panel.node,
-      el('div', { class: 'first-build-stage' }, stage.node)));
-  }
+  state.pendingBuild = { buildId, gameId, prompt: text, startedAt: Date.now() };
+  state.projectsLoaded = false;   // the list has a new row it has not seen
+  location.hash = `#/project/${gameId}`;
+  void opts;
+  return { buildId, gameId };
+}
 
-  const view = await watchBuild(buildId, (tick) => { panel.update(tick); stage.update(tick); });
-  panel.done();
-  stage.done();
+/**
+ * Watch a build that is already running and land its result.
+ *
+ * Split out from startProject so the workspace can pick up a build it did not
+ * start - the founder navigated in, or came back to a tab they had left.
+ */
+export async function attachToBuild(buildId, { onTick } = {}) {
+  const view = await watchBuild(buildId, onTick);
 
   if (view.state === 'stopped') {
     toast('Build stopped. Nothing was charged.', 'warn', 5000);
-    return null;
+    return view;
   }
   if (view.state === 'failed') {
-    throw new Error(view.error || 'The build failed');
+    toast(view.error || 'The build failed', 'err', 8000);
+    return view;
   }
 
   if (state.user && view.credits) state.user.credits = view.credits.balance;
-  state.project = { game: view.game, spec: view.spec, meta: view.meta, messages: view.messages || [] };
-  state.projects = [view.game, ...state.projects.filter((p) => p.id !== view.game.id)];
-
-  const spent = view.credits ? ` · ${view.credits.charged} credits, ${view.credits.balance} left` : '';
-  toast(`Task complete — "${view.spec.gameConfig.title}" is ready${spent}`, 'ok', 6000);
-  void artifactChips;
-
-  location.hash = `#/project/${view.game.id}`;
+  state.projectsLoaded = false;
   return view;
 }
 

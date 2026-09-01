@@ -886,3 +886,12 @@ dialog::backdrop { background: rgba(28, 24, 18, .38); backdrop-filter: blur(2px)
 .build-stage.is-test .stage-mark {
   background: var(--green-soft); color: var(--green); border-color: #c3e7d0;
 }
+
+/* A game whose build is still running: it has a row from the moment the build
+   starts, so closing the tab never loses it. */
+.thumb-state {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px;
+  color: var(--ink-3); background: var(--bg-warm);
+}
+.project-card.is-building { border-color: var(--orange-line); }

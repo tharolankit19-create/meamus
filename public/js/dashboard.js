@@ -201,22 +201,37 @@ async function loadTab(tab, host) {
 
 function projectCard(game) {
   const open = () => { location.hash = `#/project/${game.id}`; };
+  // A game whose build is still running has a row but no playable bundle yet.
+  const building = game.status === 'building';
+  const failed = game.status === 'failed';
 
-  return el('article', { class: 'card hover project-card' },
+  return el('article', { class: `card hover project-card ${building ? 'is-building' : ''}` },
     el('div', { class: 'project-thumb', onClick: open },
-      el('iframe', {
-        src: playUrl(game.id), title: `${game.title} thumbnail`, loading: 'lazy',
-        sandbox: 'allow-scripts allow-same-origin', tabindex: '-1'
-      })),
+      building || failed
+        ? el('div', { class: 'thumb-state' },
+          building ? el('span', { class: 'spinner ink' }) : icon('alert', 'lg'),
+          el('span', { class: 'small' }, building ? 'Building…' : 'Build failed'))
+        : el('iframe', {
+          src: playUrl(game.id), title: `${game.title} thumbnail`, loading: 'lazy',
+          sandbox: 'allow-scripts allow-same-origin', tabindex: '-1'
+        })),
     el('div', { class: 'project-body' },
       el('div', { class: 'spread', style: { marginBottom: '4px' } },
         el('h3', { onClick: open, style: { cursor: 'pointer' } }, game.title),
-        el('span', { class: `tag ${game.mode === 'ai' ? 'green' : ''}` }, game.mode)),
+        building
+          ? el('span', { class: 'tag orange dot' }, 'building')
+          : failed
+            ? el('span', { class: 'tag' }, 'failed')
+            : el('span', { class: `tag ${game.mode === 'ai' ? 'green' : ''}` }, game.mode)),
       el('p', { class: 'faint small', style: { margin: '0 0 11px' } },
-        `${game.genre} · ${game.codeLines} lines · ${relativeTime(game.updatedAt || game.createdAt)}`),
+        building || failed
+          ? `${relativeTime(game.updatedAt || game.createdAt)}`
+          : `${game.genre} · ${game.codeLines} lines · ${relativeTime(game.updatedAt || game.createdAt)}`),
       el('div', { class: 'row', style: { gap: '6px' } },
-        el('button', { class: 'btn sm', onClick: () => playModal(game.title, playUrl(game.id)) }, icon('play', 'sm'), 'Play'),
-        el('button', { class: 'btn sm', onClick: open }, 'Open'),
+        building || failed
+          ? null
+          : el('button', { class: 'btn sm', onClick: () => playModal(game.title, playUrl(game.id)) }, icon('play', 'sm'), 'Play'),
+        el('button', { class: 'btn sm', onClick: open }, building ? 'Watch' : 'Open'),
         el('span', { class: 'grow' }),
         el('button', {
           class: 'btn icon sq', title: `Delete ${game.title}`, 'aria-label': `Delete ${game.title}`,
