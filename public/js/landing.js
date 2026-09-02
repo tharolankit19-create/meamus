@@ -3,7 +3,7 @@
  * ========================================================================== */
 
 import { el, icon, toast, playModal } from './ui.js';
-import { state, templatesApi, templatePlayUrl, ensureGuestSession } from './api.js';
+import { state, templatesApi, templatePlayUrl } from './api.js';
 import { createComposer } from './composer.js';
 import { openAuth } from './auth-dialog.js';
 import { startProject } from './generate.js';
@@ -34,30 +34,76 @@ const FEATURES = [
   }
 ];
 
+/** Where a prompt waits while the visitor signs in. */
+const PENDING_KEY = 'meamus:pendingPrompt';
+
+export function stashPrompt(text) {
+  try { sessionStorage.setItem(PENDING_KEY, String(text || '')); } catch { /* private mode */ }
+}
+
+export function takePrompt() {
+  try {
+    const value = sessionStorage.getItem(PENDING_KEY);
+    sessionStorage.removeItem(PENDING_KEY);
+    return value || '';
+  } catch { return ''; }
+}
+
+/**
+ * Type the examples into the placeholder, one character at a time.
+ *
+ * A static placeholder shows one idea. This shows the range - and it is the
+ * cheapest way to answer "what can I actually ask for?" without a wall of copy.
+ * Stops the moment the visitor types, and honours reduced-motion by simply
+ * showing the first example.
+ */
+function typewriter(textarea, examples) {
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduced) { textarea.placeholder = examples[0]; return () => {}; }
+
+  let index = 0;
+  let char = 0;
+  let deleting = false;
+  let timer = null;
+  let stopped = false;
+
+  const tick = () => {
+    if (stopped) return;
+    const full = examples[index];
+    char += deleting ? -1 : 1;
+    textarea.placeholder = full.slice(0, char) + (char < full.length ? '\u2588' : '');
+
+    let delay = deleting ? 18 : 34;
+    if (!deleting && char >= full.length) { delay = 1900; deleting = true; }
+    else if (deleting && char <= 0) { deleting = false; index = (index + 1) % examples.length; delay = 260; }
+    timer = setTimeout(tick, delay);
+  };
+  timer = setTimeout(tick, 500);
+
+  const stop = () => {
+    stopped = true;
+    clearTimeout(timer);
+    textarea.placeholder = 'Describe the game you want to build\u2026';
+  };
+  textarea.addEventListener('input', stop, { once: true });
+  textarea.addEventListener('focus', stop, { once: true });
+  return stop;
+}
+
 export function renderLanding(root) {
   const composer = createComposer({
     placeholder: 'A space shooter where I tap to blast asteroids…',
     submitLabel: 'Generate game',
-    async onSubmit(text, attachmentIds, { mode }) {
-      // An account is required to build, unless this deployment cannot make
-      // one - then a session already exists and the prompt runs straight
-      // through. The typed prompt survives the sign-up detour either way.
-      if (!state.user && !accountsOff()) {
-        const user = await openAuth('register');
-        if (!user) { toast('Create a free account to generate your game', 'warn'); return; }
-      }
+    async onSubmit(text) {
+      // Anything typed here goes to sign-in first. No exceptions, no guest
+      // path: building spends credits, and credits belong to an account. The
+      // prompt is parked so it runs the moment the account exists.
+      stashPrompt(text);
       if (!state.user) {
-        await ensureGuestSession();
-        if (!state.user) { toast('Could not start a session. Reload and try again.', 'err'); return; }
+        const user = await openAuth('register');
+        if (!user) return;
       }
-      composer.setBusy(true);
-      try {
-        await startProject(text, attachmentIds, mode);
-      } catch (err) {
-        toast(err.message, 'err', 7000);
-      } finally {
-        composer.setBusy(false);
-      }
+      location.hash = '#/dashboard';
     }
   });
 
@@ -72,12 +118,11 @@ export function renderLanding(root) {
             icon('sparkles', 'sm'),
             state.status && state.status.openAccess
               ? 'No sign-up needed · unlimited games'
-              : 'Free account · unlimited games'),
+              : `Free account · ${(state.status && state.status.credits && state.status.credits.signupGrant) || 200} credits to start`),
           el('h1', {}, 'Describe a game.', el('br'), 'Play it in seconds.'),
           el('p', { class: 'lede' },
             'meamus turns a sentence into a complete HTML5 game — art, physics, ' +
-            'touch controls and all. Build as many as you like — there is no ' +
-            'daily limit.'),
+            'touch controls and all. Sign in and your first credits are already there.'),
           signupBlockedNotice(),
           composer.node,
           el('div', { class: 'chiprow', style: { marginTop: '16px', justifyContent: 'center' } },
@@ -110,6 +155,10 @@ export function renderLanding(root) {
 
     siteFooter()
   );
+
+  // The composer is in the document now, so the placeholder can start typing.
+  const field = composer.node.querySelector('textarea');
+  if (field) typewriter(field, EXAMPLES);
 
   loadTemplateStrip();
 }

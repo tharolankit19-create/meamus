@@ -22,7 +22,6 @@ process.env.JWT_SECRET = 'test-secret-not-for-production-use-0123456789';
 process.env.NODE_ENV = 'test';
 process.env.RATE_LIMIT_MAX = '10000';
 process.env.TEST_MODE = 'true';
-process.env.OPEN_ACCESS = 'true';   // the guest-path checks below need it on
 
 // The suite must be hermetic: it creates and deletes accounts freely, so it
 // runs against the local JSON store and never a shared project. Set
@@ -70,8 +69,6 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
   let token = null;
   let gameId = null;
   let uploadIds = [];
-  let guestToken = null;
-  let guestGameId = null;
 
   await check('GET /api/status reports a usable service', async () => {
     const { status, body } = await request('/api/status');
@@ -98,7 +95,13 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.strictEqual(res.status, 200);
     const html = await res.text();
     assert.ok(html.includes('new Phaser.Game') || html.includes('MEAMUS.boot'), 'no Phaser bootstrap in the bundle');
-    assert.ok(html.includes('phaser@3.60.0'), 'Phaser CDN is not pinned');
+    // Phaser must load from our own origin FIRST. When the CDN came first, a
+    // blocked or slow jsdelivr left a frozen frame and dead buttons.
+    const localAt = html.indexOf('src="/vendor/phaser.min.js"');
+    const cdnAt = html.indexOf('cdn.jsdelivr.net/npm/phaser');
+    assert.ok(localAt > -1, 'Phaser is not served from our own origin');
+    assert.ok(cdnAt > localAt, 'the CDN must only be a fallback behind the local copy');
+    assert.ok(html.includes('phaser@3.60.0'), 'the Phaser fallback is not pinned');
     assert.ok(html.includes('meamus kit - shared runtime'), 'the shared kit was not inlined');
     assert.ok(html.includes('MEAMUS.gfx'), 'the kit body is incomplete');
   });
@@ -106,59 +109,6 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
   await check('generation still requires a session token', async () => {
     const { status } = await request('/api/generate', { method: 'POST', body: { prompt: 'a space shooter' } });
     assert.strictEqual(status, 401);
-  });
-
-  await check('open access mints a guest session with no signup', async () => {
-    const { status, body } = await request('/api/auth/guest', { method: 'POST' });
-    assert.strictEqual(status, 201);
-    assert.ok(body.token);
-    assert.strictEqual(body.user.isGuest, true);
-    assert.strictEqual(body.user.plan, 'guest');
-    // null means no cap; a number means a real one. Zero would be a lockout.
-    assert.ok(body.user.quota === null || body.user.quota >= 1,
-      `a guest cannot generate with quota ${body.user.quota}`);
-    guestToken = body.token;
-  });
-
-  await check('a guest can generate and play without an account', async () => {
-    const gen = await request('/api/generate', {
-      method: 'POST', token: guestToken, body: { prompt: 'a fast arcade space shooter' }
-    });
-    assert.strictEqual(gen.status, 201, JSON.stringify(gen.body));
-    assert.ok(gen.body.spec.gameCode.javascript.length > 1000);
-    guestGameId = gen.body.game.id;
-
-    const play = await request(`/play/${guestGameId}?token=${guestToken}`, { raw: true });
-    assert.strictEqual(play.status, 200);
-    const html = await play.text();
-    assert.ok(html.includes('game-container'), 'the guest game did not render');
-  });
-
-  await check('a guest can export HTML but not an APK', async () => {
-    const html = await request(`/api/games/${guestGameId}/export/html`, { token: guestToken, raw: true });
-    assert.strictEqual(html.status, 200);
-
-    const apk = await request(`/api/games/${guestGameId}/export/apk`, { token: guestToken });
-    assert.strictEqual(apk.status, 402);
-    assert.strictEqual(apk.body.code, 'signup_required');
-
-    const upgrade = await request('/api/billing/checkout', { method: 'POST', token: guestToken, body: { plan: 'pro' } });
-    assert.strictEqual(upgrade.status, 402, 'a throwaway guest must not be able to buy a plan');
-  });
-
-  await check('registering from a guest session keeps that session\'s games', async () => {
-    const { status, body } = await request('/api/auth/register', {
-      method: 'POST', token: guestToken,
-      body: { email: 'upgraded@meamus.test', password: 'supersecret123', name: 'Upgraded' }
-    });
-    assert.strictEqual(status, 201, JSON.stringify(body));
-    assert.strictEqual(body.upgradedFromGuest, true);
-    assert.strictEqual(body.user.isGuest, false);
-    assert.strictEqual(body.user.plan, 'free');
-
-    const games = await request('/api/games', { token: body.token });
-    assert.ok(games.body.games.some((g) => g.id === guestGameId),
-      'the game made as a guest did not survive the upgrade');
   });
 
   await check('POST /api/auth/register creates an account', async () => {
@@ -343,6 +293,353 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
       `unexpected external assets: ${external.join(', ')}`);
   });
 
+  await check('a new account starts with the signup credit grant', async () => {
+    const { status, body } = await request('/api/auth/me', { token });
+    assert.strictEqual(status, 200);
+    assert.strictEqual(body.user.creditsEnabled, true);
+    assert.ok(body.user.credits > 0, 'a new account has no credits to spend');
+    assert.ok(body.user.creditCosts.create > 0, 'a game must cost something');
+  });
+
+  await check('a generation charges credits, and only on success', async () => {
+    const before = (await request('/api/auth/me', { token })).body.user.credits;
+    const gen = await request('/api/generate', {
+      method: 'POST', token, body: { prompt: 'a tiny arcade game about sorting fruit' }
+    });
+    assert.strictEqual(gen.status, 201);
+    assert.strictEqual(gen.body.credits.charged, gen.body.credits.charged);
+    const after = (await request('/api/auth/me', { token })).body.user.credits;
+    assert.strictEqual(after, before - gen.body.credits.charged, 'the balance did not move by the charge');
+    assert.strictEqual(gen.body.credits.balance, after, 'the response balance disagrees with the account');
+
+    // A refused generation must not cost anything.
+    const balanceBefore = after;
+    const bad = await request('/api/generate', { method: 'POST', token, body: { prompt: 'x' } });
+    assert.strictEqual(bad.status, 400);
+    const unchanged = (await request('/api/auth/me', { token })).body.user.credits;
+    assert.strictEqual(unchanged, balanceBefore, 'a rejected prompt still charged the account');
+  });
+
+  await check('running out of credits is a 402 that names the price', async () => {
+    const drained = await request('/api/auth/register', {
+      method: 'POST',
+      body: { email: `broke-${Date.now()}@example.com`, password: 'hunter2hunter2', name: 'Broke' }
+    });
+    const brokeToken = drained.body.token;
+    let last = null;
+    for (let i = 0; i < 40; i += 1) {
+      last = await request('/api/generate', { method: 'POST', token: brokeToken, body: { prompt: 'a simple maze game' } });
+      if (last.status === 402) break;
+    }
+    assert.strictEqual(last.status, 402, 'the balance never ran out');
+    assert.strictEqual(last.body.code, 'insufficient_credits');
+    assert.ok(last.body.required > 0 && last.body.balance >= 0, 'the refusal does not say what is needed');
+
+    // A plan tops the balance back up and unblocks generation.
+    const up = await request('/api/billing/checkout', { method: 'POST', token: brokeToken, body: { plan: 'starter' } });
+    assert.strictEqual(up.status, 200);
+    assert.strictEqual(up.body.granted, 1000, 'the $29 plan should grant 1,000 credits');
+    const again = await request('/api/generate', { method: 'POST', token: brokeToken, body: { prompt: 'a simple maze game' } });
+    assert.strictEqual(again.status, 201, 'a topped-up account still cannot generate');
+  });
+
+  await check('the plan ladder is free / $29 / $59 with APK on the top tier', async () => {
+    const { body } = await request('/api/billing/plans');
+    const byId = Object.fromEntries(body.plans.map((p) => [p.id, p]));
+    assert.strictEqual(byId.free.price, 0);
+    assert.strictEqual(byId.starter.price, 29);
+    assert.strictEqual(byId.starter.credits, 1000);
+    assert.strictEqual(byId.pro.price, 59);
+    assert.strictEqual(byId.pro.credits, 2500);
+    assert.strictEqual(byId.pro.apk, true, 'APK export belongs to the top tier');
+    assert.strictEqual(byId.starter.apk, false);
+  });
+
+  await check('a vague chat turn is questioned back, not guessed at', async () => {
+    const before = (await request('/api/auth/me', { token })).body.user.credits;
+    const { status, body } = await request(`/api/games/${gameId}/chat`, {
+      method: 'POST', token, body: { message: 'make it better' }
+    });
+    assert.strictEqual(status, 200);
+    assert.strictEqual(body.kind, 'clarify', 'a vague turn triggered a rebuild');
+    assert.ok(body.reply.length > 40, 'the clarifying question says nothing useful');
+    assert.strictEqual(body.credits.charged, 0, 'asking a question charged credits');
+    const after = (await request('/api/auth/me', { token })).body.user.credits;
+    assert.strictEqual(after, before, 'a clarifying question moved the balance');
+    const last = body.messages[body.messages.length - 1];
+    assert.strictEqual(last.kind, 'clarify', 'the turn was not tagged for the UI');
+  });
+
+  await check('a specific chat turn is handed to the build pipeline, not built inline', async () => {
+    const before = (await request('/api/auth/me', { token })).body.user.credits;
+    const { status, body } = await request(`/api/games/${gameId}/chat`, {
+      method: 'POST', token, body: { message: 'add a boss every five waves' }
+    });
+    assert.strictEqual(status, 200);
+    assert.strictEqual(body.kind, 'change', 'a concrete instruction was not treated as a change');
+    assert.strictEqual(body.instruction, 'add a boss every five waves');
+    // Crucially it has not built anything yet: a change is quoted and approved
+    // first, so there is exactly one build path rather than two that can drift.
+    assert.strictEqual(body.spec, undefined, 'the chat route built inline instead of quoting');
+    const after = (await request('/api/auth/me', { token })).body.user.credits;
+    assert.strictEqual(after, before, 'recognising a change charged for it');
+  });
+
+  await check('an empty chat turn is refused', async () => {
+    const { status, body } = await request(`/api/games/${gameId}/chat`, {
+      method: 'POST', token, body: { message: '   ' }
+    });
+    assert.strictEqual(status, 400);
+    assert.strictEqual(body.code, 'empty_message');
+  });
+
+  await check('a build is quoted before any credits are spent', async () => {
+    const before = (await request('/api/auth/me', { token })).body.user.credits;
+    const { status, body } = await request('/api/build/plan', {
+      method: 'POST', token, body: { prompt: 'a tower defence game with three tower types' }
+    });
+    assert.strictEqual(status, 200);
+    assert.ok(body.planId, 'no plan to approve');
+    assert.strictEqual(body.kind, 'create');
+    assert.ok(body.estimate.credits.expected > 0, 'the quote names no price');
+    assert.ok(body.estimate.credits.worstCase >= body.estimate.credits.expected,
+      'the worst case must not be cheaper than the expected case');
+    assert.ok(body.estimate.seconds.expected > 0, 'the quote names no duration');
+    assert.ok(body.plan.length >= 4, 'the quote does not say what the agents will do');
+    const after = (await request('/api/auth/me', { token })).body.user.credits;
+    assert.strictEqual(after, before, 'quoting a build charged for it');
+  });
+
+  await check('an approval is single use', async () => {
+    const plan = await request('/api/build/plan', {
+      method: 'POST', token, body: { prompt: 'a maze game with a torch and a monster' }
+    });
+    const first = await request('/api/build/start', {
+      method: 'POST', token, body: { planId: plan.body.planId }
+    });
+    assert.strictEqual(first.status, 202, 'the approved build did not start');
+    const replay = await request('/api/build/start', {
+      method: 'POST', token, body: { planId: plan.body.planId }
+    });
+    assert.strictEqual(replay.status, 410, 'the same approval bought a second build');
+    assert.strictEqual(replay.body.code, 'plan_expired');
+  });
+
+  await check('a stopped build charges nothing', async () => {
+    const plan = await request('/api/build/plan', {
+      method: 'POST', token, body: { prompt: 'a fishing game with a day night cycle' }
+    });
+    const started = await request('/api/build/start', {
+      method: 'POST', token, body: { planId: plan.body.planId }
+    });
+    const buildId = started.body.buildId;
+    const before = (await request('/api/auth/me', { token })).body.user.credits;
+
+    const stopped = await request(`/api/build/${buildId}/stop`, { method: 'POST', token });
+    assert.strictEqual(stopped.status, 200);
+
+    // With no model key a template build can finish before the stop lands.
+    // Only a build that was actually still running can be stopped, so the
+    // assertion follows which of the two happened.
+    if (stopped.body.state === 'running') {
+      assert.strictEqual(stopped.body.stopRequested, true, 'a running build ignored the stop');
+      for (let i = 0; i < 40; i += 1) {
+        const poll = await request(`/api/build/${buildId}`, { token });
+        if (poll.body.state !== 'running') {
+          assert.notStrictEqual(poll.body.state, 'done', 'a stopped build still shipped');
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const after = (await request('/api/auth/me', { token })).body.user.credits;
+      assert.strictEqual(after, before, 'a stopped build still charged the account');
+    } else {
+      assert.strictEqual(stopped.body.state, 'done', `unexpected state ${stopped.body.state}`);
+    }
+
+    // The invariant, checked directly so it holds regardless of timing: a build
+    // that ends stopped has shipped nothing and therefore charges nothing.
+    const builds = require('../server/services/builds');
+    const fake = builds.start('usr_probe', { kind: 'create', prompt: 'x', estimate: {} }).build;
+    builds.requestStop(fake.buildId, 'usr_probe');
+    assert.strictEqual(fake.stopRequested, true, 'requestStop did not set the flag');
+    builds.fail(fake, 'stopped');
+    assert.strictEqual(builds.view(fake).state, 'stopped');
+    assert.strictEqual(builds.view(fake).credits, undefined, 'a stopped build reported a charge');
+  });
+
+  await check('a build reports its own progress', async () => {
+    const plan = await request('/api/build/plan', {
+      method: 'POST', token, body: { prompt: 'a rhythm game where you tap falling notes' }
+    });
+    const started = await request('/api/build/start', {
+      method: 'POST', token, body: { planId: plan.body.planId }
+    });
+    const poll = await request(`/api/build/${started.body.buildId}`, { token });
+    assert.strictEqual(poll.status, 200);
+    assert.ok(['running', 'done', 'failed'].includes(poll.body.state));
+    assert.ok(Array.isArray(poll.body.steps), 'a build with no steps cannot be shown in the chat');
+    assert.ok(typeof poll.body.elapsedMs === 'number', 'no elapsed time for the clock');
+  });
+
+  await check('another account cannot read or stop your build', async () => {
+    const plan = await request('/api/build/plan', {
+      method: 'POST', token, body: { prompt: 'a card battler with a deck of thirty' }
+    });
+    const started = await request('/api/build/start', {
+      method: 'POST', token, body: { planId: plan.body.planId }
+    });
+    const other = await request('/api/auth/register', {
+      method: 'POST',
+      body: { email: `nosy-${Date.now()}@example.com`, password: 'hunter2hunter2', name: 'Nosy' }
+    });
+    const peek = await request(`/api/build/${started.body.buildId}`, { token: other.body.token });
+    assert.strictEqual(peek.status, 404, 'a build leaked to another account');
+    const stop = await request(`/api/build/${started.body.buildId}/stop`, { method: 'POST', token: other.body.token });
+    assert.strictEqual(stop.status, 404, 'another account could stop your build');
+  });
+
+  await check('generation refuses rather than substituting a different game', async () => {
+    // The silent template fallback shipped the space-shooter retitled "A Ludo".
+    const generator = require('../server/services/generator');
+    const config = require('../server/config');
+    const original = config.llm.enabled;
+    try {
+      config.llm.enabled = true;
+      await generator.generate('a ludo board game for four players', { research: false });
+      assert.fail('a failing model call should not have produced a game');
+    } catch (err) {
+      assert.ok(!/space|shooter|astro/i.test(err.message),
+        `refusal should not mention a substituted template: ${err.message}`);
+    } finally {
+      config.llm.enabled = original;
+    }
+  });
+
+  await check('there is no anonymous path into the product', async () => {
+    // The guest session is gone: it had no durable home for its games and no
+    // way to buy credits, and it produced a signed-in-looking state that could
+    // not keep anything.
+    const guest = await request('/api/auth/guest', { method: 'POST' });
+    assert.strictEqual(guest.status, 404, 'the guest endpoint is still reachable');
+
+    for (const [method, path, body] of [
+      ['POST', '/api/generate', { prompt: 'a space shooter' }],
+      ['POST', '/api/build/plan', { prompt: 'a space shooter' }],
+      ['GET', '/api/games', null]
+    ]) {
+      const res = await request(path, { method, body });
+      assert.strictEqual(res.status, 401, `${method} ${path} let a signed-out caller through`);
+      assert.strictEqual(res.body.code, 'unauthorized');
+    }
+  });
+
+  await check('the sign-in methods on offer are declared', async () => {
+    const { status, body } = await request('/api/auth/methods');
+    assert.strictEqual(status, 200);
+    assert.strictEqual(body.password, true, 'password sign-in must always work');
+    assert.strictEqual(typeof body.google, 'boolean', 'the client needs to know whether to draw the button');
+    assert.ok(['supabase', 'local'].includes(body.provider));
+  });
+
+  await check('Google sign-in is refused honestly when it is not configured', async () => {
+    // This run has no Supabase, so the button must not be offered and the
+    // endpoint must say why rather than handing out a broken URL.
+    const methods = await request('/api/auth/methods');
+    const oauth = await request('/api/auth/oauth/google');
+    if (methods.body.google) {
+      assert.strictEqual(oauth.status, 200);
+      assert.ok(/\/auth\/v1\/authorize\?provider=google/.test(oauth.body.url), 'not a Supabase authorize URL');
+    } else {
+      assert.strictEqual(oauth.status, 503);
+      assert.strictEqual(oauth.body.code, 'oauth_unavailable');
+    }
+  });
+
+  await check('a signed-in account reports no guest flag at all', async () => {
+    const { body } = await request('/api/auth/me', { token });
+    assert.strictEqual(body.user.isGuest, undefined, 'the guest flag is still being sent');
+    assert.ok(body.user.credits > 0);
+    assert.strictEqual(body.user.plan, 'free');
+  });
+
+  await check('a game that throws on boot is refused, not shipped', async () => {
+    const smoke = require('../server/services/smoke');
+    const wrap = (body) => `
+class GameScene extends Phaser.Scene {
+  constructor(){ super({key:'GameScene'}); }
+  create(){ ${body} }
+  update(){}
+}
+new Phaser.Game({ type: Phaser.AUTO, width: 800, height: 600, scene: [GameScene] });`;
+
+    // The failure modes that reached players as a black screen with an error
+    // overlay. Parsing catches none of them.
+    for (const [label, body] of [
+      ['a helper that does not exist', "MEAMUS.ui.megaButton(this, 1, 1, 'GO', function(){});"],
+      ['an undefined variable', 'this.add.text(1, 1, LEVEL_NAME);'],
+      ['a null dereference', 'var p = null; p.setVelocity(1, 0);']
+    ]) {
+      assert.throws(() => smoke.boot(wrap(body)), /threw/, `${label} was allowed through`);
+    }
+
+    // A config that would never render anything.
+    assert.throws(() => smoke.boot('class S extends Phaser.Scene {}'), /never called new Phaser.Game/);
+    assert.throws(
+      () => smoke.boot('new Phaser.Game({ type: Phaser.AUTO, width: 8, height: 6, scene: [] });'),
+      /no scenes/
+    );
+  });
+
+  await check('every bundled template survives the boot test', async () => {
+    const smoke = require('../server/services/smoke');
+    const tpl = require('../server/services/templates');
+    for (const entry of tpl.list()) {
+      const full = tpl.get(entry.id);
+      const result = smoke.boot(full.spec.gameCode.javascript);
+      assert.ok(result.scenes.length >= 3,
+        `${entry.id} booted only ${result.scenes.length} scenes`);
+    }
+  });
+
+  await check('the boot test reports where the failure is', async () => {
+    const smoke = require('../server/services/smoke');
+    try {
+      smoke.boot(`
+class GameScene extends Phaser.Scene {
+  constructor(){ super({key:'GameScene'}); }
+  create(){ this.add.text(1, 1, MISSING_THING); }
+}
+new Phaser.Game({ type: Phaser.AUTO, width: 8, height: 6, scene: [GameScene] });`);
+      assert.fail('a throwing game was accepted');
+    } catch (err) {
+      assert.match(err.message, /MISSING_THING is not defined/);
+      assert.ok(err.detail && err.detail.line > 0, 'no line number, so the fix has no address');
+    }
+  });
+
+  await check('the sandbox has no filesystem, network or process access', async () => {
+    const smoke = require('../server/services/smoke');
+    // Generated code is untrusted. It must not be able to reach anything.
+    for (const probe of ['require', 'process', 'globalThis.process', 'module']) {
+      const code = `
+class GameScene extends Phaser.Scene {
+  constructor(){ super({key:'GameScene'}); }
+  create(){ if (typeof ${probe} !== 'undefined' && ${probe}) { throw new Error('REACHABLE'); } }
+}
+new Phaser.Game({ type: Phaser.AUTO, width: 8, height: 6, scene: [GameScene] });`;
+      const result = smoke.boot(code);
+      assert.ok(result.ok, `${probe} was reachable from generated code`);
+    }
+  });
+
+  await check('the vendored Phaser build is served', async () => {
+    const res = await request('/vendor/phaser.min.js', { raw: true });
+    assert.strictEqual(res.status, 200, 'a game cannot boot without this file');
+    const body = await res.text();
+    assert.ok(body.length > 500000, `vendored Phaser looks truncated (${body.length} bytes)`);
+  });
+
   await check('APK export is gated behind the Pro plan', async () => {
     const { status, body } = await request(`/api/games/${gameId}/export/apk`, { token });
     assert.strictEqual(status, 402);
@@ -361,53 +658,6 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.ok(buffer.includes(Buffer.from('config.xml')), 'cordova config.xml missing');
     assert.ok(buffer.includes(Buffer.from('www/index.html')), 'www/index.html missing');
     assert.ok(buffer.length > 20000, 'apk project is too small');
-  });
-
-  await check('guest sessions are refused when an account is required', async () => {
-    const config = require('../server/config');
-    const previous = config.openAccessSetting;
-    config.openAccessSetting = false;
-    try {
-      const { status, body } = await request('/api/auth/guest', { method: 'POST' });
-      assert.strictEqual(status, 403);
-      assert.strictEqual(body.code, 'guest_disabled');
-    } finally {
-      config.openAccessSetting = previous;
-    }
-  });
-
-  await check('losing durable storage opens access instead of locking everyone out', async () => {
-    // The failure this prevents: account required + accounts impossible = a
-    // site nobody can use.
-    const config = require('../server/config');
-    const db = require('../server/db');
-    const previous = config.openAccessSetting;
-    const original = Object.getOwnPropertyDescriptor(db, 'durable');
-    config.openAccessSetting = null;                 // back to automatic
-    Object.defineProperty(db, 'durable', { value: false, configurable: true });
-    try {
-      const guest = await request('/api/auth/guest', { method: 'POST' });
-      assert.strictEqual(guest.status, 201, 'a visitor must still get a session');
-
-      const gen = await request('/api/generate', {
-        method: 'POST', token: guest.body.token, body: { prompt: 'a space shooter' }
-      });
-      assert.strictEqual(gen.status, 201, 'a visitor must still be able to build');
-
-      const list = await request('/api/templates');
-      assert.ok(list.body.templates.every((t) => t.playable), 'templates must open up too');
-
-      const signup = await request('/api/auth/register', {
-        method: 'POST', body: { email: `off-${Date.now()}@meamus.test`, password: 'supersecret123' }
-      });
-      assert.strictEqual(signup.status, 503);
-      assert.match(signup.body.error, /nothing is locked/i, 'the refusal must not contradict itself');
-      assert.doesNotMatch(signup.body.error, /keep building without an account - everything works/,
-        'the old contradictory wording is back');
-    } finally {
-      config.openAccessSetting = previous;
-      if (original) Object.defineProperty(db, 'durable', original); else delete db.durable;
-    }
   });
 
   await check('modifying a game without an API key fails honestly', async () => {
@@ -503,6 +753,49 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.strictEqual(del.status, 200);
     const gone = await request(`/api/games/${gameId}`, { token });
     assert.strictEqual(gone.status, 404);
+  });
+
+  await check('one unreadable row does not take out the whole library', async () => {
+    // This is the production failure of 2026-09-01: a row whose spec was null
+    // threw inside the .map() over every game, so /api/games 500'd and the
+    // founder's dashboard showed a red box instead of their twenty working
+    // games. Every shape below has been seen in a real table or is one step
+    // away from one.
+    const old = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const owner = db.find('users', (u) => u.email === 'dev@meamus.test');
+    assert.ok(owner, 'the test account is missing');
+    const seeded = [
+      { id: 'gam_t_stale', prompt: 'stuck', title: 'Stuck', status: 'building', spec: null },
+      { id: 'gam_t_failed', prompt: 'failed', title: 'Failed', status: 'failed', spec: null },
+      { id: 'gam_t_halfspec', prompt: 'half', title: 'Half', status: 'ready', spec: { gameConfig: null, gameCode: null, assets: null } },
+      { id: 'gam_t_notobject', prompt: 'hostile', title: 'Hostile', status: 'ready', spec: 'not an object' }
+    ];
+    for (const row of seeded) {
+      db.insert('games', {
+        userId: owner.id, meta: null, versions: [], messages: [], isPublic: false,
+        createdAt: old, updatedAt: old, ...row
+      });
+    }
+
+    const { status, body } = await request('/api/games', { token });
+    assert.strictEqual(status, 200, 'the list must not 500 on a bad row');
+    const byId = Object.fromEntries(body.games.map((g) => [g.id, g]));
+    for (const row of seeded) {
+      assert.ok(byId[row.id], `${row.id} is missing from the list`);
+      assert.ok(byId[row.id].title, `${row.id} has no title to render`);
+    }
+
+    // A build whose server went away says so, rather than spinning forever.
+    assert.strictEqual(byId.gam_t_stale.status, 'failed');
+    assert.ok(/server restarted/i.test(byId.gam_t_stale.description));
+
+    // And each one can still be opened, which is how it gets deleted.
+    for (const row of seeded) {
+      const one = await request(`/api/games/${row.id}`, { token });
+      assert.strictEqual(one.status, 200, `${row.id} could not be opened`);
+    }
+
+    for (const row of seeded) db.remove('games', row.id);
   });
 
   await check('unknown API routes return a JSON 404', async () => {

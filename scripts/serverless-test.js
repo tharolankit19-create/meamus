@@ -107,12 +107,18 @@ const req = (p, o = {}) => {
     } else {
       assert.strictEqual(body.storage, 'json');
       assert.strictEqual(body.storageDurable, false, 'a /tmp store must not claim to be durable');
-      assert.ok(body.warnings.some((w) => /accounts are off/i.test(w)),
+      assert.ok(body.warnings.some((w) => /SUPABASE_URL/.test(w)),
         `no persistence warning: ${JSON.stringify(body.warnings)}`);
-      // The whole point: no accounts must not mean no product.
-      assert.strictEqual(body.openAccess, true, 'access should have opened automatically');
+      // The product used to open itself to everyone here. That produced a
+      // sign-up form offering free credits that errored on submit, and left
+      // the model key reachable without an account. It now reports itself as
+      // unconfigured and shows the operator what to set.
+      assert.strictEqual(body.openAccess, false, 'an unconfigured deployment opened itself up');
+      assert.strictEqual(body.setupRequired, true, 'the deployment does not admit it is unconfigured');
       assert.strictEqual(body.accountsAvailable, false);
-      assert.strictEqual(body.templateAccess, 'open');
+      // Gated, like everything else on an unconfigured deployment. Only the
+      // showcase template stays public, because it is the landing demo.
+      assert.strictEqual(body.templateAccess, 'gated');
     }
   });
 
@@ -147,49 +153,117 @@ const req = (p, o = {}) => {
     }
   });
 
-  await check('a guest session works, so the app is still usable', async () => {
-    const { status, body } = await req('/api/auth/guest', { method: 'POST' });
-    assert.strictEqual(status, 201, `got ${status}: ${JSON.stringify(body)}`);
-    assert.strictEqual(body.user.isGuest, true);
-    if (!token) token = body.token;
-  });
-
-  await check('every template plays, since accounts are impossible here', async () => {
+  await check('an unconfigured deployment hands out nothing, not everything', async () => {
+    // The inverse of the old rule. When accounts cannot exist, the answer is
+    // to say so - not to unlock the whole library to anyone who finds the URL.
     const list = await req('/api/templates');
-    assert.ok(list.body.templates.every((t) => t.playable),
-      'gating the library behind an account that cannot exist locks it forever');
-    for (const template of list.body.templates) {
-      const res = await req(`/api/templates/${template.id}/play`, { raw: true });
-      assert.strictEqual(res.status, 200, `${template.id} answered ${res.status}`);
+    assert.strictEqual(list.body.gated, true, 'the library is open on an unconfigured deployment');
+    assert.ok(list.body.templates.every((t) => !t.playable || t.showcase),
+      'templates other than the showcase are playable without an account');
+  });
+
+  await check('a deployment with no accounts says so loudly', async () => {
+    // With guest sessions gone, a non-durable deployment is genuinely unusable
+    // rather than degraded. The status endpoint has to make that obvious, and
+    // name the fix, or the operator sees a working-looking site nobody can use.
+    const { body } = await req('/api/status');
+    assert.strictEqual(body.storageDurable, false);
+    const warnings = (body.warnings || []).join(' ');
+    assert.match(warnings, /SUPABASE_URL/, 'the warnings never name the variable to set');
+    assert.match(warnings, /SUPABASE_SERVICE_ROLE_KEY/);
+  });
+
+  await check('a misspelled variable is named, not silently ignored', async () => {
+    const { audit, didYouMean } = require('../server/env-audit');
+
+    // The one cause of "I set it and nothing happened" that no substring
+    // search can find. SUPERBASE does not contain SUPABASE.
+    for (const [typo, meant] of [
+      ['SUPERBASE_URL', 'SUPABASE_URL'],
+      ['SUPABSE_URL', 'SUPABASE_URL'],
+      ['SUPERBASE_SERVICE_ROLE_KEY', 'SUPABASE_SERVICE_ROLE_KEY'],
+      ['OPENROUTER_KEY', 'OPENROUTER_API_KEY'],
+      ['OPEN_ROUTER_API_KEY', 'OPENROUTER_API_KEY'],
+      ['JWT_SECRETT', 'JWT_SECRET']
+    ]) {
+      assert.strictEqual(didYouMean(typo), meant, `${typo} was not recognised as a typo`);
     }
+
+    // A correct name is not a typo, and unrelated names are left alone.
+    assert.strictEqual(didYouMean('SUPABASE_URL'), null);
+    assert.strictEqual(didYouMean('MY_UNRELATED_THING'), null);
+
+    const result = audit({ SUPERBASE_URL: 'https://x.example', SUPABASE_URL: '', PATH: '/usr/bin' });
+    assert.deepStrictEqual(result.suspicious.map((x) => x.name), ['SUPERBASE_URL']);
+    assert.ok(!result.seen.includes('SUPABASE_URL'), 'an empty variable must not count as set');
   });
 
-  let gameId = null;
-  await check('generation and playback work end to end', async () => {
-    const gen = await req('/api/generate', {
-      method: 'POST', token, body: { prompt: 'a space shooter with asteroids' }
+  await check('a variable that exists but is blank is reported as blank', async () => {
+    const { audit } = require('../server/env-audit');
+
+    // The failure state that looks correct from a dashboard. Bulk-importing an
+    // example env file creates every name in it; its secrets ship deliberately
+    // blank, so the list looks complete while the server receives nothing.
+    const result = audit({
+      OPENROUTER_API_KEY: 'sk-real',
+      SUPABASE_URL: '',
+      SUPABASE_SERVICE_ROLE_KEY: '   ',
+      JWT_SECRET: ''
     });
-    assert.strictEqual(gen.status, 201, `got ${gen.status}: ${JSON.stringify(gen.body)}`);
-    gameId = gen.body.game.id;
+    assert.deepStrictEqual(
+      result.empty.sort(),
+      ['JWT_SECRET', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_URL'],
+      'a present-but-blank variable was not reported as blank'
+    );
+    assert.deepStrictEqual(result.seen, ['OPENROUTER_API_KEY']);
+    assert.deepStrictEqual(result.suspicious, [], 'a correct name must not be called a typo');
 
-    const play = await req(`/play/${gameId}?token=${token}`, { raw: true });
-    assert.strictEqual(play.status, 200, `/play returned ${play.status}`);
-    assert.ok((await play.text()).includes('game-container'));
+    // Absent is a different state from blank, and must not be conflated.
+    const absent = audit({ OPENROUTER_API_KEY: 'sk-real' });
+    assert.deepStrictEqual(absent.empty, [], 'a variable that does not exist was reported as blank');
   });
 
-  await check('uploads write to the writable path', async () => {
-    const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-    const { status, body } = await req('/api/uploads', {
-      method: 'POST', token, body: { name: 'ref.png', dataUrl: png }
+  await check('example-file defaults left in place are flagged', async () => {
+    const { audit } = require('../server/env-audit');
+    const risky = audit({
+      TEST_MODE: 'true', NODE_ENV: 'development', DATA_DIR: './server/data'
+    }).risky.map((r) => r.name).sort();
+    assert.deepStrictEqual(risky, ['DATA_DIR', 'NODE_ENV', 'TEST_MODE']);
+
+    // Correct production values are not flagged.
+    assert.deepStrictEqual(
+      audit({ TEST_MODE: 'false', NODE_ENV: 'production', DATA_DIR: '/tmp/meamus-data' }).risky, []
+    );
+  });
+
+  await check('a relative DATA_DIR is overridden rather than obeyed into EROFS', async () => {
+    // ./server/data is the .env.example default and is read-only on a
+    // serverless host, so honouring it means every write fails.
+    const { body } = await req('/api/status');
+    assert.strictEqual(body.serverless, true);
+    assert.ok(!body.warnings.some((w) => /EROFS/i.test(w)), 'the server crashed on a read-only path');
+  });
+
+  await check('an unconfigured deployment refuses to pretend', async () => {
+    // It used to open the anonymous path instead, which produced a sign-up
+    // dialog offering free credits that errored on submit.
+    const { body } = await req('/api/status');
+    assert.strictEqual(body.setupRequired, true, 'the deployment claims to be ready');
+    assert.strictEqual(body.openAccess, false, 'an unconfigured deployment opened itself to everyone');
+    const keys = (body.setupMissing || []).map((m) => m.key);
+    assert.ok(keys.includes('SUPABASE_URL'), 'the fix is not named');
+    assert.ok(keys.includes('SUPABASE_SERVICE_ROLE_KEY'));
+    assert.ok(body.deployment, 'no deployment identity, so an operator cannot tell which one to fix');
+    assert.ok(typeof body.deployment.envCount === 'number');
+  });
+
+  await check('registering is refused while the deployment is unconfigured', async () => {
+    const { status, body } = await req('/api/auth/register', {
+      method: 'POST',
+      body: { email: `nope-${Date.now()}@example.com`, password: 'hunter2hunter2' }
     });
-    assert.strictEqual(status, 201, `got ${status}: ${JSON.stringify(body)}`);
-    assert.ok(fs.existsSync(path.join(config.dataDir, 'uploads')), 'the upload directory was not created');
-  });
-
-  await check('the HTML export still works', async () => {
-    const res = await req(`/api/games/${gameId}/export/html`, { token, raw: true });
-    assert.strictEqual(res.status, 200);
-    assert.ok((await res.text()).length > 20000);
+    assert.strictEqual(status, 503);
+    assert.strictEqual(body.code, 'storage_not_durable');
   });
 
   await check('an unknown API route returns JSON, not a platform 404', async () => {

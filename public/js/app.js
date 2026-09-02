@@ -3,12 +3,14 @@
  * ========================================================================== */
 
 import { $, el, clear, icon, toast } from './ui.js';
-import { state, loadStatus, loadSession, onChange, projects, ensureGuestSession } from './api.js';
+import { state, loadStatus, loadSession, onChange, projects, consumeOAuthFragment } from './api.js';
 import { renderLanding } from './landing.js';
+import { setupRequired, renderSetup } from './setup.js';
 import { renderDashboard, renderTemplatesPage, renderPricing, sidebar } from './dashboard.js';
 import { renderWorkspace } from './workspace.js';
 import { openAuth } from './auth-dialog.js';
 import { renderMarketingTemplates, renderMarketingPricing, renderDocs } from './marketing.js';
+import * as watcher from './watcher.js';
 
 const root = () => $('#root');
 
@@ -20,12 +22,26 @@ function parseRoute() {
 
 async function render() {
   const { name, params } = parseRoute();
+
+  // The view about to be thrown away may be watching a build. Builds outlive
+  // views on purpose - the founder can start one and go and read the pricing
+  // page - so the subscription is dropped here and the watcher takes over
+  // announcing the result. Skipping this leaves a screen nobody can see
+  // holding the only claim on a finished game.
+  watcher.releaseAll();
+
   const host = clear(root());
   document.body.classList.toggle('workspace-route', name === 'project');
 
-  // A guest is signed in but has not committed to anything, so the marketing
-  // pages stay their home rather than the app shell.
-  const browsing = !state.user || state.user.isGuest;
+  // Nothing else can work until the deployment is configured, so nothing else
+  // is shown. Offering a sign-up form that cannot succeed is what produced the
+  // "create your account / accounts are off" contradiction.
+  if (setupRequired()) {
+    renderSetup(host);
+    return;
+  }
+
+  const browsing = !state.user;
 
   if (browsing) {
     switch (name) {
@@ -122,9 +138,15 @@ function renderAccount(host) {
   onChange(() => { /* state changes re-render through explicit calls */ });
 
   await loadStatus();
+  // A Google redirect lands here with the session in the fragment. Consume it
+  // before loadSession(), or the app decides nobody is signed in and bounces
+  // straight back to the landing page.
+  try {
+    await consumeOAuthFragment();
+  } catch (err) {
+    toast(`Google sign-in failed: ${err.message}`, 'err', 8000);
+  }
   await loadSession();
-  // In test mode nobody should hit a signup wall before their first game.
-  if (!state.user) await ensureGuestSession();
 
   // Warm the project list so the sidebar's recents are populated on first paint.
   if (state.user) {

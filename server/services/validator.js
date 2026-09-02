@@ -9,6 +9,16 @@
  * the same shape.
  */
 
+const vm = require('node:vm');
+
+/**
+ * A real Phaser game is hundreds of lines. A handful means the model returned a
+ * stub or a placeholder, which used to ship straight to the preview as a blank
+ * frame or a SyntaxError - and still charged for the build.
+ */
+const MIN_CODE_LINES = 40;
+const MIN_CODE_CHARS = 900;
+
 const SPRITE_TYPES = ['player', 'enemy', 'collectible', 'obstacle', 'background', 'ui', 'effect'];
 const AUDIO_TYPES = ['bgm', 'sfx', 'ui'];
 const STYLES = ['pixel-art', 'vector', 'realistic', 'minimalist', 'cartoon'];
@@ -64,6 +74,27 @@ function extractJson(text) {
   throw new SpecError('Model response contained an unterminated JSON object (likely truncated - raise ANTHROPIC_MAX_TOKENS)');
 }
 
+/**
+ * Parse the generated code without running it.
+ *
+ * vm.Script compiles and throws on a syntax error, and compiling is not
+ * executing - nothing in the code runs here. This is the check that was
+ * missing when "Uncaught SyntaxError: Unexpected token ')'" reached a preview.
+ */
+function assertParses(code) {
+  try {
+    new vm.Script(code, { filename: 'game.js' });
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      throw new SpecError(
+        `The generated code does not parse: ${err.message}`,
+        ['gameCode.javascript']
+      );
+    }
+    throw err;
+  }
+}
+
 const str = (v, fallback = '') => (typeof v === 'string' && v.trim() ? v.trim() : fallback);
 const arr = (v) => (Array.isArray(v) ? v : []);
 const strArray = (v) => arr(v).map((x) => str(x)).filter(Boolean);
@@ -82,12 +113,25 @@ function normaliseSpec(input, { source = 'ai' } = {}) {
   const javascript = str(code.javascript);
 
   if (!javascript) throw new SpecError('gameCode.javascript is empty - the model produced no game code', ['gameCode.javascript']);
-  if (!/new\s+Phaser\.Game/.test(javascript)) issues.push('gameCode.javascript never instantiates Phaser.Game');
-  if (!/class\s+GameScene/.test(javascript) && !/GameScene/.test(javascript)) issues.push('no GameScene found in gameCode.javascript');
   if (/\beval\s*\(/.test(javascript) || /new\s+Function\s*\(/.test(javascript)) {
     throw new SpecError('Generated code uses eval()/new Function() - rejected', ['gameCode.javascript']);
   }
+
+  // Hard gates. Anything that fails these is not a game, and shipping it means
+  // a broken preview the player still paid for.
+  assertParses(javascript);
+
   const lineCount = javascript.split('\n').length;
+  if (lineCount < MIN_CODE_LINES || javascript.length < MIN_CODE_CHARS) {
+    throw new SpecError(
+      `The model returned ${lineCount} lines of code, which is a stub rather than a playable game.`,
+      ['gameCode.javascript']
+    );
+  }
+  if (!/new\s+Phaser\.Game/.test(javascript) && !/MEAMUS\.boot\s*\(/.test(javascript)) {
+    throw new SpecError('The generated code never starts a Phaser game.', ['gameCode.javascript']);
+  }
+  if (!/GameScene/.test(javascript)) issues.push('no GameScene found in gameCode.javascript');
   if (lineCount > 2600) issues.push(`gameCode.javascript is ${lineCount} lines (guideline is <= 2000)`);
 
   const spec = {

@@ -17,6 +17,20 @@
     MONO: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace'
   };
 
+  /**
+   * Device pixel ratio, clamped.
+   *
+   * Scale.FIT stretches a fixed-size canvas with CSS, so on a 2x or 3x screen
+   * every glyph is upscaled and reads as blurry. Phaser rasterises Text into
+   * its own texture, and `resolution` controls the size of that texture, so
+   * passing DPR here is what actually makes menu and HUD copy sharp. Clamped
+   * at 2 because 3x triples texture memory for no visible gain.
+   */
+  MEAMUS.DPR = (function () {
+    var d = (global.devicePixelRatio || 1);
+    return Math.max(1, Math.min(2, d));
+  })();
+
   /* ---------------------------------------------------------------------- */
   /* Persistence - never throws, even in private mode / sandboxed iframes.   */
   /* ---------------------------------------------------------------------- */
@@ -108,6 +122,50 @@
       this._runs += 1;
       return this._runs % this.interstitialEvery === 0;
     }
+  };
+
+  /**
+   * Game size matched to the screen it is actually on.
+   *
+   * A fixed 4:3 canvas under Scale.FIT leaves a phone showing the game in a
+   * band across the middle with two thirds of the screen empty. This keeps the
+   * design's pixel budget - so gameplay density, speeds and sprite sizes stay
+   * tuned - and redistributes it to the host's aspect ratio, which removes the
+   * letterbox instead of hiding it.
+   *
+   * The aspect is clamped so a very tall phone or a very wide desktop window
+   * cannot produce a shape the layouts were never built for.
+   *
+   * A game whose levels are hand-authored at a fixed shape - a 25-wide tile
+   * grid, say - can pass maxWidth/maxHeight instead of fighting the aspect.
+   * Clamping the canvas to the world it is looking at means the world always
+   * fills or exceeds the view, so a scrolling camera has somewhere to go and
+   * never leaves an empty margin. That is what lets a wide level be played in
+   * portrait: the level does not shrink, the view moves across it.
+   *
+   * @param {number} designW the width the game was tuned at
+   * @param {number} designH the height the game was tuned at
+   * @param {{minAspect?:number, maxAspect?:number, maxWidth?:number, maxHeight?:number}} [opts]
+   * @returns {{width:number, height:number, portrait:boolean}}
+   */
+  MEAMUS.viewport = function (designW, designH, opts) {
+    opts = opts || {};
+    // Remembered so a resize can recompute with the same terms.
+    MEAMUS._viewportArgs = { designW: designW, designH: designH, opts: opts };
+    var dw = designW || 800;
+    var dh = designH || 600;
+    var area = dw * dh;
+    var cw = global.innerWidth || dw;
+    var ch = global.innerHeight || dh;
+    var lo = opts.minAspect === undefined ? 0.5 : opts.minAspect;
+    var hi = opts.maxAspect === undefined ? 2 : opts.maxAspect;
+    var aspect = Math.max(lo, Math.min(hi, cw / ch));
+    var width = Math.round(Math.sqrt(area * aspect));
+    var height = Math.round(Math.sqrt(area / aspect));
+    // Never look at more than there is to see.
+    if (opts.maxWidth) width = Math.min(width, Math.round(opts.maxWidth));
+    if (opts.maxHeight) height = Math.min(height, Math.round(opts.maxHeight));
+    return { width: width, height: height, portrait: height > width };
   };
 
   /* ---------------------------------------------------------------------- */
@@ -238,8 +296,21 @@
       return this.ctx;
     },
     resume: function () {
-      var ctx = this._ensure();
-      if (ctx && ctx.state === 'suspended') ctx.resume();
+      try {
+        var ctx = this._ensure();
+        if (ctx && ctx.state === 'suspended') ctx.resume();
+      } catch (e) { /* autoplay policy, closed context, cross-origin iframe */ }
+    },
+    /**
+     * Run a sound without ever letting it break the caller.
+     *
+     * Buttons used to call sfx directly and then invoke their handler. Inside a
+     * sandboxed iframe, or on a browser that throws from the Web Audio API, the
+     * throw happened first and the handler never ran - a button that visibly
+     * depressed and did nothing.
+     */
+    safe: function (name, arg) {
+      try { if (typeof this[name] === 'function') this[name](arg); } catch (e) { /* muted, not broken */ }
     },
     /** @param {{freq:number,to:number,dur:number,type:string,gain:number}} o */
     tone: function (o) {
@@ -302,6 +373,9 @@
       ink: '#2f2a24',
       dim: '#7d7469',
       accent: '#ff8a5c',
+      // Soft secondary fill. Dark navy/purple buttons fought the light grounds.
+      soft: 0xffe8d6,
+      softInk: '#5b5145',
       good: '#3fa77e',
       warn: '#d9992b',
       bad: '#d4614f'
@@ -310,6 +384,7 @@
     title: function (scene, x, y, text, size) {
       return scene.add.text(x, y, text, {
         fontFamily: MEAMUS.FONT,
+        resolution: MEAMUS.DPR,
         fontSize: (size || 46) + 'px',
         color: this.PALETTE.ink,
         // A soft white halo instead of a black outline: it separates the text
@@ -324,6 +399,7 @@
       opts = opts || {};
       return scene.add.text(x, y, text, {
         fontFamily: opts.mono ? MEAMUS.MONO : MEAMUS.FONT,
+        resolution: MEAMUS.DPR,
         fontSize: (opts.size || 18) + 'px',
         color: opts.color || this.PALETTE.dim,
         align: opts.align || 'center',
@@ -355,6 +431,7 @@
       draw(fill);
       var label = scene.add.text(0, 0, text, {
         fontFamily: MEAMUS.FONT,
+        resolution: MEAMUS.DPR,
         fontSize: (opts.size || 20) + 'px',
         color: opts.textColor || '#ffffff',
         fontStyle: 'bold'
@@ -362,17 +439,94 @@
       container.add([bg, label]);
       container.setSize(w, h);
       container.setInteractive(new Phaser.Geom.Rectangle(-w / 2, -h / 2, w, h), Phaser.Geom.Rectangle.Contains);
+      var armed = false;
+      var fired = false;
+
+      /**
+       * Fire once, sound first but never at the handler's expense.
+       * `fired` guards against a pointerup and the scene-level fallback both
+       * landing on the same press.
+       */
+      function activate() {
+        if (fired) return;
+        fired = true;
+        armed = false;
+        container.setScale(1);
+        draw(fill);
+        MEAMUS.sfx.resume();
+        MEAMUS.sfx.safe('click');
+        try { onClick(); } catch (err) {
+          if (global.console) console.error('[meamus.ui] button handler threw', err);
+        }
+        // Re-arm on the next tick so a scene that stays put stays clickable.
+        scene.time.delayedCall(0, function () { fired = false; });
+      }
+
       container.on('pointerover', function () { draw(fill, 0.85); scene.input.setDefaultCursor('pointer'); });
       container.on('pointerout', function () { draw(fill); scene.input.setDefaultCursor('default'); });
-      container.on('pointerdown', function () { container.setScale(0.96); });
-      container.on('pointerup', function () {
+      container.on('pointerdown', function () { armed = true; container.setScale(0.96); });
+      container.on('pointerup', activate);
+
+      /**
+       * Touch fallback. A finger almost always drifts a few pixels between
+       * down and up, and once it leaves the hit area Phaser sends
+       * `pointerupoutside` instead of `pointerup` - so the press was armed and
+       * then silently dropped. Anything released within a forgiving slop of a
+       * button the user actually pressed counts as a tap.
+       */
+      container.on('pointerupoutside', function (pointer) {
+        if (!armed) return;
+        armed = false;
         container.setScale(1);
-        MEAMUS.sfx.resume();
-        MEAMUS.sfx.click();
-        onClick();
+        draw(fill);
+        var m = container.getWorldTransformMatrix();
+        var slop = 24;
+        var withinX = Math.abs(pointer.x - m.tx) <= w / 2 + slop;
+        var withinY = Math.abs(pointer.y - m.ty) <= h / 2 + slop;
+        if (withinX && withinY) activate();
       });
+
       container.setLabel = function (next) { label.setText(next); };
       return container;
+    },
+
+    /**
+     * Last-resort start affordance for a menu scene.
+     *
+     * Every menu has a PLAY button, but a button is a small target that can be
+     * missed on a phone, and a player who taps the artwork and gets nothing
+     * concludes the game is broken. This makes the whole scene a start target:
+     * tap anywhere that is not another button, or press any key.
+     *
+     * `ignore` is the list of interactive objects that must keep their own
+     * behaviour (HOW TO PLAY, SHOP, and so on).
+     */
+    anywhereToStart: function (scene, start, ignore) {
+      var skip = ignore || [];
+      var go = function () {
+        MEAMUS.sfx.resume();
+        try { start(); } catch (err) {
+          if (global.console) console.error('[meamus.ui] start handler threw', err);
+        }
+      };
+      scene.input.on('pointerup', function (pointer, over) {
+        // `over` lists the interactive objects under the pointer. If the tap
+        // landed on one of the other buttons, that button owns the press.
+        for (var i = 0; i < over.length; i += 1) {
+          if (skip.indexOf(over[i]) !== -1) return;
+        }
+        if (over.length) return;
+        go();
+      });
+      if (scene.input.keyboard) {
+        scene.input.keyboard.on('keydown', function (event) {
+          // Leave the browser's own chrome shortcuts alone.
+          if (event.altKey || event.ctrlKey || event.metaKey) return;
+          go();
+        });
+      }
+      return MEAMUS.ui.label(scene, scene.scale.width / 2, scene.scale.height - 74,
+        'tap anywhere or press any key to start', { size: 13, color: MEAMUS.ui.PALETTE.dim });
     },
 
     /** Translucent panel used behind menus and dialogs. */
@@ -396,7 +550,7 @@
       var g = scene.add.graphics().setDepth(900).setScrollFactor(0);
       g.fillStyle(0x000000, 0.05).fillRect(0, y - h / 2, W, h);
       var t = scene.add.text(W / 2, y, 'AD SLOT 320x50', {
-        fontFamily: MEAMUS.MONO, fontSize: '12px', color: '#b3a999'
+        fontFamily: MEAMUS.MONO, resolution: MEAMUS.DPR, fontSize: '12px', color: '#b3a999'
       }).setOrigin(0.5).setDepth(901).setScrollFactor(0);
       MEAMUS.ads.showBanner(position || 'bottom');
       return { bg: g, text: t, height: h };
@@ -409,7 +563,7 @@
   MEAMUS.fx = {
     floatText: function (scene, x, y, text, color) {
       var t = scene.add.text(x, y, text, {
-        fontFamily: MEAMUS.FONT, fontSize: '20px', color: color || '#c9862b',
+        fontFamily: MEAMUS.FONT, resolution: MEAMUS.DPR, fontSize: '20px', color: color || '#c9862b',
         fontStyle: 'bold', stroke: '#ffffff', strokeThickness: 3
       }).setOrigin(0.5).setDepth(800);
       scene.tweens.add({
@@ -498,10 +652,17 @@
       var circle = scene.add.circle(x, y, r, 0x2f2a24, 0.14).setScrollFactor(0).setDepth(depth)
         .setInteractive(new Phaser.Geom.Circle(r, r, r), Phaser.Geom.Circle.Contains);
       var text = scene.add.text(x, y, label, {
-        fontFamily: MEAMUS.FONT, fontSize: '15px', color: '#2f2a24', fontStyle: 'bold'
+        fontFamily: MEAMUS.FONT, resolution: MEAMUS.DPR, fontSize: '15px', color: '#2f2a24', fontStyle: 'bold'
       }).setOrigin(0.5).setScrollFactor(0).setDepth(depth + 1);
       var held = false;
-      circle.on('pointerdown', function () { held = true; circle.setFillStyle(0x2f2a24, 0.3); if (onDown) onDown(); });
+      circle.on('pointerdown', function () {
+        held = true;
+        circle.setFillStyle(0x2f2a24, 0.3);
+        MEAMUS.sfx.resume();
+        try { if (onDown) onDown(); } catch (err) {
+          if (global.console) console.error('[meamus.touch] button handler threw', err);
+        }
+      });
       circle.on('pointerup', function () { held = false; circle.setFillStyle(0x2f2a24, 0.14); });
       circle.on('pointerout', function () { held = false; circle.setFillStyle(0x2f2a24, 0.14); });
       return {
@@ -522,7 +683,10 @@
       return class BootScene extends Phaser.Scene {
         constructor() { super({ key: 'BootScene' }); }
         init() {
-          this.scale.lockOrientation && this.scale.lockOrientation('landscape');
+          // Deliberately no orientation lock. These games are played portrait
+          // on a phone and windowed on a desktop; forcing landscape made the
+          // canvas fight the viewport instead of fitting it.
+          MEAMUS.sfx.resume();
         }
         create() {
           // Pause the whole game when the tab / app goes to background.
@@ -549,7 +713,7 @@
           barBg.fillStyle(0x2f2a24, 0.10).fillRoundedRect(W / 2 - barW / 2, H / 2, barW, 14, 7);
           var bar = this.add.graphics();
           var pct = this.add.text(W / 2, H / 2 + 40, '0%', {
-            fontFamily: MEAMUS.MONO, fontSize: '14px', color: '#7d7469'
+            fontFamily: MEAMUS.MONO, resolution: MEAMUS.DPR, fontSize: '14px', color: '#7d7469'
           }).setOrigin(0.5);
 
           // Textures are generated synchronously; the bar is stepped so the
@@ -643,6 +807,21 @@
     try {
       if (typeof Phaser === 'undefined') throw new Error('Phaser failed to load (check the CDN or your network)');
       var game = new Phaser.Game(config);
+      // A handle on the running game. Phaser 3 keeps no global registry, so
+      // without this there is no way to inspect a live game from outside it -
+      // which is what measuring the canvas against the real screen needs.
+      MEAMUS.game = game;
+
+      // Scale.FIT always leaves bands on a screen whose shape differs from the
+      // canvas. Painting them in the game's own colour makes the frame read as
+      // the game rather than as a half-loaded page.
+      if (config.backgroundColor) {
+        try {
+          global.document.body.style.background = config.backgroundColor;
+          var host = global.document.getElementById(config.parent);
+          if (host) host.style.background = config.backgroundColor;
+        } catch (e) { /* a detached document during teardown */ }
+      }
 
       // Android/iOS: suspend audio + loop when the app is backgrounded.
       global.document.addEventListener('visibilitychange', function () {
@@ -663,8 +842,48 @@
         else if (active && active.scene.key !== 'MenuScene') active.scene.start('MenuScene');
       }, false);
 
+      /**
+       * Re-fit when the frame around the game changes size.
+       *
+       * A preview pane that is dragged narrower, or a phone rotated, used to
+       * leave the canvas at its boot-time shape and simply letterbox harder.
+       * This recomputes the viewport on the same terms it was first asked for
+       * and resizes the canvas to match.
+       *
+       * A menu or game-over screen lays itself out in create(), so it is
+       * restarted to pick up the new dimensions. A run in progress is not:
+       * throwing away someone's game to fix a layout is the worse trade, and
+       * those scenes anchor their HUD to the top edge, which survives.
+       */
+      var refit = null;
       global.addEventListener('resize', function () {
-        if (game.isBooted) game.scale.refresh();
+        if (!game.isBooted) return;
+        clearTimeout(refit);
+        refit = setTimeout(function () {
+          var args = MEAMUS._viewportArgs;
+          if (!args) { game.scale.refresh(); return; }
+
+          var next = MEAMUS.viewport(args.designW, args.designH, args.opts);
+          var dw = Math.abs(next.width - game.scale.width) / game.scale.width;
+          var dh = Math.abs(next.height - game.scale.height) / game.scale.height;
+          // Ignore the pixel or two a scrollbar costs; only real changes.
+          if (dw < 0.04 && dh < 0.04) { game.scale.refresh(); return; }
+
+          game.scale.resize(next.width, next.height);
+          // resize() updates the backing store but NOT displaySize's aspect
+          // ratio, which Phaser locks at boot. Without this the canvas becomes
+          // portrait while the CSS box carries on scaling to the original
+          // landscape shape - a 490x980 game displayed at 420x280.
+          if (game.scale.displaySize && game.scale.displaySize.setAspectRatio) {
+            game.scale.displaySize.setAspectRatio(next.width / next.height);
+          }
+          game.scale.refresh();
+          if (game.physics && game.physics.world && game.physics.world.setBounds) {
+            game.physics.world.setBounds(0, 0, next.width, next.height);
+          }
+          var active = game.scene.getScenes(true)[0];
+          if (active && active.scene.key !== 'GameScene') active.scene.restart();
+        }, 220);
       });
 
       global.MEAMUS_GAME = game;

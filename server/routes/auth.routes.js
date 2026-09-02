@@ -1,89 +1,86 @@
 'use strict';
 
+/**
+ * Accounts.
+ *
+ * An account is the only way into meamus. There is no guest path: a guest had
+ * no durable home for its games, no way to buy credits, and produced the
+ * confusing half-state where the product looked signed-in but could not keep
+ * anything.
+ *
+ * With Supabase Auth configured, email and password are proxied to Supabase so
+ * the browser never holds a key, and Google is a redirect the browser makes
+ * itself. Without it, the local scrypt path still works so a fresh clone and
+ * the test suite run offline.
+ */
+
 const express = require('express');
+const config = require('../config');
 const db = require('../db');
 const auth = require('../auth');
-const config = require('../config');
-const access = require('../access');
-const { publicUser, requireAuth, asyncRoute } = require('../middleware');
+const profiles = require('../profiles');
+const supabaseAuth = require('../services/supabase-auth');
+const { requireAuth, publicUser, asyncRoute } = require('../middleware');
 
 const router = express.Router();
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const usingSupabase = () => config.auth.provider === 'supabase';
 
-function issue(user) {
-  return { token: auth.sign({ sub: user.id, email: user.email }), user: publicUser(user) };
+const clean = (v) => String(v || '').trim();
+const cleanEmail = (v) => clean(v).toLowerCase();
+
+function badEmail(email) {
+  return !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
 }
 
-/**
- * Test-mode guest session.
- *
- * Mints a throwaway account so a visitor can prompt, generate and play with no
- * signup. It is a real user record, so ownership, quotas and every downstream
- * route behave exactly as they will for a signed-up account - there is no
- * second code path to keep in sync.
- */
-router.post('/guest', asyncRoute(async (req, res) => {
-  if (!access.openAccess()) {
-    return res.status(403).json({
-      error: 'Guest sessions are disabled. Create an account to continue.',
-      code: 'guest_disabled'
-    });
-  }
+/** The session shape the browser stores. */
+function session(user, token, extra = {}) {
+  return { token, user: publicUser(user), ...extra };
+}
 
-  const now = new Date().toISOString();
-  const suffix = db.id('g').slice(-8);
-  const user = db.insert('users', {
-    id: db.id('usr'),
-    email: `guest-${suffix}@guest.meamus.local`,
-    name: 'Guest',
-    passwordHash: null,
-    plan: 'guest',
-    isGuest: true,
-    usage: { date: null, count: 0 },
-    createdAt: now,
-    updatedAt: now
-  });
-
-  res.status(201).json(issue(user));
-}));
+/* --- register ------------------------------------------------------------- */
 
 router.post('/register', asyncRoute(async (req, res) => {
-  const email = String(req.body.email || '').trim().toLowerCase();
+  const email = cleanEmail(req.body.email);
   const password = String(req.body.password || '');
-  const name = String(req.body.name || '').trim().slice(0, 60);
+  const name = clean(req.body.name);
 
-  // Issuing a token for an account that is about to evaporate is worse than
-  // refusing: the user signs up, the next request lands on a different
-  // instance, and the app tells them they never signed up.
-  if (!access.accountsAvailable()) {
+  if (badEmail(email)) return res.status(400).json({ error: 'Enter a valid email address', code: 'bad_email' });
+  if (password.length < 8) {
+    return res.status(400).json({ error: 'Use a password of at least 8 characters', code: 'weak_password' });
+  }
+
+  if (usingSupabase()) {
+    const { user, session: s } = await supabaseAuth.signUp({ email, password, name });
+
+    // Whether a session comes back depends on the project's email-confirmation
+    // setting. Saying "check your inbox" when no session was issued is the
+    // honest branch; pretending to be signed in is not.
+    if (!s || !s.access_token) {
+      return res.status(201).json({
+        token: null,
+        user: null,
+        confirmationRequired: true,
+        message: 'Account created. Check your email to confirm it, then sign in.'
+      });
+    }
+    const profile = await profiles.ensure(user);
+    return res.status(201).json(session(profile, s.access_token, { refreshToken: s.refresh_token }));
+  }
+
+  // Local path. An account that cannot outlive the request is worse than no
+  // account: the player signs up, builds, and loses everything on the next
+  // cold start. Refuse, and name the two variables that fix it.
+  if (db.durable === false) {
     return res.status(503).json({
-      error: 'Accounts are not available on this deployment - there is nowhere durable to save one. ' +
-        'You are already signed in and can build without one; nothing is locked. ' +
-        '(Operator: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to turn accounts on.)',
+      error: 'This deployment has no durable storage, so an account would be lost on the next restart. '
+        + 'Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to enable accounts.',
       code: 'storage_not_durable'
     });
   }
-
-  if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Enter a valid email address', code: 'invalid_email' });
-  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters', code: 'weak_password' });
   if (db.find('users', (u) => u.email === email)) {
-    return res.status(409).json({ error: 'That email is already registered', code: 'email_taken' });
+    return res.status(409).json({ error: 'That email already has an account. Sign in instead.', code: 'email_taken' });
   }
-
-  // Registering while holding a guest token upgrades that guest in place, so
-  // the games made during a test session survive the signup.
-  if (req.user && req.user.isGuest) {
-    const upgraded = db.update('users', req.user.id, {
-      email,
-      name: name || email.split('@')[0],
-      passwordHash: auth.hashPassword(password),
-      plan: 'free',
-      isGuest: false
-    });
-    return res.status(201).json({ ...issue(upgraded), upgradedFromGuest: true });
-  }
-
   const now = new Date().toISOString();
   const user = db.insert('users', {
     id: db.id('usr'),
@@ -91,35 +88,78 @@ router.post('/register', asyncRoute(async (req, res) => {
     name: name || email.split('@')[0],
     passwordHash: auth.hashPassword(password),
     plan: 'free',
+    credits: config.credits.signupGrant,
     usage: { date: null, count: 0 },
     createdAt: now,
     updatedAt: now
   });
-
-  res.status(201).json(issue(user));
+  res.status(201).json(session(user, auth.sign({ sub: user.id })));
 }));
 
-router.post('/login', asyncRoute(async (req, res) => {
-  const email = String(req.body.email || '').trim().toLowerCase();
-  const password = String(req.body.password || '');
-  const user = db.find('users', (u) => u.email === email);
+/* --- login ---------------------------------------------------------------- */
 
-  // Same message either way so the endpoint cannot be used to enumerate emails.
-  if (!user || !auth.verifyPassword(password, user.passwordHash)) {
-    return res.status(401).json({ error: 'Incorrect email or password', code: 'bad_credentials' });
+router.post('/login', asyncRoute(async (req, res) => {
+  const email = cleanEmail(req.body.email);
+  const password = String(req.body.password || '');
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are both required', code: 'missing_fields' });
   }
-  res.json(issue(user));
+
+  if (usingSupabase()) {
+    const { user, session: s } = await supabaseAuth.signIn({ email, password });
+    const profile = await profiles.ensure(user);
+    return res.json(session(profile, s.access_token, { refreshToken: s.refresh_token }));
+  }
+
+  const user = db.find('users', (u) => u.email === email);
+  if (!user || !user.passwordHash || !auth.verifyPassword(password, user.passwordHash)) {
+    return res.status(401).json({ error: 'That email and password do not match.', code: 'bad_credentials' });
+  }
+  res.json(session(user, auth.sign({ sub: user.id })));
+}));
+
+/* --- Google --------------------------------------------------------------- */
+
+/**
+ * Where to send the browser for Google sign-in.
+ *
+ * The browser goes to Supabase, Supabase talks to Google, and the browser
+ * returns to `redirect` with the session in the URL fragment - which never
+ * reaches a server. This endpoint only hands out the address.
+ */
+router.get('/oauth/google', (req, res) => {
+  if (!usingSupabase()) {
+    return res.status(503).json({
+      error: 'Google sign-in needs Supabase. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.',
+      code: 'oauth_unavailable'
+    });
+  }
+  const redirect = clean(req.query.redirect) || `${req.protocol}://${req.get('host')}/#/auth/callback`;
+  res.json({ url: supabaseAuth.oauthUrl('google', redirect) });
+});
+
+/* --- session -------------------------------------------------------------- */
+
+router.post('/refresh', asyncRoute(async (req, res) => {
+  if (!usingSupabase()) return res.status(404).json({ error: 'Not available', code: 'not_found' });
+  const refreshToken = clean(req.body.refreshToken);
+  if (!refreshToken) return res.status(400).json({ error: 'No refresh token', code: 'missing_fields' });
+  const { user, session: s } = await supabaseAuth.refresh(refreshToken);
+  const profile = await profiles.ensure(user);
+  res.json(session(profile, s.access_token, { refreshToken: s.refresh_token }));
 }));
 
 router.get('/me', requireAuth, (req, res) => {
-  res.json({ user: publicUser(req.user), aiEnabled: config.aiEnabled });
+  res.json({ user: publicUser(req.user) });
 });
 
-router.patch('/me', requireAuth, asyncRoute(async (req, res) => {
-  const patch = {};
-  if (typeof req.body.name === 'string') patch.name = req.body.name.trim().slice(0, 60);
-  const updated = db.update('users', req.user.id, patch);
-  res.json({ user: publicUser(updated) });
-}));
+/** Which sign-in methods this deployment actually offers. */
+router.get('/methods', (req, res) => {
+  res.json({
+    password: true,
+    google: usingSupabase(),
+    provider: config.auth.provider
+  });
+});
 
 module.exports = router;

@@ -3,6 +3,9 @@
 const config = require('../config');
 const db = require('../db');
 const auth = require('../auth');
+const credits = require('../credits');
+const profiles = require('../profiles');
+const supabaseAuth = require('../services/supabase-auth');
 
 /** Public shape of a user - never leaks the password hash. */
 function publicUser(user) {
@@ -12,11 +15,14 @@ function publicUser(user) {
     email: user.email,
     name: user.name,
     plan: user.plan,
-    isGuest: user.isGuest === true,
     createdAt: user.createdAt,
     usage: usageToday(user),
     // null means no cap. The UI renders that as "unlimited".
-    quota: config.quotas.unlimited ? null : (config.quotas[user.plan] || config.quotas.free)
+    quota: config.quotas.unlimited ? null : (config.quotas[user.plan] || config.quotas.free),
+    // The balance is authoritative here. The client only ever displays it.
+    credits: credits.balanceOf(user),
+    creditCosts: { create: credits.COSTS.create, iterate: credits.COSTS.iterate },
+    creditsEnabled: config.credits.enabled
   };
 }
 
@@ -33,7 +39,11 @@ function usageToday(user) {
 function recordUsage(user) {
   const date = todayKey();
   const count = (user.usage && user.usage.date === date ? user.usage.count : 0) + 1;
-  db.update('users', user.id, { usage: { date, count } });
+  user.usage = { date, count };
+  // Fire and forget: a lost usage counter must never fail a build the player
+  // has already paid for. The credit ledger is the one that has to be exact.
+  Promise.resolve(profiles.update(user.id, { usage: { date, count } }))
+    .catch((err) => console.error('[usage] could not record:', err.message));
   return count;
 }
 
@@ -44,13 +54,37 @@ function tokenFrom(req) {
   return null;
 }
 
-/** Attaches req.user when a valid token is present; never rejects. */
-function optionalAuth(req, res, next) {
+/**
+ * Attaches req.user when a valid token is present; never rejects.
+ *
+ * With Supabase Auth on, the token is a Supabase access token and is verified
+ * by asking Supabase who it belongs to. The profile is then loaded (and created
+ * on first sight, which is how a Google sign-in gets a profile without ever
+ * touching our signup endpoint).
+ */
+async function optionalAuth(req, res, next) {
   const token = tokenFrom(req);
-  if (token) {
-    const payload = auth.verify(token);
-    if (payload && payload.sub) {
-      req.user = db.find('users', (u) => u.id === payload.sub) || null;
+  if (!token) return next();
+
+  try {
+    if (config.auth.provider === 'supabase') {
+      const authUser = await supabaseAuth.getUser(token);
+      if (authUser && authUser.id) req.user = await profiles.ensure(authUser);
+    } else {
+      const payload = auth.verify(token);
+      if (payload && payload.sub) {
+        req.user = db.find('users', (u) => u.id === payload.sub) || null;
+      }
+    }
+  } catch (err) {
+    // A sign-in service that is down must not read as "signed out", or every
+    // request silently becomes anonymous and the app looks broken instead of
+    // degraded. Surface it.
+    if (err.code === 'auth_unreachable' || err.status >= 500) {
+      return res.status(503).json({
+        error: 'The sign-in service is unavailable. Try again in a moment.',
+        code: 'auth_unavailable'
+      });
     }
   }
   next();
@@ -69,13 +103,6 @@ function requireAuth(req, res, next) {
 function requirePlan(plan) {
   return (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: 'Sign in to continue', code: 'unauthorized' });
-    if (req.user.isGuest) {
-      return res.status(402).json({
-        error: 'Create an account to export your game to Android',
-        code: 'signup_required',
-        requiredPlan: plan
-      });
-    }
     if (req.user.plan !== plan) {
       return res.status(402).json({
         error: `This feature needs the ${plan} plan`,
@@ -88,13 +115,25 @@ function requirePlan(plan) {
 }
 
 function enforceQuota(req, res, next) {
+  // Credits are checked first: they are the real meter, and a player who
+  // cannot pay for the work should be told before the model is called.
+  if (config.credits.enabled) {
+    const kind = req.creditKind || 'create';
+    if (!credits.canAfford(req.user, kind)) {
+      return res.status(402).json({
+        error: `You need ${credits.costOf(kind)} credits for this and have ${credits.balanceOf(req.user)}. Pick a plan to top up.`,
+        code: 'insufficient_credits',
+        balance: credits.balanceOf(req.user),
+        required: credits.costOf(kind)
+      });
+    }
+  }
+
   if (config.quotas.unlimited) return next();
   const quota = config.quotas[req.user.plan] || config.quotas.free;
   const used = usageToday(req.user);
   if (used >= quota) {
-    const nudge = req.user.isGuest ? 'Create an account to keep going.'
-      : req.user.plan === 'free' ? 'Upgrade to Pro for more.'
-        : 'Try again tomorrow.';
+    const nudge = req.user.plan === 'free' ? 'Upgrade for more.' : 'Try again tomorrow.';
     return res.status(429).json({
       error: `Daily limit reached (${used}/${quota} generations). ${nudge}`,
       code: 'quota_exceeded',

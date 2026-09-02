@@ -2,8 +2,11 @@
  * Project workspace: chat thread on the left, live game on the right.
  * ========================================================================== */
 
-import { el, icon, toast, clear, playModal, relativeTime, escapeHtml, quotaLabel } from './ui.js';
-import { state, projects, playUrl, download } from './api.js';
+import { el, icon, toast, clear, playModal, relativeTime, escapeHtml, quotaLabel, creditChip } from './ui.js';
+import { state, projects, builds, playUrl, download } from './api.js';
+import { confirmBuild, buildPanel, buildLine, buildStage, artifactChips, humanMs } from './build.js';
+import { attachToBuild } from './generate.js';
+import * as watcher from './watcher.js';
 import { createComposer } from './composer.js';
 
 const TABS = [
@@ -36,12 +39,25 @@ export async function renderWorkspace(root, projectId) {
     clear(shell);
   }
 
+  // A build started from the dashboard hands the workspace its id, so the
+  // founder lands here and watches it rather than watching a card elsewhere.
+  // A build in flight for this game, whether this screen started it or the
+  // founder wandered off and came back. Coming back to your own build and
+  // finding a dead "Still building" panel is the version of this that loses
+  // people, so the watcher is asked too, not just the create flow.
+  const inFlight = watcher.forGame(projectId);
+  const pending = (state.pendingBuild && state.pendingBuild.gameId === projectId)
+    ? state.pendingBuild
+    : (inFlight ? inFlight.info : null);
+  if (state.pendingBuild && state.pendingBuild.gameId === projectId) state.pendingBuild = null;
+
   const view = {
     tab: 'preview',
     device: 'desktop',
     chatOpen: true,
     busy: false,
-    frameKey: 0
+    frameKey: 0,
+    building: null   // the live stage that replaces the preview during a build
   };
 
   /* --- stage (right side) ---------------------------------------------- */
@@ -50,8 +66,29 @@ export async function renderWorkspace(root, projectId) {
 
   function paintStage() {
     clear(stageInner);
-    stageInner.style.padding = view.tab === 'preview' ? '14px' : '0';
+    stageInner.style.padding = view.building ? '0' : (view.tab === 'preview' ? '14px' : '0');
     stageInner.style.alignItems = view.tab === 'preview' ? 'center' : 'stretch';
+
+    if (view.building) {
+      stageInner.style.padding = '0';
+      stageInner.append(view.building.node);
+      return;
+    }
+
+    // A game whose build has not landed yet has no spec to preview, no code to
+    // show and no spec to inspect. Say so rather than rendering an empty frame.
+    if (!data.spec) {
+      stageInner.style.padding = '28px';
+      stageInner.append(el('div', { class: 'empty', style: { maxWidth: '420px' } },
+        el('div', { class: 'feature-icon', style: { margin: '0 auto 14px' } }, icon('sparkles', 'lg')),
+        el('h2', { style: { fontSize: '17px' } },
+          data.game.status === 'failed' ? 'That build did not finish' : 'Still building'),
+        el('p', { class: 'muted' },
+          data.game.status === 'failed'
+            ? (data.game.description || 'Send the prompt again to retry.')
+            : 'This game is being built. It will appear here the moment it lands.')));
+      return;
+    }
 
     if (view.tab === 'preview') {
       stageInner.append(el('div', { class: `frame-shell ${view.device === 'phone' ? 'phone' : ''}` },
@@ -112,11 +149,13 @@ export async function renderWorkspace(root, projectId) {
     }
   }, icon('monitor', 'lg'));
 
+  const creditsChip = creditChip(state.user);
+
   const top = el('header', { class: 'ws-top' },
     el('a', { class: 'brand', href: '#/dashboard', title: 'Back to dashboard' },
       el('span', { class: 'brand-mark' }, icon('gamepad'))),
     el('span', { class: 'ws-title', title: data.game.title }, data.game.title),
-    el('span', { class: 'tag' }, data.game.genre),
+    data.game.genre ? el('span', { class: 'tag' }, data.game.genre) : null,
     el('button', {
       class: 'btn icon sq hide-sm', title: 'Toggle the chat panel', 'aria-label': 'Toggle the chat panel',
       onClick: () => {
@@ -125,6 +164,7 @@ export async function renderWorkspace(root, projectId) {
       }
     }, icon('panel', 'lg')),
     el('span', { class: 'grow', style: { display: 'flex', justifyContent: 'center' } }, seg),
+    creditsChip,
     deviceBtn,
     el('button', {
       class: 'btn icon sq', title: 'Restart the game', 'aria-label': 'Restart the game',
@@ -158,25 +198,110 @@ export async function renderWorkspace(root, projectId) {
       const pending = el('div', { class: 'build-card' },
         el('div', { class: 'thinking' },
           el('span', { class: 'dots' }, el('i'), el('i'), el('i')),
-          el('span', {}, 'Rebuilding your game…')));
+          el('span', {}, 'Reading your message…')));
       thread.append(pending);
       scrollThread();
 
       try {
-        const result = await projects.chat(data.game.id, { instruction: text, attachmentIds });
+        const result = await projects.chat(data.game.id, { message: text, attachmentIds });
+
+        // A question or a clarifying question changes the thread, not the game.
+        if (result.kind === 'answer' || result.kind === 'clarify') {
+          data.messages = result.messages || data.messages;
+          state.project = data;
+          composer.clearAll();
+          paintThread();
+          scrollThread();
+          return;
+        }
+
+        // A change is a build: quoted, approved, then watched. The pending
+        // card becomes the live panel so the clock and the stop button land
+        // where the founder is already looking.
+        const plan = await builds.plan({ prompt: text, attachmentIds, gameId: data.game.id });
+        if (!await confirmBuild(plan)) {
+          pending.remove();
+          scrollThread();
+          return;
+        }
+
+        const { buildId } = await builds.start(plan.planId);
+        const panel = buildPanel(buildId);
+        pending.replaceWith(panel.node);
+        scrollThread();
+
+        // The preview is stale for the whole build. Rather than leave it there
+        // looking live, it becomes a stage that reports the real phase.
+        const stage = buildStage();
+        view.building = stage;
+        paintStage();
+
+        const finished = await attachToBuild(buildId, {
+          gameId: data.game.id,
+          prompt: text,
+          onTick: (tick) => {
+            panel.update(tick);
+            stage.update(tick);
+            scrollThread();
+          }
+        });
+        panel.done();
+        stage.done();
+        view.building = null;
+
+        // The founder navigated away. The build carries on and the watcher
+        // will tell them when it lands; there is nothing left to draw here.
+        if (finished.state === 'released') return;
+
+        if (finished.state === 'stopped') {
+          thread.append(el('div', { class: 'notice' }, icon('alert'),
+            el('span', {}, 'Build stopped. Nothing was charged.')));
+          scrollThread();
+          return;
+        }
+        if (finished.state === 'failed') throw new Error(finished.error || 'The build failed');
+
         data = {
-          game: result.game, spec: result.spec, meta: result.meta,
-          messages: result.messages || data.messages
+          game: finished.game,
+          spec: finished.spec,
+          meta: finished.meta,
+          messages: finished.messages || data.messages
         };
         state.project = data;
-        if (state.user) state.user.usage = result.quota.used;
         composer.clearAll();
-        view.frameKey += 1;
+        // The live panel is replaced by the saved turn, so what is on screen is
+        // what a reload would show. Two versions of the same chat is how a
+        // thread starts lying about itself.
+        panel.node.remove();
         paintThread();
+        view.frameKey += 1;
+        if (state.user && finished.credits) {
+          state.user.credits = finished.credits.balance;
+          // A chip painted once at mount goes stale and contradicts the chat.
+          if (creditsChip) creditsChip.refresh();
+          meter.textContent = `${quotaLabel(state.user)} · Enter to send, Shift+Enter for a new line`;
+        }
         paintStage();
-        toast('Game updated', 'ok');
+
+        // The thread ends on a result, not a progress word, and says what the
+        // build actually produced.
+        thread.append(el('div', { class: 'done-line' },
+          icon('check', 'sm'),
+          el('span', {}, `Task complete — ${finished.spec.gameConfig.title} rebuilt in ${humanMs(finished.elapsedMs)}.`),
+          finished.credits && finished.credits.charged
+            ? el('span', { class: 'faint' }, ` ${finished.credits.charged} credits · ${finished.credits.balance} left`)
+            : null));
+        // What it produced, as checkable numbers rather than a claim.
+        const chips = artifactChips(finished);
+        if (chips) thread.append(chips);
+        scrollThread();
+        toast('Task complete', 'ok');
       } catch (err) {
-        pending.replaceWith(el('div', { class: 'notice' }, icon('alert'), el('span', {}, err.message)));
+        if (pending.isConnected) {
+          pending.replaceWith(el('div', { class: 'notice' }, icon('alert'), el('span', {}, err.message)));
+        } else {
+          thread.append(el('div', { class: 'notice' }, icon('alert'), el('span', {}, err.message)));
+        }
         scrollThread();
       } finally {
         view.busy = false;
@@ -185,14 +310,12 @@ export async function renderWorkspace(root, projectId) {
     }
   });
 
+  const meter = el('p', { class: 'faint small', style: { margin: '8px 2px 0' } },
+    state.user ? `${quotaLabel(state.user)} · Enter to send, Shift+Enter for a new line` : '');
+
   const chat = el('div', { class: 'chat' },
     thread,
-    el('div', { class: 'chat-foot' },
-      composer.node,
-      el('p', { class: 'faint small', style: { margin: '8px 2px 0' } },
-        state.user
-          ? `${quotaLabel(state.user)} · Enter to send, Shift+Enter for a new line`
-          : '')));
+    el('div', { class: 'chat-foot' }, composer.node, meter));
 
   const body = el('div', { class: 'ws-body' }, chat, stage);
   shell.append(top, body);
@@ -211,9 +334,24 @@ export async function renderWorkspace(root, projectId) {
           el('div', {}, el('h4', {}, data.game.title), el('div', { class: 'sub' }, 'Ready')))));
     }
     for (const message of messages) {
-      thread.append(message.role === 'user' ? userBubble(message) : buildCard(message));
+      if (message.role === 'user') { thread.append(userBubble(message)); continue; }
+      // An answer or a clarifying question is prose, not a build - rendering it
+      // as a build card would claim a rebuild that never happened.
+      thread.append(message.kind === 'answer' || message.kind === 'clarify'
+        ? replyBubble(message)
+        : buildCard(message));
     }
     scrollThread();
+  }
+
+  /** A plain prose turn from the assistant: an answer, or a question back. */
+  function replyBubble(message) {
+    return el('div', { class: `msg reply ${message.kind === 'clarify' ? 'asking' : ''}` },
+      el('div', { class: 'bubble' },
+        el('div', { class: 'reply-head' },
+          icon(message.kind === 'clarify' ? 'alert' : 'sparkles', 'sm'),
+          el('span', {}, message.kind === 'clarify' ? 'Need one detail' : 'Answer')),
+        el('div', { class: 'reply-body' }, message.text)));
   }
 
   function userBubble(message) {
@@ -229,14 +367,28 @@ export async function renderWorkspace(root, projectId) {
 
   function buildCard(message) {
     const isLatest = message === data.messages[data.messages.length - 1];
+    // With the crew, the body is the account of what it did and `stats` is the
+    // one-line shape. Older messages have neither, so the text falls back into
+    // the subtitle exactly as it did before.
+    const subtitle = message.stats || message.text;
+    const body = message.stats ? message.text : null;
+
     return el('div', { class: `build-card ${isLatest ? 'live' : ''}` },
       el('div', { class: 'build-head' },
         el('span', { class: 'ic' }, icon(message.kind === 'edit' ? 'pencil' : 'sparkles', 'sm')),
         el('div', { style: { minWidth: '0' } },
           el('h4', { title: message.title || data.game.title }, message.title || data.game.title),
-          el('div', { class: 'sub' }, message.text)),
+          el('div', { class: 'sub' }, subtitle)),
         el('span', { class: 'grow' }),
         el('span', { class: 'faint small nowrap' }, relativeTime(message.createdAt))),
+
+      body ? el('div', { class: 'build-summary' }, ...summaryLines(body)) : null,
+      (message.issues || []).length
+        ? el('div', { class: 'build-issues' },
+          message.issues.map((text) => el('div', { class: 'build-issue' }, icon('alert', 'sm'), el('span', {}, text))))
+        : null,
+      (message.transcript || []).length ? transcriptBlock(message.transcript) : null,
+
       isLatest
         ? el('div', { class: 'build-actions' },
           el('button', {
@@ -252,6 +404,41 @@ export async function renderWorkspace(root, projectId) {
             onClick: () => playModal(data.game.title, playUrl(data.game.id))
           }, icon('play', 'sm'), 'Preview'))
         : null);
+  }
+
+  /**
+   * The summary body, one paragraph per line.
+   *
+   * The crew writes `**Title** — pitch` on the first line. Rendering the two
+   * asterisks literally would be worse than plain text, so that one marker is
+   * honoured and nothing else is: this is a summary, not a markdown document,
+   * and anything more would need escaping the whole string first.
+   */
+  function summaryLines(text) {
+    return String(text).split('\n').filter(Boolean).map((line) => {
+      const bold = line.match(/^\*\*(.+?)\*\*(.*)$/);
+      return bold
+        ? el('p', {}, el('strong', {}, bold[1]), bold[2])
+        : el('p', {}, line);
+    });
+  }
+
+  /**
+   * The crew's handoffs, replayed.
+   *
+   * Collapsed by default. It is genuinely interesting the first time and noise
+   * on the twentieth, and the founder is the one who gets to decide which of
+   * those they are on.
+   */
+  function transcriptBlock(transcript) {
+    const details = el('details', { class: 'transcript' },
+      el('summary', {}, icon('layers', 'sm'),
+        el('span', {}, `${transcript.length} steps · Designer → Coder → Tester → Reviewer`)),
+      el('div', { class: 'build-log' },
+        transcript.map((entry) => buildLine({
+          phase: entry.phase, detail: entry.detail, agent: entry.agent, at: entry.at
+        }))));
+    return details;
   }
 
   /* --- publish popover --------------------------------------------------- */
@@ -335,6 +522,77 @@ export async function renderWorkspace(root, projectId) {
 
   paintThread();
   paintStage();
+
+  // A build already in flight for this game: show it here, live, from the
+  // moment the workspace opens.
+  if (pending) watchFirstBuild(pending);
+
+  /**
+   * Attach to the build that brought us here.
+   *
+   * The founder can close the tab at any point - the game row already exists
+   * server-side and the build keeps going, so nothing is lost either way.
+   */
+  async function watchFirstBuild(info) {
+    view.busy = true;
+    composer.setBusy(true);
+
+    const panel = buildPanel(info.buildId);
+    thread.append(panel.node);
+    const stage = buildStage();
+    view.building = stage;
+    paintStage();
+    scrollThread();
+
+    const finished = await attachToBuild(info.buildId, {
+      onTick: (tick) => { panel.update(tick); stage.update(tick); scrollThread(); }
+    }).catch((err) => ({ state: 'failed', error: err.message }));
+
+    panel.done();
+    stage.done();
+    view.building = null;
+    view.busy = false;
+    composer.setBusy(false);
+
+    // Same as above: this screen is gone, the build is not.
+    if (finished.state === 'released') return;
+
+    if (finished.state !== 'done') {
+      thread.append(el('div', { class: 'notice' }, icon('alert'),
+        el('span', {}, finished.state === 'stopped'
+          ? 'Build stopped. Nothing was charged.'
+          : (finished.error || 'The build failed.'))));
+      paintStage();
+      scrollThread();
+      return;
+    }
+
+    data = {
+      game: finished.game,
+      spec: finished.spec,
+      meta: finished.meta,
+      messages: finished.messages || data.messages
+    };
+    state.project = data;
+    view.frameKey += 1;
+    if (creditsChip) creditsChip.refresh();
+    paintStage();
+
+    // Same reason as above: the saved turn replaces the live panel, so the
+    // thread on screen and the thread on the server are the same thread.
+    panel.node.remove();
+    paintThread();
+
+    thread.append(el('div', { class: 'done-line' },
+      icon('check', 'sm'),
+      el('span', {}, `Task complete — ${finished.spec.gameConfig.title} is ready in ${humanMs(finished.elapsedMs)}.`),
+      finished.credits && finished.credits.charged
+        ? el('span', { class: 'faint' }, ` ${finished.credits.charged} credits · ${finished.credits.balance} left`)
+        : null));
+    const chips = artifactChips(finished);
+    if (chips) thread.append(chips);
+    scrollThread();
+  }
 }
 
 async function safeDownload(path) {

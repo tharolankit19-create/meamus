@@ -93,10 +93,18 @@ function buildLlmConfig() {
     provider: 'openrouter',
     apiKey: openrouterKey,
     enabled: Boolean(openrouterKey),
-    // NVIDIA Nemotron 3.5 Lightning: 262k context, 131k max output, cheap, and
-    // it honours structured outputs - which is what keeps a 3B-active model
-    // emitting a spec that parses first try.
-    model: process.env.OPENROUTER_MODEL || 'nvidia/nemotron-3.5-lightning',
+    // NVIDIA Nemotron 3 Super 120B, free tier: 262k context, 235k max output,
+    // and - the reason it is the default rather than one of the other free
+    // NVIDIA models - it is the only free NVIDIA model that honours structured
+    // outputs. Without a schema the model answers with prose around the JSON
+    // and the spec has to be scraped back out of it, which is where malformed
+    // games come from. A free model that cannot be held to the schema is not
+    // cheaper; it just fails later.
+    //
+    // The free tier is rate limited (see OPENROUTER_MODEL in .env.example), so
+    // a busy deployment should point this at the paid twin, which is the same
+    // model without the :free suffix.
+    model: process.env.OPENROUTER_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free',
     baseUrl: (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, ''),
     maxTokens: positive('LLM_MAX_TOKENS', process.env.LLM_MAX_TOKENS, 32000),
     temperature: num(process.env.LLM_TEMPERATURE, 0.6),
@@ -116,8 +124,20 @@ const SERVERLESS = Boolean(
 );
 
 function defaultDataDir() {
-  if (process.env.DATA_DIR) return process.env.DATA_DIR;
-  return SERVERLESS ? '/tmp/meamus-data' : './server/data';
+  const configured = (process.env.DATA_DIR || '').trim();
+  if (!configured) return SERVERLESS ? '/tmp/meamus-data' : './server/data';
+
+  // A serverless filesystem is read-only apart from /tmp. DATA_DIR=./server/data
+  // is the .env.example default, and honouring it on Vercel means every write
+  // fails with EROFS. The configured value is ignored rather than obeyed into a
+  // crash, and config.problems records that it happened.
+  if (SERVERLESS && !path.isAbsolute(configured)) {
+    configProblems.push(
+      `DATA_DIR is "${configured}", which is read-only on a serverless host. Using /tmp/meamus-data instead.`
+    );
+    return '/tmp/meamus-data';
+  }
+  return configured;
 }
 
 const config = {
@@ -141,9 +161,53 @@ const config = {
   llm: buildLlmConfig(),
 
   auth: {
+    /**
+     * Where accounts live.
+     *
+     * 'supabase' means real identity - password hashes, email confirmation and
+     * Google sign-in are Supabase's job. 'local' is the offline path a fresh
+     * clone and the test suite take. AUTH_PROVIDER forces either.
+     */
+    get provider() {
+      const forced = (process.env.AUTH_PROVIDER || '').trim().toLowerCase();
+      if (forced === 'supabase' || forced === 'local') return forced;
+      return module.exports.supabase.enabled ? 'supabase' : 'local';
+    },
     secret: (process.env.JWT_SECRET || '').trim() || crypto.randomBytes(48).toString('hex'),
     secretIsEphemeral: !(process.env.JWT_SECRET || '').trim(),
     ttlHours: positive('JWT_TTL_HOURS', process.env.JWT_TTL_HOURS, 168)
+  },
+
+  /**
+   * Credits.
+   *
+   * The meter that replaces "unlimited". A new account gets a grant that buys
+   * roughly ten games, and a plan tops it up. Set CREDITS=false to turn the
+   * whole system off and fall back to the daily quotas below.
+   */
+  credits: {
+    enabled: (process.env.CREDITS || 'true').trim() !== 'false',
+    signupGrant: positive('SIGNUP_CREDITS', process.env.SIGNUP_CREDITS, 200),
+    // Credits are metered on tokens, which is what the model provider actually
+    // bills for. The flat per-game numbers below are the floor when a build
+    // reports no usage.
+    perMillionTokens: positive('CREDITS_PER_MTOK', process.env.CREDITS_PER_MTOK, 100),
+    costCreate: positive('CREDITS_PER_GAME', process.env.CREDITS_PER_GAME, 20),
+    costIterate: positive('CREDITS_PER_EDIT', process.env.CREDITS_PER_EDIT, 10)
+  },
+
+  build: {
+    /**
+     * The Hermes crew: designer -> coder -> tester -> reviewer -> improver ->
+     * tester. More model calls than a single-shot build, and better games,
+     * because no one agent has to design, write and critique in one breath.
+     * Set AGENT_CREW=false for the single-call path.
+     */
+    crew: (process.env.AGENT_CREW || 'true').trim() !== 'false',
+    // How many times the review loop hands a rejected build back to the model.
+    maxAttempts: positive('BUILD_MAX_ATTEMPTS', process.env.BUILD_MAX_ATTEMPTS, 3),
+    // A build the founder has approved but never started is dropped after this.
+    planTtlMs: positive('BUILD_PLAN_TTL_MS', process.env.BUILD_PLAN_TTL_MS, 30 * 60 * 1000)
   },
 
   quotas: {

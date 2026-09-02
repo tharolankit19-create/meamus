@@ -6,10 +6,20 @@
   'use strict';
 
   var CFG = {
+    // WIDTH/HEIGHT are the canvas - the window onto the cave. WORLD_W/WORLD_H
+    // are the cave itself. On a phone the window is about a third of it and
+    // the camera scrolls; on a desktop they are the same and it does not. All
+    // four are recomputed from the real screen at the bottom of this file.
     WIDTH: 800,
     HEIGHT: 576,
+    WORLD_W: 800,
+    WORLD_H: 576,
     KEY: 'crystal-caves',
 
+    // Everything below is tuned against DESIGN_TILE. The real tile is sized to
+    // the screen, so the speeds and the gravity are rescaled to match it at the
+    // bottom of this file - see the note there. Read these as "at 32px tiles".
+    DESIGN_TILE: 32,
     TILE: 32,
     COLS: 25,
     ROWS: 18,
@@ -110,31 +120,46 @@
     ]
   ];
 
+  /**
+   * Design pixels to screen pixels.
+   *
+   * Every sprite below is drawn against a 32px tile - a 24px hero is three
+   * quarters of a tile. The real tile is sized to the screen, 31px on a desktop
+   * and 53 on a phone, so a literal 24 is three quarters of a tile in one place
+   * and under half in the other: the phone got a hero half the size it should
+   * be, standing on tiles built for someone bigger.
+   */
+  function px(n) {
+    return Math.max(1, Math.round(n * (CFG.TILE / CFG.DESIGN_TILE)));
+  }
+
   function bakeTextures(scene) {
     var G = MEAMUS.gfx;
     var T = CFG.TILE;
+    var PLATFORM_H = px(12);
+    var SPIKE_H = px(18);
 
     // TODO: replace with generated sprite: solid cave tile, 32x32 blue-grey
     // stone with a lit top edge.
     G.texture(scene, 'tile-solid', T, T, function (g) {
       g.fillStyle(COLORS.solid, 1).fillRect(0, 0, T, T);
-      g.fillStyle(COLORS.solidTop, 1).fillRect(0, 0, T, 5);
+      g.fillStyle(COLORS.solidTop, 1).fillRect(0, 0, T, px(5));
       g.lineStyle(1, 0x000000, 0.22).strokeRect(0, 0, T, T);
     });
-    G.texture(scene, 'tile-platform', T, 12, function (g) {
-      g.fillStyle(COLORS.platform, 1).fillRoundedRect(0, 0, T, 12, 3);
-      g.fillStyle(0xa78bff, 1).fillRect(0, 0, T, 3);
+    G.texture(scene, 'tile-platform', T, PLATFORM_H, function (g) {
+      g.fillStyle(COLORS.platform, 1).fillRoundedRect(0, 0, T, PLATFORM_H, px(3));
+      g.fillStyle(0xa78bff, 1).fillRect(0, 0, T, px(3));
     });
 
     // TODO: replace with generated sprite: hero, 24x30 green cave explorer.
-    G.rect(scene, 'hero', 24, 30, COLORS.player, { radius: 6, stroke: 0x0d1226, strokeWidth: 2 });
+    G.rect(scene, 'hero', px(24), px(30), COLORS.player, { radius: px(6), stroke: 0x0d1226, strokeWidth: 2 });
     // TODO: replace with generated sprite: crawler enemy, 28x22 red slime.
-    G.rect(scene, 'crawler', 28, 22, COLORS.enemy, { radius: 9, stroke: 0x0d1226, strokeWidth: 2 });
+    G.rect(scene, 'crawler', px(28), px(22), COLORS.enemy, { radius: px(9), stroke: 0x0d1226, strokeWidth: 2 });
 
-    G.poly(scene, 'gem', 22, 24, [[0.5, 0], [1, 0.38], [0.5, 1], [0, 0.38]], COLORS.gem, { stroke: 0xffffff, strokeWidth: 2 });
-    G.poly(scene, 'spike', T, 18, [[0.5, 0], [1, 1], [0, 1]], COLORS.spike);
-    G.rect(scene, 'door', 34, 46, COLORS.door, { radius: 6, stroke: 0x8a6a00, strokeWidth: 3 });
-    G.particle(scene, 'sparkle', 10, 0x9df5ff);
+    G.poly(scene, 'gem', px(22), px(24), [[0.5, 0], [1, 0.38], [0.5, 1], [0, 0.38]], COLORS.gem, { stroke: 0xffffff, strokeWidth: 2 });
+    G.poly(scene, 'spike', T, SPIKE_H, [[0.5, 0], [1, 1], [0, 1]], COLORS.spike);
+    G.rect(scene, 'door', px(34), px(46), COLORS.door, { radius: px(6), stroke: 0x8a6a00, strokeWidth: 3 });
+    G.particle(scene, 'sparkle', px(10), 0x9df5ff);
     G.gradient(scene, 'cave-bg', 8, CFG.HEIGHT, COLORS.bgTop, COLORS.bg);
   }
 
@@ -147,38 +172,39 @@
       var H = this.scale.height;
       this.add.image(W / 2, H / 2, 'cave-bg').setDisplaySize(W, H);
 
-      MEAMUS.ui.title(this, W / 2, 100, 'CRYSTAL CAVES', 46);
-      MEAMUS.ui.label(this, W / 2, 146, 'Three caves. Every crystal. Beat the clock.', { size: 16 });
+      MEAMUS.ui.title(this, W / 2, H * 0.17, 'CRYSTAL CAVES', 46);
+      MEAMUS.ui.label(this, W / 2, H * 0.25, 'Three caves. Every crystal. Beat the clock.', { size: 16 });
 
       var best = MEAMUS.storage.best(CFG.KEY);
-      MEAMUS.ui.label(this, W / 2, 184, 'BEST  ' + best + '        COINS  ' + MEAMUS.currency.get(), {
+      MEAMUS.ui.label(this, W / 2, H * 0.32, 'BEST  ' + best + '        COINS  ' + MEAMUS.currency.get(), {
         size: 15, mono: true, color: MEAMUS.ui.PALETTE.warn
       });
 
-      MEAMUS.ui.button(this, W / 2, 248, 'START', () => {
-        this.scene.start('GameScene', { level: 0, score: 0, lives: CFG.START_LIVES });
-      }, { width: 220 });
-      MEAMUS.ui.button(this, W / 2, 312, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: 0x25305c });
+      var play = () => this.scene.start('GameScene', { level: 0, score: 0, lives: CFG.START_LIVES });
+      var skip = [];
+      MEAMUS.ui.button(this, W / 2, H * 0.43, 'START', play, { width: 220 });
+      skip.push(MEAMUS.ui.button(this, W / 2, H * 0.54, 'HOW TO PLAY', () => this.showHelp(), { width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk }));
 
       // Level select unlocks as the player progresses.
       var unlocked = Number(MEAMUS.storage.get(CFG.KEY + ':unlocked', 1)) || 1;
-      MEAMUS.ui.label(this, W / 2, 372, 'CAVES UNLOCKED  ' + unlocked + ' / ' + LEVELS.length, {
+      MEAMUS.ui.label(this, W / 2, H * 0.645, 'CAVES UNLOCKED  ' + unlocked + ' / ' + LEVELS.length, {
         size: 14, mono: true
       });
       for (var i = 0; i < LEVELS.length; i += 1) {
         (function (self, idx) {
           var locked = idx + 1 > unlocked;
-          MEAMUS.ui.button(self, W / 2 - 90 + idx * 90, 416, locked ? '🔒' : String(idx + 1), function () {
-            if (locked) { MEAMUS.fx.floatText(self, W / 2, 460, 'Finish the previous cave first', '#c4503f'); return; }
+          skip.push(MEAMUS.ui.button(self, W / 2 - 90 + idx * 90, H * 0.72, locked ? '🔒' : String(idx + 1), function () {
+            if (locked) { MEAMUS.fx.floatText(self, W / 2, H * 0.80, 'Finish the previous cave first', '#c4503f'); return; }
             self.scene.start('GameScene', { level: idx, score: 0, lives: CFG.START_LIVES });
-          }, { width: 70, height: 46, fill: locked ? 0x25305c : 0x6c7bff });
+          }, { width: 70, height: 46, fill: locked ? 0xefe7dc : 0xffb27a, textColor: MEAMUS.ui.PALETTE.softInk }));
         })(this, i);
       }
 
       MEAMUS.attachDebug(this);
-      this.input.keyboard.on('keydown-ENTER', () => {
-        this.scene.start('GameScene', { level: 0, score: 0, lives: CFG.START_LIVES });
-      });
+      MEAMUS.ui.anywhereToStart(this, play, skip);
+
+      // The landing-page demo drops straight into play rather than a menu.
+      if (MEAMUS.attractActive) this.time.delayedCall(700, play);
     }
 
     showHelp() {
@@ -225,7 +251,15 @@
       this.jumpBufferedAt = -Infinity;
       this.invulnUntil = 0;
 
-      this.add.image(W / 2, H / 2, 'cave-bg').setDisplaySize(W, H).setDepth(-20);
+      // The background is scenery, not level geometry: it stays put while the
+      // camera moves across the cave.
+      this.add.image(W / 2, H / 2, 'cave-bg')
+        .setDisplaySize(W, H).setDepth(-20).setScrollFactor(0);
+
+      // Bodies live in the world, which is wider than the view on a phone.
+      // Left at the canvas size, the player would hit an invisible wall a third
+      // of the way into every level.
+      this.physics.world.setBounds(0, 0, CFG.WORLD_W, CFG.WORLD_H);
 
       this.solids = this.physics.add.staticGroup();
       this.platforms = this.physics.add.staticGroup();
@@ -234,6 +268,15 @@
       this.enemies = this.physics.add.group({ collideWorldBounds: true });
 
       this.buildLevel(LEVELS[this.levelIndex]);
+
+      /* The camera follows the player across the cave. On a canvas as wide as
+         the world - any desktop - the bounds equal the view and it never
+         actually scrolls, so this costs nothing there. The deadzone keeps the
+         player off the leading edge, so you can see what you are running into
+         rather than meeting it at the screen edge. */
+      this.cameras.main.setBounds(0, 0, CFG.WORLD_W, CFG.WORLD_H);
+      this.cameras.main.startFollow(this.player, true, 0.14, 0.14);
+      this.cameras.main.setDeadzone(Math.min(W * 0.34, CFG.TILE * 5), H);
 
       this.sparkles = this.add.particles(0, 0, 'sparkle', {
         speed: { min: 40, max: 160 }, lifespan: 480, scale: { start: 0.8, end: 0 },
@@ -296,45 +339,54 @@
           if (ch === '#') {
             this.solids.create(x, y, 'tile-solid');
           } else if (ch === '=') {
-            // Platform texture is 32x12, so the static body matches it exactly.
-            this.platforms.create(x, y - T / 2 + 6, 'tile-platform');
+            // Platform texture is one tile wide by px(12) tall, so the static
+            // body matches it exactly - hence the half-height offset.
+            this.platforms.create(x, y - T / 2 + px(12) / 2, 'tile-platform');
           } else if (ch === '^') {
-            // Spikes sit on the floor of their tile; texture is 32x18.
-            this.spikes.create(x, y + T / 2 - 9, 'spike');
+            // Spikes sit on the floor of their tile.
+            this.spikes.create(x, y + T / 2 - px(18) / 2, 'spike');
           } else if (ch === 'g') {
             var gem = this.gems.create(x, y, 'gem');
             gem.setDepth(5);
-            this.tweens.add({ targets: gem, y: y - 6, yoyo: true, repeat: -1, duration: 900, ease: 'Sine.easeInOut' });
+            this.tweens.add({ targets: gem, y: y - px(6), yoyo: true, repeat: -1, duration: 900, ease: 'Sine.easeInOut' });
             this.gemsLeft += 1;
           } else if (ch === 'e') {
             var e = this.enemies.create(x, y, 'crawler');
             e.setBounce(0, 0).setDepth(6);
-            e.body.setSize(24, 18);
+            e.body.setSize(px(24), px(18));
             e.setData('dir', Math.random() < 0.5 ? -1 : 1);
             e.setVelocityX(e.getData('dir') * CFG.ENEMY_SPEED);
           } else if (ch === 'P') {
             this.player = this.physics.add.sprite(x, y, 'hero').setDepth(10);
-            this.player.body.setSize(20, 28);
+            this.player.body.setSize(px(20), px(28));
             this.player.setCollideWorldBounds(true);
           } else if (ch === 'D') {
-            this.door = this.physics.add.staticImage(x, y - 4, 'door').setDepth(4);
-            this.doorGlow = this.add.circle(x, y - 4, 30, COLORS.door, 0.12).setDepth(3);
+            this.door = this.physics.add.staticImage(x, y - px(4), 'door').setDepth(4);
+            this.doorGlow = this.add.circle(x, y - px(4), px(30), COLORS.door, 0.12).setDepth(3);
           }
         }
       }
-      // Defensive: a malformed map must not crash the scene.
+      // Defensive: a malformed map must not crash the scene. Placed in tiles,
+      // because the tile is 53px on a phone and 31 on a desktop - a literal 64
+      // is two tiles in one place and one in the other.
       if (!this.player) {
-        this.player = this.physics.add.sprite(64, 64, 'hero').setDepth(10);
+        this.player = this.physics.add.sprite(CFG.TILE * 2, CFG.TILE * 2, 'hero').setDepth(10);
         this.player.setCollideWorldBounds(true);
       }
-      if (!this.door) this.door = this.physics.add.staticImage(CFG.WIDTH - 64, CFG.HEIGHT - 96, 'door');
+      // World coordinates, not canvas ones - the canvas is a window onto the
+      // cave now, and on a phone it is a third of its width.
+      if (!this.door) {
+        this.door = this.physics.add.staticImage(CFG.WORLD_W - CFG.TILE * 2, CFG.WORLD_H - CFG.TILE * 3, 'door');
+      }
     }
 
     buildHud() {
       var W = this.scale.width;
-      this.hudScore = MEAMUS.ui.label(this, 12, 10, '', { size: 17, mono: true, color: '#2f2a24', originX: 0, originY: 0 }).setDepth(900);
-      this.hudGems = MEAMUS.ui.label(this, W / 2, 10, '', { size: 17, mono: true, color: '#2e8f96', originY: 0 }).setDepth(900);
-      this.hudTime = MEAMUS.ui.label(this, W - 12, 10, '', { size: 17, mono: true, color: '#c9862b', originX: 1, originY: 0 }).setDepth(900);
+      // Pinned to the screen, not the cave. Without scrollFactor 0 the score
+      // scrolls off the left edge the moment the camera moves.
+      this.hudScore = MEAMUS.ui.label(this, 12, 10, '', { size: 17, mono: true, color: '#2f2a24', originX: 0, originY: 0 }).setDepth(900).setScrollFactor(0);
+      this.hudGems = MEAMUS.ui.label(this, W / 2, 10, '', { size: 17, mono: true, color: '#2e8f96', originY: 0 }).setDepth(900).setScrollFactor(0);
+      this.hudTime = MEAMUS.ui.label(this, W - 12, 10, '', { size: 17, mono: true, color: '#c9862b', originX: 1, originY: 0 }).setDepth(900).setScrollFactor(0);
       this.refreshHud();
     }
 
@@ -447,7 +499,7 @@
         var c = rows[r].indexOf('P');
         if (c !== -1) return { x: c * CFG.TILE + CFG.TILE / 2, y: r * CFG.TILE + CFG.TILE / 2 };
       }
-      return { x: 64, y: 64 };
+      return { x: CFG.TILE * 2, y: CFG.TILE * 2 };
     }
 
     completeLevel() {
@@ -466,11 +518,15 @@
 
       var W = this.scale.width;
       var H = this.scale.height;
-      MEAMUS.ui.panel(this, W / 2, H / 2, 420, 240).setDepth(1000);
-      MEAMUS.ui.title(this, W / 2, H / 2 - 76, 'CAVE CLEARED', 30).setDepth(1001);
+      // Pinned to the screen and sized to it: a fixed 420 overflowed a 480-wide
+      // portrait canvas, and unpinned it would sit wherever the camera happened
+      // to have stopped.
+      var panelW = Math.min(420, W - 40);
+      MEAMUS.ui.panel(this, W / 2, H / 2, panelW, 240).setDepth(1000).setScrollFactor(0);
+      MEAMUS.ui.title(this, W / 2, H / 2 - 76, 'CAVE CLEARED', 30).setDepth(1001).setScrollFactor(0);
       MEAMUS.ui.label(this, W / 2, H / 2 - 16,
         'TIME BONUS  +' + bonus + '\nSCORE       ' + this.score,
-        { size: 18, mono: true, color: '#2f2a24', lineSpacing: 8 }).setDepth(1001);
+        { size: 18, mono: true, color: '#2f2a24', lineSpacing: 8 }).setDepth(1001).setScrollFactor(0);
 
       var last = this.levelIndex >= LEVELS.length - 1;
       MEAMUS.ui.button(this, W / 2, H / 2 + 72, last ? 'FINISH' : 'NEXT CAVE', () => {
@@ -483,7 +539,7 @@
             level: this.levelIndex + 1, score: this.score, lives: this.lives
           });
         }
-      }, { width: 220 }).setDepth(1001);
+      }, { width: Math.min(220, panelW - 40) }).setDepth(1001).setScrollFactor(0);
     }
 
     cleanup() {
@@ -564,7 +620,7 @@
         this.scene.stop(data.parent);
         this.scene.stop();
         this.scene.start('MenuScene');
-      }, { width: 200, fill: 0x25305c });
+      }, { width: 200, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
     }
   }
 
@@ -581,31 +637,83 @@
       var prevBest = MEAMUS.storage.best(CFG.KEY);
       var best = MEAMUS.storage.best(CFG.KEY, score);
 
-      MEAMUS.ui.title(this, W / 2, 108, data.cleared ? 'ALL CAVES CLEARED' : 'GAME OVER', data.cleared ? 34 : 42);
+      MEAMUS.ui.title(this, W / 2, H * 0.18, data.cleared ? 'ALL CAVES CLEARED' : 'GAME OVER', data.cleared ? 34 : 42);
       if (!data.cleared && data.reason) {
-        MEAMUS.ui.label(this, W / 2, 150, data.reason, { size: 15, color: '#c4503f' });
+        MEAMUS.ui.label(this, W / 2, H * 0.26, data.reason, { size: 15, color: '#c4503f' });
       }
-      MEAMUS.ui.label(this, W / 2, 200,
+      MEAMUS.ui.label(this, W / 2, H * 0.34,
         'SCORE  ' + score + '\nCAVE   ' + ((data.level || 0) + 1) + '\nBEST   ' + best,
         { size: 20, mono: true, color: '#2f2a24', lineSpacing: 8 });
       if (score > prevBest) MEAMUS.sfx.win();
 
-      MEAMUS.ui.button(this, W / 2, 320, 'PLAY AGAIN', () => {
+      MEAMUS.ui.button(this, W / 2, H * 0.54, 'PLAY AGAIN', () => {
         this.scene.start('GameScene', { level: 0, score: 0, lives: CFG.START_LIVES });
       }, { width: 240 });
       // AD HOOK: rewarded video restarts the current cave with the score kept.
       if (!data.cleared) {
-        MEAMUS.ui.button(this, W / 2, 384, 'WATCH AD: RETRY CAVE', () => {
+        MEAMUS.ui.button(this, W / 2, H * 0.65, 'WATCH AD: RETRY CAVE', () => {
           MEAMUS.ads.showRewarded('retry-level',
             () => this.scene.start('GameScene', { level: data.level || 0, score: score, lives: 1 }),
             () => MEAMUS.fx.floatText(this, W / 2, 384, 'No ad available', '#c4503f'));
-        }, { width: 240, fill: 0x25305c });
+        }, { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
       }
-      MEAMUS.ui.button(this, W / 2, 448, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: 0x25305c });
+      MEAMUS.ui.button(this, W / 2, H * 0.76, 'MENU', () => this.scene.start('MenuScene'), { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       if (MEAMUS.ads.countRun()) MEAMUS.ads.showInterstitial('game-over');
     }
   }
+
+
+  /* The levels are hand-authored 25x18 tile grids - a 1.39 shape. A phone is
+     0.46. Forcing the whole grid into that shape under Scale.FIT put the game
+     in a band across the middle of the screen: measured, 33% of an iPhone.
+     Clamping the aspect only moved the problem, because 25 columns across a
+     narrow canvas is what makes the tiles small.
+
+     So the level no longer has to fit the screen. The tile size is taken from
+     the HEIGHT, which fills the phone vertically, and the camera scrolls
+     across the level - which is what a platformer does anyway. Same measure,
+     same devices: 92% of an iPhone, 99% of an iPad, and desktop unchanged at
+     94% because a wide canvas still shows all 25 columns and never scrolls. */
+  var VIEW = MEAMUS.viewport(800, 576, { minAspect: 0.5, maxAspect: 1.8 });
+
+  CFG.TILE = Math.max(16, Math.floor(VIEW.height / CFG.ROWS));
+  // The world is the grid. Tile placement needs no centring offset.
+  CFG.WORLD_W = CFG.COLS * CFG.TILE;
+  CFG.WORLD_H = CFG.ROWS * CFG.TILE;
+
+  /* Retune the physics for the tile size we actually got.
+
+     The tile is now 53px on a phone and 31px on a desktop, where before it was
+     27 and 31. The speeds are in pixels per second, so leaving them alone made
+     the phone version a different game: measured, the player crossed 134px in
+     four seconds against the desktop's 656, and - worse - a 520 jump over 53px
+     tiles clears 2.3 tiles where the levels are authored for 3.8. Jumps the
+     caves require simply could not be made.
+
+     Scaling the velocities AND the gravity by the same factor fixes both. The
+     apex is v²/2g, so a common factor k gives k·v²/2kg = k × the old apex in
+     pixels - which is exactly one tile-height's worth more, so the jump clears
+     the same number of tiles everywhere. Time to apex is v/g, unchanged, so it
+     still feels the same. Distances stay constant in tiles; only the pixels
+     move. */
+  var K = CFG.TILE / CFG.DESIGN_TILE;
+  CFG.GRAVITY = Math.round(CFG.GRAVITY * K);
+  CFG.RUN_SPEED = Math.round(CFG.RUN_SPEED * K);
+  CFG.JUMP_VELOCITY = Math.round(CFG.JUMP_VELOCITY * K);
+  CFG.ENEMY_SPEED = Math.round(CFG.ENEMY_SPEED * K);
+  CFG.ENEMY_STOMP_BOUNCE = Math.round(CFG.ENEMY_STOMP_BOUNCE * K);
+
+  /* Second pass, now that the world size is known: the canvas is never bigger
+     than the world it looks at. Otherwise a wide desktop leaves dead space to
+     the right of the level that the camera cannot scroll into. This also
+     re-registers the terms the resize handler recomputes with, so rotating a
+     phone re-fits against the same clamp. */
+  VIEW = MEAMUS.viewport(800, 576, {
+    minAspect: 0.5, maxAspect: 1.8, maxWidth: CFG.WORLD_W, maxHeight: CFG.WORLD_H
+  });
+  CFG.WIDTH = VIEW.width;
+  CFG.HEIGHT = VIEW.height;
 
   /* --- boot -------------------------------------------------------------- */
   MEAMUS.boot({

@@ -99,8 +99,10 @@ for (const template of loaded) {
   if (js.split('\n').length > 2000) problems.push(`${js.split('\n').length} lines (guideline is <= 2000)`);
   if (!/localStorage|MEAMUS\.storage/.test(js)) problems.push('no score persistence');
 
-  // The bundle must not reach for anything but the pinned Phaser build.
+  // The bundle must not reach for anything but the pinned Phaser build, and it
+  // must prefer our own copy so a blocked CDN can never kill the game.
   const html = bundler.bundle(spec);
+  if (html.indexOf('src="/vendor/phaser.min.js"') === -1) problems.push('Phaser is not served locally');
   const external = [...html.matchAll(/(?:src|href)="(https?:\/\/[^"]+)"/g)].map((m) => m[1]);
   for (const url of external) {
     if (!url.includes('cdn.jsdelivr.net/npm/phaser')) problems.push(`external asset: ${url}`);

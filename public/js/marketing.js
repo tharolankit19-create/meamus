@@ -40,11 +40,7 @@ export function siteNav(active) {
       link('Pricing', '#/pricing', 'pricing'),
       link('Docs', '#/docs', 'docs')),
     el('span', { class: 'grow' }),
-    state.user && state.user.isGuest
-      ? el('button', { class: 'btn ghost', onClick: () => { location.hash = '#/dashboard'; } },
-        icon('grid', 'sm'), 'My games')
-      : null,
-    state.user && !state.user.isGuest
+    state.user
       ? el('button', { class: 'btn primary', onClick: () => { location.hash = '#/dashboard'; } },
         icon('grid', 'sm'), 'Dashboard')
       : accountsOff()
@@ -57,7 +53,7 @@ export function siteNav(active) {
           el('button', {
             class: 'btn primary',
             onClick: () => promptSignup()
-          }, state.user && state.user.isGuest ? 'Save my work' : 'Sign up free')));
+          }, 'Sign up free')));
 }
 
 export function siteFooter() {
@@ -161,7 +157,7 @@ function templateCard(template, gated) {
         el('button', {
           class: 'btn sm',
           onClick: () => {
-            if (!state.user || state.user.isGuest) {
+            if (!state.user) {
               if (!state.user) { promptSignup('Create a free account to remix a template'); return; }
             }
             location.hash = '#/dashboard';
@@ -178,14 +174,16 @@ function templateCard(template, gated) {
 
 /* --- Pricing -------------------------------------------------------------- */
 export async function renderMarketingPricing(host) {
-  const grid = el('div', { class: 'grid c2', style: { maxWidth: '740px' } },
-    el('div', { class: 'card' }, el('div', { class: 'skeleton', style: { height: '220px' } })),
-    el('div', { class: 'card' }, el('div', { class: 'skeleton', style: { height: '220px' } })));
+  const grid = el('div', { class: 'grid c3', style: { maxWidth: '1000px' } },
+    el('div', { class: 'card' }, el('div', { class: 'skeleton', style: { height: '260px' } })),
+    el('div', { class: 'card' }, el('div', { class: 'skeleton', style: { height: '260px' } })),
+    el('div', { class: 'card' }, el('div', { class: 'skeleton', style: { height: '260px' } })));
 
   marketingPage(host, {
     active: 'pricing',
     title: 'Pricing',
-    lede: 'Generate for free. Pay when you want to ship to the Play Store.',
+    lede: 'Every account starts with free credits. A new game costs 20, a change costs 10 — ' +
+      'so the free grant builds about ten games before you need a plan.',
     body: grid
   });
 
@@ -197,15 +195,21 @@ export async function renderMarketingPricing(host) {
     },
     el('div', { class: 'spread' },
       el('h2', { style: { fontSize: '18px', margin: 0 } }, plan.name),
-      plan.id === 'pro' ? el('span', { class: 'tag orange' }, 'Most popular') : null),
-    el('div', { style: { fontSize: '34px', fontWeight: '650', letterSpacing: '-0.03em', margin: '10px 0 4px' } },
+      plan.id === 'starter' ? el('span', { class: 'tag orange' }, 'Most popular') : null,
+      plan.apk ? el('span', { class: 'tag green' }, 'APK export') : null),
+    el('div', { style: { fontSize: '34px', fontWeight: '650', letterSpacing: '-0.03em', margin: '10px 0 2px' } },
       plan.price === 0 ? 'Free' : `$${plan.price}`,
       plan.price ? el('span', { class: 'faint', style: { fontSize: '14px', fontWeight: '500' } }, ` / ${plan.interval}`) : null),
-    el('ul', { class: 'ticks', style: { margin: '16px 0 20px' } }, plan.features.map((f) => el('li', {}, f))),
+    // The number people are actually buying, stated before the feature list.
+    el('div', { class: 'muted small', style: { margin: '0 0 8px' } },
+      plan.credits
+        ? `${plan.credits.toLocaleString()} credits a month`
+        : 'Credits you get on sign-up'),
+    el('ul', { class: 'ticks', style: { margin: '14px 0 20px' } }, plan.features.map((f) => el('li', {}, f))),
     el('button', {
-      class: `btn block ${plan.id === 'pro' ? 'primary' : ''}`,
+      class: `btn block ${plan.id === 'starter' ? 'primary' : ''}`,
       onClick: () => promptSignup()
-    }, plan.id === 'pro' ? 'Start with Pro' : 'Start free'))));
+    }, plan.price === 0 ? 'Start free' : `Get ${plan.name}`))));
   } catch (err) {
     grid.replaceChildren(el('p', { class: 'form-error' }, err.message));
   }

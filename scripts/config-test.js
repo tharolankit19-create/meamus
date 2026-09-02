@@ -96,19 +96,25 @@ check('durable storage means an account is required', () => {
   }
 });
 
-check('no durable storage opens access instead of leaving a dead site', () => {
-  // Requiring a login that cannot be completed locks everyone out; the app
-  // degrades to usable-without-accounts until storage is configured.
+check('no durable storage reports itself unconfigured rather than opening up', () => {
+  // This used to open the anonymous path so the site was not dead. That turned
+  // out worse than dead: a sign-up dialog offering free credits that errored on
+  // submit, and a model key anyone could spend. It now says what is missing.
   loadConfig({});
   const db = require('../server/db');
   const access = require('../server/access');
   const original = Object.getOwnPropertyDescriptor(db, 'durable');
   Object.defineProperty(db, 'durable', { value: false, configurable: true });
   try {
-    assert.strictEqual(access.openAccess(), true, 'the app would be unusable otherwise');
-    assert.strictEqual(access.templateAccess(), 'open');
+    assert.strictEqual(access.openAccess(), false, 'an unconfigured deployment opened itself up');
+    assert.strictEqual(access.templateAccess(), 'gated');
     assert.strictEqual(access.accountsAvailable(), false);
-    assert.strictEqual(access.describe().auto, true);
+
+    const described = access.describe();
+    assert.strictEqual(described.setupRequired, true, 'the deployment does not admit it is unconfigured');
+    const keys = described.setupMissing.map((m) => m.key);
+    assert.ok(keys.includes('SUPABASE_URL'), 'the fix is not named');
+    assert.ok(keys.includes('SUPABASE_SERVICE_ROLE_KEY'));
   } finally {
     if (original) Object.defineProperty(db, 'durable', original); else delete db.durable;
   }

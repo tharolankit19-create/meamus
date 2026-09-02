@@ -94,28 +94,30 @@
       this.add.image(W / 2, H / 2, 'space-bg').setDisplaySize(W, H);
       this.starfield = createStarfield(this, 40);
 
-      MEAMUS.ui.title(this, W / 2, 110, 'ASTRO SALVAGE', 48);
-      MEAMUS.ui.label(this, W / 2, 158, 'Blast the belt. Bank the salvage. Do not get hit.', { size: 16 });
+      MEAMUS.ui.title(this, W / 2, H * 0.18, 'ASTRO SALVAGE', 48);
+      MEAMUS.ui.label(this, W / 2, H * 0.26, 'Blast the belt. Bank the salvage. Do not get hit.', { size: 16 });
 
       var best = MEAMUS.storage.best(CFG.KEY);
-      MEAMUS.ui.label(this, W / 2, 196, 'BEST  ' + best + '        COINS  ' + MEAMUS.currency.get(), {
+      MEAMUS.ui.label(this, W / 2, H * 0.33, 'BEST  ' + best + '        COINS  ' + MEAMUS.currency.get(), {
         size: 15, mono: true, color: MEAMUS.ui.PALETTE.warn
       });
 
-      MEAMUS.ui.button(this, W / 2, 268, 'PLAY', () => this.scene.start('GameScene'), { width: 220 });
-      MEAMUS.ui.button(this, W / 2, 332, 'HOW TO PLAY', () => this.showHelp(), {
-        width: 220, fill: 0x1d2748
+      var play = () => this.scene.start('GameScene');
+      MEAMUS.ui.button(this, W / 2, H * 0.45, 'PLAY', play, { width: 220 });
+      var help = MEAMUS.ui.button(this, W / 2, H * 0.56, 'HOW TO PLAY', () => this.showHelp(), {
+        width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk
       });
       // SHOP HOOK: coins collected in-run buy hull skins / bullet colours.
-      MEAMUS.ui.button(this, W / 2, 396, 'SHOP  (soon)', () => {
-        MEAMUS.fx.floatText(this, W / 2, 396, 'Shop coming soon', '#7d7469');
-      }, { width: 220, fill: 0x1d2748 });
+      var shop = MEAMUS.ui.button(this, W / 2, H * 0.67, 'SHOP  (soon)', () => {
+        MEAMUS.fx.floatText(this, W / 2, H * 0.67, 'Shop coming soon', '#7d7469');
+      }, { width: 220, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
       MEAMUS.ui.bannerSlot(this, 'bottom');
       MEAMUS.attachDebug(this);
 
-      this.input.keyboard.on('keydown-ENTER', () => this.scene.start('GameScene'));
-      this.input.keyboard.on('keydown-SPACE', () => this.scene.start('GameScene'));
+      // Tapping the artwork or hitting any key starts the run too, so a missed
+      // button never reads as a dead game.
+      MEAMUS.ui.anywhereToStart(this, play, [help, shop]);
 
       // The landing-page demo drops straight into play rather than a menu.
       if (MEAMUS.attractActive) this.time.delayedCall(700, () => this.scene.start('GameScene'));
@@ -597,7 +599,7 @@
         this.scene.stop(data.parent);
         this.scene.stop();
         this.scene.start('MenuScene');
-      }, { width: 200, fill: 0x1d2748 });
+      }, { width: 200, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
     }
   }
 
@@ -618,23 +620,23 @@
       var best = MEAMUS.storage.best(CFG.KEY, score);
       var isRecord = score > prevBest;
 
-      MEAMUS.ui.title(this, W / 2, 108, isRecord ? 'NEW RECORD!' : 'RUN OVER', 40);
-      MEAMUS.ui.label(this, W / 2, 172, 'SCORE  ' + score + '\nWAVE   ' + (data.wave || 1) + '\nBEST   ' + best, {
+      MEAMUS.ui.title(this, W / 2, H * 0.18, isRecord ? 'NEW RECORD!' : 'RUN OVER', 40);
+      MEAMUS.ui.label(this, W / 2, H * 0.30, 'SCORE  ' + score + '\nWAVE   ' + (data.wave || 1) + '\nBEST   ' + best, {
         size: 20, mono: true, color: '#2f2a24', lineSpacing: 8
       });
       if (isRecord) MEAMUS.sfx.win();
 
-      MEAMUS.ui.button(this, W / 2, 300, 'PLAY AGAIN', () => this.scene.start('GameScene'), { width: 240 });
+      MEAMUS.ui.button(this, W / 2, H * 0.50, 'PLAY AGAIN', () => this.scene.start('GameScene'), { width: 240 });
 
       // AD HOOK: rewarded video for a revive. Denied while no SDK is wired in.
-      MEAMUS.ui.button(this, W / 2, 364, 'WATCH AD: +1 LIFE', () => {
+      MEAMUS.ui.button(this, W / 2, H * 0.61, 'WATCH AD: +1 LIFE', () => {
         MEAMUS.ads.showRewarded('revive',
           () => this.scene.start('GameScene'),
-          () => MEAMUS.fx.floatText(this, W / 2, 364, 'No ad available', '#c4503f'));
-      }, { width: 240, fill: 0x1d2748 });
+          () => MEAMUS.fx.floatText(this, W / 2, H * 0.61, 'No ad available', '#c4503f'));
+      }, { width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk });
 
-      MEAMUS.ui.button(this, W / 2, 428, 'MENU', () => this.scene.start('MenuScene'), {
-        width: 240, fill: 0x1d2748
+      MEAMUS.ui.button(this, W / 2, H * 0.72, 'MENU', () => this.scene.start('MenuScene'), {
+        width: 240, fill: MEAMUS.ui.PALETTE.soft, textColor: MEAMUS.ui.PALETTE.softInk
       });
 
       // AD HOOK: interstitial every N runs.
@@ -677,6 +679,14 @@
       if (s.y > height + 4) s.y = -4;
     }
   }
+
+
+  /* Size the canvas to the screen it is on, keeping the tuned pixel budget.
+     A fixed 4:3 canvas left a phone showing the game in a band with two
+     thirds of the display empty. */
+  var VIEW = MEAMUS.viewport(800, 600);
+  CFG.WIDTH = VIEW.width;
+  CFG.HEIGHT = VIEW.height;
 
   /* --- boot -------------------------------------------------------------- */
   MEAMUS.boot({

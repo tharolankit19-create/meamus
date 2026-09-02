@@ -15,6 +15,7 @@ const access = require('./access');
 const bundler = require('./services/bundler');
 const templates = require('./services/templates');
 const { PLANS } = require('./routes/billing.routes');
+const envAuditor = require('./env-audit');
 
 const app = express();
 
@@ -59,6 +60,8 @@ app.use('/api', middleware.rateLimit());
 
 /* --- API ----------------------------------------------------------------- */
 app.get('/api/status', (req, res) => {
+  // Recomputed per request so a redeploy is reflected without a restart.
+  const envAudit = envAuditor.audit();
   res.json({
     service: 'meamus',
     version: require('../package.json').version,
@@ -76,24 +79,43 @@ app.get('/api/status', (req, res) => {
     ...access.describe(),
     unlimited: config.quotas.unlimited,
     quotas: config.quotas,
+    credits: {
+      enabled: config.credits.enabled,
+      signupGrant: config.credits.signupGrant,
+      costs: { create: config.credits.costCreate, iterate: config.credits.costIterate }
+    },
     billingProvider: config.billing.provider,
-    plans: PLANS.map((p) => ({ id: p.id, name: p.name, price: p.price })),
+    plans: PLANS.map((p) => ({
+      id: p.id, name: p.name, price: p.price, credits: p.credits || 0, apk: Boolean(p.apk)
+    })),
     // Names only, never values. A key set under the wrong name - or on the
     // wrong Vercel environment - is invisible otherwise, and looks exactly
     // like a key that was never added.
-    envSeen: [
-      'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'ANTHROPIC_API_KEY',
-      'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'JWT_SECRET',
-      'OPEN_ACCESS', 'TEMPLATE_ACCESS', 'UNLIMITED_GENERATIONS', 'NODE_ENV'
-    ].filter((name) => (process.env[name] || '').trim().length > 0),
-    envUnexpected: Object.keys(process.env)
-      .filter((name) => /OPENROUTER|OPEN_ROUTER|SUPABASE|ANTHROPIC/i.test(name))
-      .filter((name) => ![
-        'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'OPENROUTER_BASE_URL',
-        'OPENROUTER_REFERER', 'OPENROUTER_TITLE', 'ANTHROPIC_API_KEY',
-        'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL',
-        'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'
-      ].includes(name)),
+    // Which deployment is answering. Env vars set on the wrong Vercel
+    // environment, or set after the last deploy, are invisible otherwise and
+    // look exactly like vars that were never added.
+    // Recomputed per request, so a redeploy is reflected without a restart.
+    deployment: {
+      vercelEnv: process.env.VERCEL_ENV || null,          // production | preview | development
+      branch: process.env.VERCEL_GIT_COMMIT_REF || null,
+      commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || null,
+      region: process.env.VERCEL_REGION || null,
+      envCount: envAudit.count
+    },
+    // Names only, never values. A key set under the wrong name - or on the
+    // wrong Vercel environment - is invisible otherwise, and looks exactly
+    // like a key that was never added.
+    envSeen: envAudit.seen,
+    // Names that look like a near miss for one the app reads. A misspelling is
+    // the one cause of "I set it and nothing happened" that no substring
+    // search would ever surface.
+    envSuspicious: envAudit.suspicious,
+    // Present but blank. Bulk-importing a .env.example creates every name in
+    // it, and its secrets are deliberately blank - so the dashboard looks
+    // complete while the server sees nothing.
+    envEmpty: envAudit.empty,
+    // Values that are almost certainly an example-file default left in place.
+    envRisky: envAudit.risky,
     warnings: [
       ...(config.aiEnabled ? [] : ['OPENROUTER_API_KEY is not set - generation runs in template mode.']),
       ...(config.testMode ? ['TEST_MODE is on - anyone can generate without signing up.'] : []),
@@ -103,10 +125,12 @@ app.get('/api/status', (req, res) => {
       ...(db.durable === false
         ? ['No durable storage, so accounts are off and the app is running open to everyone. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to turn accounts back on.']
         : []),
-      // Unlimited behind a login is a plan; unlimited with no login at all is
-      // an open door to the API key.
-      ...(config.quotas.unlimited && config.aiEnabled && access.openAccess()
-        ? ['OPEN_ACCESS and UNLIMITED_GENERATIONS are both on with a model key set - anyone can spend your API credits without signing up.']
+      // Open access with a model key means strangers reach the API key. Credits
+      // bound how far each one gets, so the warning says which case this is.
+      ...(config.aiEnabled && access.openAccess()
+        ? [config.credits.enabled
+          ? `Access is open with a model key set. Credits cap each anonymous visitor at ${Math.floor(Math.round(config.credits.signupGrant / 4) / config.credits.costCreate)} generations, but a new session gets a fresh grant. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to require accounts.`
+          : 'Access is open with a model key set and credits are off - anyone can spend your API credits without signing up.']
         : []),
       // Settings that were corrected at boot. Silent correction is how a
       // rate limit of 0 turns into "the whole site is down" with no clue why.
@@ -119,6 +143,7 @@ app.get('/api/status', (req, res) => {
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api', require('./routes/templates.routes'));
 app.use('/api', require('./routes/games.routes'));
+app.use('/api', require('./routes/build.routes'));
 app.use('/api', require('./routes/uploads.routes'));
 app.use('/api', require('./routes/billing.routes').router);
 

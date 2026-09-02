@@ -12,6 +12,7 @@
 const express = require('express');
 const db = require('../db');
 const config = require('../config');
+const credits = require('../credits');
 const { requireAuth, publicUser, asyncRoute } = require('../middleware');
 
 const router = express.Router();
@@ -23,27 +24,44 @@ const PLANS = [
     price: 0,
     currency: 'USD',
     interval: 'month',
+    credits: 0,
+    apk: false,
     features: [
-      config.quotas.unlimited
-        ? 'Unlimited game generations'
-        : `${config.quotas.free} generations per day`,
+      `${config.credits.signupGrant} credits when you sign up`,
+      `${config.credits.costCreate} credits per new game, ${config.credits.costIterate} per change`,
       'The full template library, playable and remixable',
       'Unlimited plays and edits of saved games',
-      'Standalone HTML export',
-      'GameSpec JSON export'
+      'Standalone HTML export'
+    ]
+  },
+  {
+    id: 'starter',
+    name: 'Starter',
+    price: 29,
+    currency: 'USD',
+    interval: 'month',
+    credits: 1000,
+    apk: false,
+    features: [
+      '1,000 credits every month',
+      'Roughly 50 new games, or 100 changes',
+      'Credits roll over while your plan is active',
+      'Priority generation queue',
+      'Standalone HTML and GameSpec JSON export'
     ]
   },
   {
     id: 'pro',
     name: 'Pro',
-    price: 19,
+    price: 59,
     currency: 'USD',
     interval: 'month',
+    credits: 2500,
+    apk: true,
     features: [
-      config.quotas.unlimited
-        ? 'Everything in Free'
-        : `${config.quotas.pro} generations per day`,
+      '2,500 credits every month',
       'Android APK export (signed Cordova project)',
+      'Roughly 125 new games, or 250 changes',
       'Priority generation queue',
       'Commercial use licence'
     ]
@@ -55,12 +73,6 @@ router.get('/billing/plans', (req, res) => {
 });
 
 router.post('/billing/checkout', requireAuth, asyncRoute(async (req, res) => {
-  if (req.user.isGuest) {
-    return res.status(402).json({
-      error: 'Create an account before upgrading',
-      code: 'signup_required'
-    });
-  }
   const planId = String(req.body.plan || 'pro');
   const plan = PLANS.find((p) => p.id === planId);
   if (!plan) return res.status(400).json({ error: 'Unknown plan', code: 'unknown_plan' });
@@ -85,11 +97,14 @@ router.post('/billing/checkout', requireAuth, asyncRoute(async (req, res) => {
     plan: plan.id,
     billing: { provider: 'stub', plan: plan.id, since: new Date().toISOString() }
   });
+  // Credits accumulate. Someone who upgrades mid-month keeps what they had.
+  if (plan.credits) credits.grant(updated, plan.credits);
 
   res.json({
     checkoutUrl: null,
     upgraded: true,
     provider: 'stub',
+    granted: plan.credits || 0,
     user: publicUser(updated),
     note: 'Stub billing upgraded this account instantly. Set BILLING_PROVIDER=stripe for real payments.'
   });
