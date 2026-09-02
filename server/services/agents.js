@@ -123,6 +123,15 @@ function tally() {
   };
 }
 
+/* Headroom for the two agents that answer with a small JSON document.
+
+   These were 2000, which is generous for a brief of a dozen fields - until the
+   default model became one that thinks first. Reasoning is off now (see
+   llm.js), but a tight ceiling has exactly one failure mode and it is a
+   truncated document that reads as the model being incapable, so there is no
+   reason to sail close to it for a few hundred tokens. */
+const BRIEF_TOKENS = 8000;
+
 /** A JSON-answering agent. Returns the parsed object plus its usage. */
 async function ask(role, userContent, { maxTokens } = {}) {
   const agent = CREW[role];
@@ -241,7 +250,7 @@ async function buildWithCrew(prompt, opts = {}) {
 
   /* --- 1. Designer -------------------------------------------------------- */
   say('designer', 'design', WORKING_COPY.designer);
-  const design = await ask('designer', `Request: ${prompt}`, { maxTokens: 2000 });
+  const design = await ask('designer', `Request: ${prompt}`, { maxTokens: BRIEF_TOKENS });
   usage.add(design.usage);
   const brief = design.parsed;
   say('designer', 'design', `Brief ready: ${brief.title} — ${brief.pitch}`);
@@ -314,7 +323,7 @@ async function buildWithCrew(prompt, opts = {}) {
   let review = { verdict: 'ship', findings: [], summary: 'Not reviewed.' };
   try {
     say('reviewer', 'review', WORKING_COPY.reviewer);
-    const reviewed = await ask('reviewer', reviewPrompt(brief, spec), { maxTokens: 2000 });
+    const reviewed = await ask('reviewer', reviewPrompt(brief, spec), { maxTokens: BRIEF_TOKENS });
     usage.add(reviewed.usage);
     review = reviewed.parsed || review;
   } catch (err) {
