@@ -755,6 +755,49 @@ new Phaser.Game({ type: Phaser.AUTO, width: 8, height: 6, scene: [GameScene] });
     assert.strictEqual(gone.status, 404);
   });
 
+  await check('one unreadable row does not take out the whole library', async () => {
+    // This is the production failure of 2026-09-01: a row whose spec was null
+    // threw inside the .map() over every game, so /api/games 500'd and the
+    // founder's dashboard showed a red box instead of their twenty working
+    // games. Every shape below has been seen in a real table or is one step
+    // away from one.
+    const old = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const owner = db.find('users', (u) => u.email === 'dev@meamus.test');
+    assert.ok(owner, 'the test account is missing');
+    const seeded = [
+      { id: 'gam_t_stale', prompt: 'stuck', title: 'Stuck', status: 'building', spec: null },
+      { id: 'gam_t_failed', prompt: 'failed', title: 'Failed', status: 'failed', spec: null },
+      { id: 'gam_t_halfspec', prompt: 'half', title: 'Half', status: 'ready', spec: { gameConfig: null, gameCode: null, assets: null } },
+      { id: 'gam_t_notobject', prompt: 'hostile', title: 'Hostile', status: 'ready', spec: 'not an object' }
+    ];
+    for (const row of seeded) {
+      db.insert('games', {
+        userId: owner.id, meta: null, versions: [], messages: [], isPublic: false,
+        createdAt: old, updatedAt: old, ...row
+      });
+    }
+
+    const { status, body } = await request('/api/games', { token });
+    assert.strictEqual(status, 200, 'the list must not 500 on a bad row');
+    const byId = Object.fromEntries(body.games.map((g) => [g.id, g]));
+    for (const row of seeded) {
+      assert.ok(byId[row.id], `${row.id} is missing from the list`);
+      assert.ok(byId[row.id].title, `${row.id} has no title to render`);
+    }
+
+    // A build whose server went away says so, rather than spinning forever.
+    assert.strictEqual(byId.gam_t_stale.status, 'failed');
+    assert.ok(/server restarted/i.test(byId.gam_t_stale.description));
+
+    // And each one can still be opened, which is how it gets deleted.
+    for (const row of seeded) {
+      const one = await request(`/api/games/${row.id}`, { token });
+      assert.strictEqual(one.status, 200, `${row.id} could not be opened`);
+    }
+
+    for (const row of seeded) db.remove('games', row.id);
+  });
+
   await check('unknown API routes return a JSON 404', async () => {
     const { status, body } = await request('/api/nope');
     assert.strictEqual(status, 404);

@@ -42,6 +42,20 @@ function appendMessages(game, ...entries) {
   return messages;
 }
 
+/**
+ * A build in memory does not survive the process, and on a serverless host the
+ * process goes away between requests. So a row left saying "building" long
+ * after anything could still be running is not building - it is a build whose
+ * server went away, and it has to say so rather than spinning forever.
+ */
+const BUILD_STALE_MS = 15 * 60 * 1000;
+
+function staleBuild(game) {
+  if (game.status !== 'building') return false;
+  const at = Date.parse(game.updatedAt || game.createdAt || '');
+  return Number.isFinite(at) && Date.now() - at > BUILD_STALE_MS;
+}
+
 /** List view - the full spec is heavy, so summaries omit gameCode. */
 /**
  * The card shape.
@@ -52,7 +66,9 @@ function appendMessages(game, ...entries) {
  */
 function summarise(game) {
   const spec = game.spec;
-  const status = game.status || (spec ? 'ready' : 'building');
+  const status = staleBuild(game)
+    ? 'failed'
+    : (game.status || (spec ? 'ready' : 'building'));
 
   const base = {
     id: game.id,
@@ -70,7 +86,9 @@ function summarise(game) {
       title: game.title || 'New game',
       genre: null,
       description: status === 'failed'
-        ? (game.error || 'That build did not finish.')
+        ? (game.error || (staleBuild(game)
+          ? 'That build stopped when the server restarted. Send the prompt again.'
+          : 'That build did not finish.'))
         : 'Building…',
       difficulty: null,
       estimatedPlayTime: null,
@@ -81,18 +99,59 @@ function summarise(game) {
     };
   }
 
+  // Defensive reads rather than spec.gameConfig.title. A spec is written by a
+  // model, and a half-written one that got past the validator - or one stored
+  // by an older version of this code - must not be able to throw here: this
+  // function runs inside a .map() over the whole library, so one bad row used
+  // to take out every game the founder owns and leave them a red box where
+  // their dashboard should be.
+  const cfg = spec.gameConfig || {};
+  const code = (spec.gameCode && spec.gameCode.javascript) || '';
+  const sprites = (spec.assets && spec.assets.sprites) || [];
+
   return {
     ...base,
-    title: spec.gameConfig.title,
-    genre: spec.gameConfig.genre,
-    description: spec.gameConfig.description,
-    difficulty: spec.gameConfig.difficulty,
-    estimatedPlayTime: spec.gameConfig.estimatedPlayTime,
+    title: cfg.title || game.title || 'Untitled game',
+    genre: cfg.genre || null,
+    description: cfg.description || '',
+    difficulty: cfg.difficulty || null,
+    estimatedPlayTime: cfg.estimatedPlayTime || null,
     mode: (game.meta && game.meta.mode) || null,
     versionCount: (game.versions || []).length + 1,
-    codeLines: spec.gameCode.javascript.split('\n').length,
-    spriteCount: spec.assets.sprites.length
+    codeLines: code ? code.split('\n').length : 0,
+    spriteCount: sprites.length
   };
+}
+
+/**
+ * summarise() for a list, where one unreadable row must not cost the founder
+ * every other game they own. Whatever is wrong with that row, it becomes a card
+ * that says so and the rest of the library still loads.
+ */
+function summariseSafely(game) {
+  try {
+    return summarise(game);
+  } catch (err) {
+    console.error(`[games] could not summarise ${game && game.id}: ${err.message}`);
+    return {
+      id: (game && game.id) || 'unknown',
+      status: 'failed',
+      prompt: (game && game.prompt) || '',
+      isPublic: false,
+      messageCount: 0,
+      createdAt: game && game.createdAt,
+      updatedAt: game && game.updatedAt,
+      title: (game && game.title) || 'Unreadable game',
+      genre: null,
+      description: 'This game could not be read. Delete it, or open it to see what is there.',
+      difficulty: null,
+      estimatedPlayTime: null,
+      mode: null,
+      versionCount: 0,
+      codeLines: 0,
+      spriteCount: 0
+    };
+  }
 }
 
 /** The one-line summary an assistant turn shows in the chat thread. */
@@ -171,14 +230,14 @@ router.post('/generate', requireAuth, costs('create'), enforceQuota, asyncRoute(
 router.get('/games', requireAuth, (req, res) => {
   const games = db.filter('games', (g) => g.userId === req.user.id)
     .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
-    .map(summarise);
+    .map(summariseSafely);
   res.json({ games, count: games.length });
 });
 
 router.get('/games/:id', requireAuth, (req, res) => {
   const game = ownedGame(req, res);
   if (!game) return;
-  res.json({ game: summarise(game), spec: game.spec, meta: game.meta, messages: game.messages || [] });
+  res.json({ game: summariseSafely(game), spec: game.spec, meta: game.meta, messages: game.messages || [] });
 });
 
 router.patch('/games/:id', requireAuth, asyncRoute(async (req, res) => {
