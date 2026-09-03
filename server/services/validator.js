@@ -25,11 +25,18 @@ const STYLES = ['pixel-art', 'vector', 'realistic', 'minimalist', 'cartoon'];
 const DIFFICULTIES = ['easy', 'medium', 'hard'];
 
 class SpecError extends Error {
-  constructor(message, issues = []) {
+  /**
+   * @param {string} message
+   * @param {string[]} [issues] the spec fields at fault
+   * @param {{line?:number, source?:string}} [detail] where in the generated
+   *        code the problem is, when that is known. The repair prompt quotes it.
+   */
+  constructor(message, issues = [], detail = null) {
     super(message);
     this.name = 'SpecError';
     this.status = 422;
     this.issues = issues;
+    this.detail = detail;
   }
 }
 
@@ -86,13 +93,40 @@ function assertParses(code) {
     new vm.Script(code, { filename: 'game.js' });
   } catch (err) {
     if (err instanceof SyntaxError) {
+      // "does not parse: Invalid or unexpected token" is unactionable - for a
+      // person reading it and for the model being asked to fix it. V8 puts the
+      // position in the stack, so dig it out and quote the line: a repair
+      // prompt that names line 143 and shows it gets a fix; one that says the
+      // code is broken somewhere gets another guess.
+      const where = syntaxErrorSite(err, code);
       throw new SpecError(
-        `The generated code does not parse: ${err.message}`,
-        ['gameCode.javascript']
+        `The generated code does not parse: ${err.message}${where.text}`,
+        ['gameCode.javascript'],
+        { line: where.line, source: where.source }
       );
     }
     throw err;
   }
+}
+
+/**
+ * Pull the offending line out of a V8 SyntaxError.
+ *
+ * The stack's first frame reads `game.js:143`, and the frames above it repeat
+ * the source line and a caret. Both are useful, and neither is on the error
+ * object as a field.
+ */
+function syntaxErrorSite(err, code) {
+  const match = /game\.js:(\d+)/.exec(err.stack || '');
+  if (!match) return { text: '', line: null, source: null };
+
+  const line = Number(match[1]);
+  const source = (code.split('\n')[line - 1] || '').trim().slice(0, 200);
+  return {
+    line,
+    source,
+    text: `\n  at game.js line ${line}: ${source}`
+  };
 }
 
 const str = (v, fallback = '') => (typeof v === 'string' && v.trim() ? v.trim() : fallback);

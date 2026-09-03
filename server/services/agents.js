@@ -132,6 +132,11 @@ function tally() {
    reason to sail close to it for a few hundred tokens. */
 const BRIEF_TOKENS = 8000;
 
+/* How much of a rejected answer to quote back when asking for a fix. A whole
+   game is 30-40k characters and re-sending all of it every round is what turns
+   a repair loop into the most expensive part of a build. */
+const MAX_ECHO_CHARS = 48000;
+
 /** A JSON-answering agent. Returns the parsed object plus its usage. */
 async function ask(role, userContent, { maxTokens } = {}) {
   const agent = CREW[role];
@@ -155,6 +160,126 @@ async function askForSpec(messages) {
   const raw = extractJson(response.text);
   const { spec, issues } = normaliseSpec(raw, { source: 'ai' });
   return { spec, issues, response };
+}
+
+/**
+ * Describe a failure to the model in terms it can act on.
+ *
+ * The difference between "the code does not parse" and "line 143 is
+ * `const x = \u201Chello\u201D;` and those are smart quotes" is the difference
+ * between another guess and a fix.
+ */
+function correctionFor(err) {
+  const site = err.detail && err.detail.line
+    ? `\n\nThe problem is at game.js line ${err.detail.line}:\n    ${err.detail.source}`
+    : '';
+
+  if (/does not parse/i.test(err.message)) {
+    return `That code is not valid JavaScript: ${err.message}${site}\n\n`
+      + 'Return the complete corrected GameSpec JSON. Write plain ASCII JavaScript: '
+      + 'straight quotes only (no “ ” ‘ ’), no smart dashes, no stray backticks, and '
+      + 'no markdown fences inside the code string. Every brace, bracket and paren '
+      + 'must close.';
+  }
+
+  if (/ran out of room|cut off/i.test(err.message)) {
+    return 'Your last answer was cut off before it finished. Return the complete '
+      + 'GameSpec JSON again, but write a SHORTER game - fewer scenes, fewer '
+      + 'mechanics, tighter code - so the whole thing fits in one answer. A small '
+      + 'game that runs beats a large one that arrives half-written.';
+  }
+
+  if (/JSON|unterminated|usable/i.test(err.message)) {
+    return `Your last answer could not be read as JSON: ${err.message}\n\n`
+      + 'Return ONLY the GameSpec JSON object. No prose before or after it, no '
+      + 'markdown fences, no trailing commas.';
+  }
+
+  // A boot failure: the code parsed, but running it threw.
+  return `That build does not run. Booting it threw: ${err.message}${site}\n\n`
+    + 'Return the complete corrected GameSpec JSON. Every scene is constructed and '
+    + 'its create() run, then update() is ticked, and any throw fails the build - so '
+    + 'declare every variable, create a texture before drawing with it, guard '
+    + 'anything nullable in update(), and only call MEAMUS helpers that exist.';
+}
+
+/**
+ * Write the game, and keep writing until it actually runs.
+ *
+ * Bounded by a deadline rather than a small attempt count. "Three tries" is an
+ * arbitrary number that has nothing to do with whether the next try would have
+ * worked; the real limit is how long the founder is willing to wait and how
+ * long the platform will keep the request alive. So it retries as often as it
+ * can inside that window and stops when the window closes.
+ *
+ * Every attempt ends in one of two places: a spec whose code parses AND boots
+ * every scene, or a failure fed back to the model verbatim.
+ */
+async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline }) {
+  const until = deadline || (Date.now() + config.build.budgetMs);
+  const issues = [];
+  let last = null;
+  let attemptNo = 0;
+
+  while (attemptNo < config.build.maxAttempts) {
+    attemptNo += 1;
+
+    // Only start an attempt there is time to finish. Being cut off mid-call
+    // wastes the tokens and tells the founder nothing.
+    if (attemptNo > 1 && Date.now() > until - config.build.attemptReserveMs) {
+      say('coder', 'build', `Out of time after ${attemptNo - 1} attempts`);
+      break;
+    }
+
+    say('coder', 'build', attemptNo === 1
+      ? WORKING_COPY.coder
+      : `Rewriting it (attempt ${attemptNo})`);
+
+    let answer = null;
+    try {
+      const messages = attemptNo === 1 || !last
+        ? [coderMessage.message]
+        : [
+          { role: 'user', content: coderText },
+          { role: 'assistant', content: last.text },
+          { role: 'user', content: correctionFor(last.error) }
+        ];
+
+      const response = await llm.complete({ messages, jsonSchema: true });
+      usage.add(response.usage);
+      answer = response.text;
+
+      // Each of these can throw, and each throw is a retry with the reason.
+      const raw = extractJson(response.text);
+      const { spec, issues: specIssues } = normaliseSpec(raw, { source: 'ai' });
+      say('coder', 'build', `Wrote ${spec.gameCode.javascript.split('\n').length} lines`);
+
+      say('tester', 'test', `${WORKING_COPY.tester} (run 1 of 2)`);
+      const booted = smoke.boot(spec.gameCode.javascript);
+
+      issues.push(...specIssues);
+      return {
+        spec, issues, response, repairs: attemptNo - 1, scenes: booted.scenes.length
+      };
+    } catch (err) {
+      // A transport failure is not the model's fault and there is nothing to
+      // feed back, so it ends the build rather than burning the budget.
+      if (err && err.name === 'LlmError' && !/ran out of room|cut off/i.test(err.message)) throw err;
+
+      // Quote what it actually wrote, so the next attempt is an edit rather
+      // than a restart from nothing. Capped, because a rejected answer is
+      // still most of a game and re-sending all of it every round is what
+      // makes a repair loop cost more than the build.
+      last = { error: err, text: (answer || '(your previous answer)').slice(0, MAX_ECHO_CHARS) };
+      const where = err.detail && err.detail.line ? ` (game.js line ${err.detail.line})` : '';
+      say('improver', 'repair', `Attempt ${attemptNo} failed: ${err.message.slice(0, 120)}${where}`);
+    }
+  }
+
+  const reason = last ? last.error.message : 'no attempt produced a game';
+  const failure = new SpecError(`The game does not run after ${attemptNo} attempts: ${reason}`);
+  failure.attempts = attemptNo;
+  throw failure;
 }
 
 /** The deterministic gate. Not a model, on purpose. */
@@ -280,44 +405,27 @@ async function buildWithCrew(prompt, opts = {}) {
     : ((coderMessage.message.content || []).find((part) => part.type === 'text') || {}).text
       || briefToPrompt(brief, prompt, opts.researchBlock);
 
-  say('coder', 'build', WORKING_COPY.coder);
-  let { spec, issues: specIssues, response } = await askForSpec([coderMessage.message]);
-  usage.add(response.usage);
-  issues.push(...specIssues);
-  say('coder', 'build', `Wrote ${spec.gameCode.javascript.split('\n').length} lines`);
+  /* --- 2b. Write it, and keep writing until it runs ----------------------
+     Every way a build can fail comes back here, not just one of them.
 
-  /* --- 3. Tester, first run ---------------------------------------------- */
-  say('tester', 'test', `${WORKING_COPY.tester} (run 1 of 2)`);
-  let test = runTest(spec, 1);
+     This used to retry only a game that failed to BOOT. A game whose code did
+     not parse, or whose JSON came back malformed, threw straight out of the
+     build with zero retries - which is what a real production run did: three
+     agent steps, then dead at 56 seconds on "does not parse: Invalid or
+     unexpected token", never having tried a second time. The model gets one
+     bad token and the founder gets nothing.
 
-  // A game that will not boot is fixed before anyone reviews its design.
-  let repairs = 0;
-  while (!test.ok && repairs < config.build.maxAttempts - 1) {
-    repairs += 1;
-    say('improver', 'repair', `Run 1 failed: ${test.reason}`);
-    const fixed = await askForSpec([
-      { role: 'user', content: coderText },
-      { role: 'assistant', content: JSON.stringify(spec) },
-      {
-        role: 'user',
-        content: `That build does not run. Booting it threw: ${test.reason}\n\n`
-          + 'Return the complete corrected GameSpec JSON. Every scene is constructed '
-          + 'and its create() run, then update() is ticked, and any throw fails the '
-          + 'build — so declare every variable, create a texture before drawing with '
-          + 'it, guard anything nullable in update(), and only call MEAMUS helpers '
-          + 'that exist.'
-      }
-    ]);
-    usage.add(fixed.response.usage);
-    spec = fixed.spec;
-    issues.push(...fixed.issues);
-    say('tester', 'test', `${WORKING_COPY.tester} (retry ${repairs})`);
-    test = runTest(spec, 1);
-  }
-  if (!test.ok) {
-    throw new SpecError(`The game does not run after ${repairs + 1} attempts: ${test.reason}`);
-  }
-  say('tester', 'test', `Run 1 passed — ${test.scenes} scenes booted`);
+     Now there is one loop over the whole chain - parse the JSON, validate the
+     spec, compile the code, boot every scene - and whichever of those fails,
+     the exact failure goes back to the model and it tries again. */
+  const attempt = await writeUntilItRuns({
+    coderMessage, coderText, say, usage, deadline: opts.deadline
+  });
+  let spec = attempt.spec;
+  issues.push(...attempt.issues);
+  const response = attempt.response;
+  const repairs = attempt.repairs;
+  say('tester', 'test', `Run 1 passed — ${attempt.scenes} scenes booted`);
 
   /* --- 4. Reviewer -------------------------------------------------------- */
   let review = { verdict: 'ship', findings: [], summary: 'Not reviewed.' };
