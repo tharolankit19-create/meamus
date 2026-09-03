@@ -81,6 +81,8 @@ const FAKE_SPEC = {
 };
 
 const captured = [];
+// Flipped by the truncation test: makes the next reply stop at the ceiling.
+let truncateNext = false;
 
 const server = http.createServer((req, res) => {
   let body = '';
@@ -103,9 +105,16 @@ const server = http.createServer((req, res) => {
 
     const parsed = JSON.parse(body || '{}');
     captured.push({ url: req.url, headers: req.headers, body: parsed });
+    const cut = truncateNext;
     res.end(JSON.stringify({
       id: 'gen-test', model: parsed.model,
-      choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(FAKE_SPEC) } }],
+      choices: [{
+        finish_reason: cut ? 'length' : 'stop',
+        message: {
+          role: 'assistant',
+          content: cut ? JSON.stringify(FAKE_SPEC).slice(0, 400) : JSON.stringify(FAKE_SPEC)
+        }
+      }],
       usage: { prompt_tokens: 1200, completion_tokens: 4300, total_tokens: 5500 }
     }));
   });
@@ -285,6 +294,34 @@ async function check(name, fn) {
     assert.ok(!captured[0].body.messages[1].content.includes('boss at wave 4'),
       'the designer was sent the attachments too');
     config.build.crew = crewDefault;
+  });
+
+  await check('reasoning is switched off, so it cannot eat the answer', async () => {
+    captured.length = 0;
+    await generator.generate('dodge blocks', { allowFallback: false });
+    for (const call of captured) {
+      assert.deepStrictEqual(call.body.reasoning, { enabled: false },
+        'a reasoning model would spend max_tokens thinking before writing a word');
+    }
+  });
+
+  await check('a truncated reply says so instead of failing as bad JSON', async () => {
+    // Three production builds died on this: a reply cut off at the token
+    // ceiling surfaced as "unterminated JSON object" and "does not parse:
+    // Unexpected end of input", which both point at the model rather than at
+    // max_tokens.
+    truncateNext = true;
+    let message = '';
+    try {
+      await generator.generate('dodge blocks', { allowFallback: false });
+      assert.fail('a truncated reply was accepted');
+    } catch (err) {
+      message = err.message;
+    } finally {
+      truncateNext = false;
+    }
+    assert.ok(/ran out of room|cut off/i.test(message), `unhelpful truncation error: ${message}`);
+    assert.ok(/LLM_MAX_TOKENS/.test(message), 'the error does not name the setting to change');
   });
 
   await check('an unknown model falls back to safe assumptions', async () => {

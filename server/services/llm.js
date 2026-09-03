@@ -230,6 +230,21 @@ async function callOpenRouter({ messages, system, maxTokens, jsonSchema }) {
   };
   if (jsonSchema) payload.response_format = RESPONSE_FORMAT;
 
+  /* Reasoning tokens are spent out of max_tokens, before a single character of
+     the answer is written.
+
+     This cost three failed builds in production the day the default model
+     changed to a reasoning one: the designer's 2000-token budget went entirely
+     on thinking and returned an unterminated JSON object, and the coder's game
+     was cut off mid-function with "does not parse: Unexpected end of input".
+     Neither error mentions reasoning, which is what made it worth a comment.
+
+     These calls do not benefit from it. The answer is a JSON document whose
+     shape is already pinned by a schema, and the thinking is discarded. So it
+     is off unless someone deliberately turns it back on. */
+  if (config.llm.reasoning === false) payload.reasoning = { enabled: false };
+  else if (config.llm.reasoning) payload.reasoning = { effort: config.llm.reasoning };
+
   let response = await post(`${config.llm.baseUrl}/chat/completions`, {
     authorization: `Bearer ${config.llm.apiKey}`,
     // OpenRouter uses these for attribution on its dashboard and leaderboards.
@@ -265,6 +280,22 @@ async function callOpenRouter({ messages, system, maxTokens, jsonSchema }) {
     : (choice.message.content || []).filter((p) => p.type === 'text').map((p) => p.text).join('');
 
   if (!text.trim()) throw new LlmError('The model returned an empty response', 502);
+
+  /* A reply that hit the ceiling is a truncated one, and every error it causes
+     downstream is a lie about the real problem: half a JSON document reads as
+     "unterminated JSON object", and half a game reads as "does not parse:
+     Unexpected end of input". Both send you looking at the model's competence
+     instead of at max_tokens. Say it here, where it is still a fact. */
+  if (choice.finish_reason === 'length') {
+    const asked = payload.max_tokens;
+    const used = (payloadBody.usage && payloadBody.usage.completion_tokens) || asked;
+    throw new LlmError(
+      `The model ran out of room and its answer was cut off (${used} of ${asked} output tokens used). `
+      + 'Raise LLM_MAX_TOKENS, or use a model with more output room.',
+      502,
+      { truncated: true, maxTokens: asked }
+    );
+  }
 
   return {
     text,

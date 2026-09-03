@@ -108,6 +108,17 @@ function buildLlmConfig() {
     baseUrl: (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, ''),
     maxTokens: positive('LLM_MAX_TOKENS', process.env.LLM_MAX_TOKENS, 32000),
     temperature: num(process.env.LLM_TEMPERATURE, 0.6),
+    /**
+     * Reasoning, on models that have it. Off by default, because reasoning
+     * tokens come out of max_tokens before the answer is written and these
+     * calls return a schema-pinned JSON document whose thinking is thrown
+     * away - so it buys nothing and costs the end of the game.
+     * Set LLM_REASONING to low, medium or high to turn it back on.
+     */
+    reasoning: (() => {
+      const raw = (process.env.LLM_REASONING || '').trim().toLowerCase();
+      return ['low', 'medium', 'high'].includes(raw) ? raw : false;
+    })(),
     timeoutMs: positive('LLM_TIMEOUT_MS', process.env.LLM_TIMEOUT_MS, 300000),
     referer: process.env.OPENROUTER_REFERER || 'https://meamus.app',
     title: process.env.OPENROUTER_TITLE || 'meamus'
