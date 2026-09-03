@@ -343,15 +343,47 @@ async function generate(prompt, opts = {}) {
     };
     return result;
   } catch (err) {
-    // Deliberately no silent template substitution.
-    //
-    // This used to serve a bundled template whenever the model call failed. A
-    // request for a Ludo game came back as the space-shooter template retitled
-    // "A Ludo" - the wrong game, presented as though it were the right one.
-    // Failing honestly is better than shipping something nobody asked for.
     if (!allowFallback) throw err;
     console.error('[generator] AI generation failed:', err.message);
-    throw err;
+
+    /* A build must not end with nothing to play.
+     *
+     * The rule here used to be "never substitute a template", written after a
+     * request for Ludo came back as the space-shooter template retitled
+     * "A Ludo" - the wrong game, presented as the right one. That rule was
+     * about the LIE, not about the template: the problem was that nothing on
+     * screen said a substitution had happened.
+     *
+     * So the substitution is back and the lie is not. When the model cannot
+     * produce a game that runs, the closest template ships instead, marked
+     * `rescued` with the real reason attached - the chat says what happened,
+     * the card says it, and the founder can send the prompt again. A playable
+     * game they can see is honestly labelled beats a red error box.
+     */
+    const rescue = templateGenerate(prompt, { reason: 'ai-failed', attachments });
+
+    // Keep the template's own name. templateGenerate titles a game after the
+    // prompt, which is right when a template is what was asked for and wrong
+    // here: a space shooter listed as "A Ludo Board" is the original lie in a
+    // smaller font. It is called what it is, and the chat says why it is here.
+    const original = templates.get(rescue.meta.templateId);
+    if (original) rescue.spec.gameConfig.title = original.spec.gameConfig.title;
+
+    rescue.meta.rescued = true;
+    rescue.meta.rescuedFrom = err.message;
+    rescue.meta.issues = [
+      `The model could not produce a game that runs (${err.message}). `
+      + `This is the ${rescue.meta.templateId} template adapted to your prompt, so you have `
+      + 'something playable - send the prompt again, or reword it, for a fresh attempt.'
+    ];
+    if (opts.onStep) {
+      opts.onStep({
+        phase: 'ship',
+        agent: 'Rescue',
+        detail: `The model could not get one to run — shipping the ${rescue.meta.templateId} template so you have something playable`
+      });
+    }
+    return rescue;
   }
 }
 

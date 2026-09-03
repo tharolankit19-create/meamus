@@ -83,6 +83,10 @@ const FAKE_SPEC = {
 const captured = [];
 // Flipped by the truncation test: makes the next reply stop at the ceiling.
 let truncateNext = false;
+// A scripted queue of coder replies, or the string 'always-garbage'. Null means
+// "answer every call with the good spec", which is what most tests want.
+let replies = null;
+let replyAt = 0;
 
 const server = http.createServer((req, res) => {
   let body = '';
@@ -105,6 +109,30 @@ const server = http.createServer((req, res) => {
 
     const parsed = JSON.parse(body || '{}');
     captured.push({ url: req.url, headers: req.headers, body: parsed });
+    // A scripted reply, when a test is driving the coder through failures.
+    const sys = ((parsed.messages || []).find((m) => m.role === 'system') || {}).content || '';
+    const isCoder = !/you produce the brief|You review Phaser 3/i.test(sys);
+    if (replies && isCoder) {
+      if (replies === 'always-garbage') {
+        return res.end(JSON.stringify({
+          id: 'gen-test', model: parsed.model,
+          choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'I cannot do that.' } }],
+          usage: { prompt_tokens: 900, completion_tokens: 40 }
+        }));
+      }
+      const scripted = replies[Math.min(replyAt, replies.length - 1)];
+      replyAt += 1;
+      return res.end(JSON.stringify({
+        id: 'gen-test', model: parsed.model,
+        choices: [{
+          finish_reason: scripted.finish || 'stop',
+          message: { role: 'assistant', content: scripted.content }
+        }],
+        usage: { prompt_tokens: 1200, completion_tokens: 4300, total_tokens: 5500 }
+      }));
+    }
+    if (!replies) replyAt = 0;
+
     const cut = truncateNext;
     res.end(JSON.stringify({
       id: 'gen-test', model: parsed.model,
@@ -322,6 +350,71 @@ async function check(name, fn) {
     }
     assert.ok(/ran out of room|cut off/i.test(message), `unhelpful truncation error: ${message}`);
     assert.ok(/LLM_MAX_TOKENS/.test(message), 'the error does not name the setting to change');
+  });
+
+  await check('every way a build can fail is retried, not just a boot failure', async () => {
+    // Production died at 56 seconds on "does not parse: Invalid or unexpected
+    // token" having tried exactly once, because only a BOOT failure was
+    // retried. A bad token, malformed JSON or a truncated answer all threw
+    // straight out of the build. Each of those now feeds back and tries again.
+    const good = require('../server/services/templates').get('space-shooter').spec;
+    const withCode = (js) => {
+      const copy = JSON.parse(JSON.stringify(good));
+      copy.gameCode.javascript = js;
+      return JSON.stringify(copy);
+    };
+    const syntaxError = (() => {
+      const lines = good.gameCode.javascript.split('\n');
+      lines[142] = 'const label = \u201CReady\u201D;';   // smart quotes, as a model emits them
+      return lines.join('\n');
+    })();
+
+    replies = [
+      { content: '{"gameConfig":{"title":"Half', finish: 'length' },  // cut off
+      { content: 'Sure! Here is your game.' },                          // no JSON
+      { content: withCode(syntaxError) },                               // will not parse
+      { content: withCode('const boom = NOT_DEFINED;\n' + good.gameCode.javascript) }, // throws on boot
+      { content: withCode(good.gameCode.javascript) }                   // finally good
+    ];
+
+    const { spec, meta } = await generator.generate('a space shooter', { allowFallback: false });
+    assert.ok(spec.gameCode.javascript.length > 1000, 'no game came back');
+    assert.strictEqual(meta.attempts, 5, `expected 5 coder attempts, got ${meta.attempts}`);
+    replies = null;
+  });
+
+  await check('a parse failure names the line so the fix is possible', async () => {
+    const { normaliseSpec, SpecError } = require('../server/services/validator');
+    const good = require('../server/services/templates').get('space-shooter').spec;
+    const copy = JSON.parse(JSON.stringify(good));
+    const lines = copy.gameCode.javascript.split('\n');
+    lines[142] = 'const label = \u201CReady\u201D;';
+    copy.gameCode.javascript = lines.join('\n');
+
+    try {
+      normaliseSpec(copy, { source: 'ai' });
+      assert.fail('a syntax error was accepted');
+    } catch (err) {
+      assert.ok(err instanceof SpecError, `wrong error type: ${err.name}`);
+      assert.strictEqual(err.detail && err.detail.line, 143, `wrong line: ${JSON.stringify(err.detail)}`);
+      assert.ok(/game\.js line 143/.test(err.message), `line missing from message: ${err.message}`);
+    }
+  });
+
+  await check('a build that cannot be generated still ships something playable', async () => {
+    // The founder gets a game, and is told plainly that it is not the one they
+    // asked for. A red error box is not a product.
+    replies = 'always-garbage';
+    const { spec, meta } = await generator.generate('a ludo board for four players');
+    replies = null;
+
+    assert.ok(spec.gameCode.javascript.split('\n').length > 100, 'the rescue is not a real game');
+    assert.strictEqual(meta.rescued, true, 'the rescue was not flagged');
+    assert.ok(meta.rescuedFrom, 'the reason was not recorded');
+    assert.ok((meta.issues || []).some((i) => /could not produce a game that runs/i.test(i)),
+      'the founder is not told what happened');
+    // And it does not pretend to be the game they asked for.
+    assert.ok(!/ludo/i.test(spec.gameConfig.title), `the rescue lies about itself: ${spec.gameConfig.title}`);
   });
 
   await check('an unknown model falls back to safe assumptions', async () => {

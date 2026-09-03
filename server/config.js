@@ -216,7 +216,30 @@ const config = {
      */
     crew: (process.env.AGENT_CREW || 'true').trim() !== 'false',
     // How many times the review loop hands a rejected build back to the model.
-    maxAttempts: positive('BUILD_MAX_ATTEMPTS', process.env.BUILD_MAX_ATTEMPTS, 3),
+    /**
+     * How many times the coder may be sent back.
+     *
+     * This was 3, which is an arbitrary number with nothing to do with whether
+     * the next attempt would have worked. A build that fails is worth almost
+     * nothing to the founder, so the ceiling should be whatever fits in the
+     * time they are already waiting - see budgetMs, which is the real limit.
+     */
+    maxAttempts: positive('BUILD_MAX_ATTEMPTS', process.env.BUILD_MAX_ATTEMPTS, 12),
+
+    /**
+     * The wall clock a build gets to produce something that runs.
+     *
+     * vercel.json gives the function 300s. Leaving room for the designer, the
+     * reviewer and the response itself puts the useful ceiling near 210s.
+     */
+    budgetMs: positive('BUILD_BUDGET_MS', process.env.BUILD_BUDGET_MS, 210 * 1000),
+
+    /**
+     * Do not begin an attempt with less than this left. Being killed halfway
+     * through a call spends the tokens and returns nothing.
+     */
+    attemptReserveMs: positive('BUILD_ATTEMPT_RESERVE_MS', process.env.BUILD_ATTEMPT_RESERVE_MS, 45 * 1000),
+
     // A build the founder has approved but never started is dropped after this.
     planTtlMs: positive('BUILD_PLAN_TTL_MS', process.env.BUILD_PLAN_TTL_MS, 30 * 60 * 1000)
   },
