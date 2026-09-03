@@ -7,13 +7,29 @@
  * agents work through build -> review -> repair -> ship, and the browser polls
  * for progress so it can show what has been done and offer a stop button.
  *
- * State lives in memory on purpose. A build that outlives the process was
- * never going to finish anyway, and the finished game is written to storage the
- * moment it exists, so nothing durable is lost when a build is dropped.
+ * State used to live only in memory, on the reasoning that a build outliving
+ * its process was never going to finish anyway. That reasoning is true of one
+ * long-lived server and false of this one. On a serverless host there is no
+ * single process: the poll that follows a start can land on a different
+ * instance, which has never heard of the build and answers 404, and the founder
+ * watches a game that is finishing somewhere they cannot see. That is exactly
+ * what production did - a real build stuck at "building" fifteen seconds in,
+ * with the browser being told the build did not exist.
+ *
+ * So the memory map is now a cache in front of the game row, which is durable
+ * and is the same row the founder's library reads. Whichever instance answers
+ * the poll, it can see the build.
  */
 
 const crypto = require('node:crypto');
 const config = require('./../config');
+const db = require('./../db');
+
+/* Progress is written through to storage, but not on every single step: a
+   build emits a couple of dozen and each one is a round trip. A step is
+   flushed when the phase changes, when the build ends, or when this long has
+   passed - which keeps the browser's picture within a poll of the truth. */
+const FLUSH_MS = 1200;
 
 const plans = new Map();   // planId  -> approved brief awaiting a start
 const builds = new Map();  // buildId -> live build
@@ -47,7 +63,7 @@ function takePlan(planId, userId) {
 /**
  * @returns {{buildId:string, build:object}}
  */
-function start(userId, { kind, prompt, gameId, estimate }) {
+function start(userId, { kind, prompt, gameId, estimate, plan }) {
   const buildId = id('bld');
   const build = {
     buildId,
@@ -56,23 +72,87 @@ function start(userId, { kind, prompt, gameId, estimate }) {
     prompt,
     gameId: gameId || null,
     estimate,
+    // The approved terms, so the request that actually does the work can pick
+    // them up on any instance.
+    plan: plan || null,
+    claimed: false,
     state: 'running',
     steps: [],
     startedAt: Date.now(),
     finishedAt: null,
     stopRequested: false,
     result: null,
-    error: null
+    error: null,
+    lastFlush: 0
   };
   builds.set(buildId, build);
+  flush(build, true);
   sweep();
   return { buildId, build };
 }
 
+/**
+ * Write the build's progress onto its game row.
+ *
+ * Everything the browser polls for lives here, so any instance can answer.
+ * The finished spec is deliberately NOT included - it is written to the row's
+ * own `spec` field when the build lands, and copying a whole game into a
+ * progress record would double the size of every write.
+ */
+function flush(build, force = false) {
+  if (!build.gameId) return;
+  const now = Date.now();
+  if (!force && now - build.lastFlush < FLUSH_MS) return;
+  build.lastFlush = now;
+
+  try {
+    db.update('games', build.gameId, {
+      build: {
+        buildId: build.buildId,
+        state: build.state,
+        kind: build.kind,
+        steps: build.steps,
+        startedAt: build.startedAt,
+        finishedAt: build.finishedAt,
+        estimate: build.estimate,
+        stopRequested: build.stopRequested,
+        error: build.error,
+        plan: build.plan,
+        claimed: build.claimed
+      }
+    });
+  } catch (err) {
+    // Losing progress is not worth losing the build over.
+    console.error('[builds] could not persist progress:', err.message);
+  }
+}
+
+/**
+ * The build behind an id, from memory or from storage.
+ *
+ * The fallback is the whole point: on a serverless host the instance answering
+ * this poll is usually not the one running the build.
+ */
 function get(buildId, userId) {
   const build = builds.get(buildId);
-  if (!build || build.userId !== userId) return null;
-  return build;
+  if (build) return build.userId === userId ? build : null;
+
+  const game = db.find('games', (g) => g.build && g.build.buildId === buildId);
+  if (!game || game.userId !== userId) return null;
+
+  return {
+    ...game.build,
+    userId: game.userId,
+    gameId: game.id,
+    prompt: game.prompt,
+    // A build nobody is running any more cannot still be running. The row is
+    // the last thing the working instance managed to say.
+    result: game.spec
+      ? { game: { id: game.id, title: game.spec.gameConfig.title, genre: game.spec.gameConfig.genre },
+        spec: game.spec, meta: game.meta, messages: game.messages || [] }
+      : null,
+    fromStorage: true
+  };
 }
 
 /**
@@ -84,6 +164,7 @@ function get(buildId, userId) {
  */
 function step(build, { phase, detail, attempt, total, agent }) {
   if (!build) return;
+  const previous = build.steps[build.steps.length - 1];
   build.steps.push({
     at: Date.now() - build.startedAt,
     phase,
@@ -92,18 +173,39 @@ function step(build, { phase, detail, attempt, total, agent }) {
     attempt: attempt || null,
     total: total || null
   });
+  // A new phase is worth a write immediately; more of the same can wait.
+  flush(build, !previous || previous.phase !== phase);
 }
 
 function finish(build, result) {
   build.state = 'done';
   build.result = result;
   build.finishedAt = Date.now();
+  flush(build, true);
 }
 
 function fail(build, error) {
   build.state = build.stopRequested ? 'stopped' : 'failed';
   build.error = error;
   build.finishedAt = Date.now();
+  flush(build, true);
+}
+
+/**
+ * Take ownership of a build's work, once.
+ *
+ * Two tabs, a retry, or a double-fired request must not build the same game
+ * twice - each attempt costs the founder credits. The claim is written through
+ * before the work starts, so the second caller sees it whichever instance it
+ * lands on.
+ *
+ * @returns {boolean} true if this caller may do the work
+ */
+function claim(build) {
+  if (!build || build.claimed) return false;
+  build.claimed = true;
+  flush(build, true);
+  return true;
 }
 
 /**
@@ -120,6 +222,7 @@ function requestStop(buildId, userId) {
   if (build.state !== 'running') return build;
   build.stopRequested = true;
   step(build, { phase: 'stopping', detail: 'Stopping after the current step' });
+  flush(build, true);
   return build;
 }
 
@@ -152,4 +255,4 @@ function sweep() {
 /** Test hook. */
 function reset() { plans.clear(); builds.clear(); }
 
-module.exports = { savePlan, takePlan, start, get, step, finish, fail, requestStop, view, reset };
+module.exports = { savePlan, takePlan, start, get, claim, step, finish, fail, requestStop, view, flush, reset };

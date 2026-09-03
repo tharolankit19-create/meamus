@@ -425,6 +425,76 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     assert.strictEqual(replay.body.code, 'plan_expired');
   });
 
+  await check('a build does its work in /run, not after the response', async () => {
+    // The production bug: /build/start sent 202 and then carried on building.
+    // On a serverless host the function is frozen the moment it responds, so
+    // the build died seconds in and the row sat at "building" for ever. This
+    // asserts the work has NOT happened when start returns, which is the only
+    // way to prove it is not being done in a place the platform will kill.
+    const plan = await request('/api/build/plan', {
+      method: 'POST', token, body: { prompt: 'a tidy little puzzle about matching colours' }
+    });
+    const started = await request('/api/build/start', {
+      method: 'POST', token, body: { planId: plan.body.planId }
+    });
+    assert.strictEqual(started.status, 202);
+    const { buildId, gameId } = started.body;
+
+    const beforeRun = await request(`/api/games/${gameId}`, { token });
+    assert.strictEqual(beforeRun.body.game.status, 'building');
+    assert.ok(!beforeRun.body.spec, 'the build ran before /run was called');
+
+    const ran = await request(`/api/build/${buildId}/run`, { method: 'POST', token });
+    assert.strictEqual(ran.status, 200, `run failed: ${ran.raw || ''}`);
+    assert.strictEqual(ran.body.state, 'done', `build ended ${ran.body.state}: ${ran.body.error}`);
+    assert.ok(ran.body.spec, 'no game came back');
+
+    const afterRun = await request(`/api/games/${gameId}`, { token });
+    assert.strictEqual(afterRun.body.game.status, 'ready');
+    assert.ok(afterRun.body.spec.gameCode.javascript.length > 1000, 'the saved game is not a game');
+  });
+
+  await check('a build survives the instance that started it', async () => {
+    // The other half of the production bug: build state lived only in memory,
+    // so the poll after a start could land on an instance that had never heard
+    // of it and answer 404 - "Build not found" on a build that was running.
+    // Clearing the map is what a fresh serverless instance looks like.
+    const plan = await request('/api/build/plan', {
+      method: 'POST', token, body: { prompt: 'a calm endless runner over rooftops' }
+    });
+    const started = await request('/api/build/start', {
+      method: 'POST', token, body: { planId: plan.body.planId }
+    });
+    const { buildId } = started.body;
+
+    require('../server/services/builds').reset();   // a different instance
+
+    const poll = await request(`/api/build/${buildId}`, { token });
+    assert.strictEqual(poll.status, 200, 'a fresh instance could not see the build');
+    assert.strictEqual(poll.body.buildId, buildId);
+
+    // And it can still be run from there, terms and all.
+    const ran = await request(`/api/build/${buildId}/run`, { method: 'POST', token });
+    assert.strictEqual(ran.status, 200, `run failed on a fresh instance: ${ran.raw || ''}`);
+    assert.strictEqual(ran.body.state, 'done', `build ended ${ran.body.state}: ${ran.body.error}`);
+  });
+
+  await check('the same build cannot be run twice', async () => {
+    // Two tabs, or a retry, must not charge the founder for one game twice.
+    const plan = await request('/api/build/plan', {
+      method: 'POST', token, body: { prompt: 'a short arcade game about stacking blocks' }
+    });
+    const started = await request('/api/build/start', {
+      method: 'POST', token, body: { planId: plan.body.planId }
+    });
+    const first = await request(`/api/build/${started.body.buildId}/run`, { method: 'POST', token });
+    assert.strictEqual(first.status, 200);
+
+    const second = await request(`/api/build/${started.body.buildId}/run`, { method: 'POST', token });
+    assert.strictEqual(second.status, 409, 'a build ran twice');
+    assert.strictEqual(second.body.code, 'already_started');
+  });
+
   await check('a stopped build charges nothing', async () => {
     const plan = await request('/api/build/plan', {
       method: 'POST', token, body: { prompt: 'a fishing game with a day night cycle' }

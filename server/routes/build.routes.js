@@ -178,17 +178,52 @@ router.post('/build/start', requireAuth, asyncRoute(async (req, res) => {
     gameId = placeholder.id;
   }
 
+  // The approved terms ride on the build itself, which is written to the game
+  // row - so /run finds them whichever instance answers it. A second in-memory
+  // map here would have the same hole this whole change is closing.
   const { buildId, build } = builds.start(req.user.id, {
-    kind: plan.kind, prompt: plan.prompt, gameId, estimate: plan.estimate
+    kind: plan.kind, prompt: plan.prompt, gameId, estimate: plan.estimate, plan
   });
 
   // The gameId comes back immediately so the browser can open the workspace
   // and watch the build there, rather than waiting on the dashboard.
+  //
+  // The work does NOT start here. It used to: this handler sent 202 and then
+  // carried on building in the background. On a serverless host the function
+  // is frozen the moment it responds, so the build died seconds in and the row
+  // sat at "building" for ever - which is exactly what production did. The
+  // browser calls /run next, and that request is awaited for the whole build.
   res.status(202).json({ buildId, gameId, state: build.state, estimate: plan.estimate });
+}));
 
-  run(build, plan, req.user).catch((err) => {
+/**
+ * Do the build, inside a request that is awaited to the end.
+ *
+ * This is the long one - up to the function's whole 300 seconds. The browser
+ * fires it and does not wait on the response for its UI; it polls /build/:id
+ * for progress, which reads the game row and so works on any instance.
+ */
+router.post('/build/:id/run', requireAuth, asyncRoute(async (req, res) => {
+  const build = builds.get(req.params.id, req.user.id);
+  if (!build) return res.status(404).json({ error: 'Build not found', code: 'not_found' });
+
+  // Claim it, so two tabs cannot build the same game twice.
+  if (!builds.claim(build)) {
+    return res.status(409).json({
+      error: build.state === 'running'
+        ? 'That build is already running.'
+        : `That build already finished (${build.state}).`,
+      code: 'already_started',
+      state: build.state
+    });
+  }
+
+  try {
+    await run(build, build.plan, req.user);
+  } catch (err) {
     builds.fail(build, err.message);
-  });
+  }
+  res.json(builds.view(build));
 }));
 
 /**

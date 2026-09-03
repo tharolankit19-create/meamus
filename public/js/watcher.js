@@ -35,6 +35,20 @@ export function track(info) {
 
   const entry = { info, view: null, subs: new Set(), finished: false, announced: false };
   live.set(info.buildId, entry);
+
+  /* Kick off the work, and poll it separately.
+   *
+   * These are two requests on purpose. The server cannot build after it has
+   * responded - on a serverless host the function is frozen the moment it does,
+   * which is what left builds dead a few seconds in and rows stuck on
+   * "building" for ever. So one request does the building and is awaited by
+   * nobody here, and the other asks how it is going.
+   *
+   * Nothing is done with the result: whatever it says, the poll below sees the
+   * same outcome, and a build already claimed by another tab answers 409, which
+   * is a correct refusal rather than an error worth showing. */
+  builds.run(info.buildId).catch(() => { /* the poll is the source of truth */ });
+
   void poll(entry);
   return entry;
 }
