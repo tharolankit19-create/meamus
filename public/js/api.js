@@ -137,6 +137,15 @@ export const projects = {
 export const builds = {
   plan: (body) => api('/build/plan', { method: 'POST', body }),
   start: (planId) => api('/build/start', { method: 'POST', body: { planId } }),
+  /**
+   * Do the work. Long - the whole build happens inside this request.
+   *
+   * Nothing awaits it for the UI; progress comes from poll(). It exists as its
+   * own call because the server cannot build after it has responded: on a
+   * serverless host the function is frozen the moment it does, which left
+   * builds dead a few seconds in and rows stuck on "building" for ever.
+   */
+  run: (buildId) => api(`/build/${buildId}/run`, { method: 'POST' }),
   poll: (buildId) => api(`/build/${buildId}`),
   stop: (buildId) => api(`/build/${buildId}/stop`, { method: 'POST' })
 };
