@@ -171,31 +171,98 @@ function assertParses(code) {
 }
 
 /**
+ * Split a file into lines at statement boundaries.
+ *
+ * Only at real boundaries. The obvious version - replace every `;` with `;\n` -
+ * also splits the semicolon inside `'data:image/png;base64,...'`, which turns a
+ * perfectly good file into an unterminated string. That is not hypothetical: it
+ * was six consecutive production attempts, all reported as
+ * "Invalid or unexpected token at this.load.image('loadingBar', 'data" - an
+ * error this function had itself created, in code the model had written
+ * correctly.
+ *
+ * So this walks the source and only breaks when it is actually in code: not in
+ * a string, a template literal, a comment or a regex.
+ */
+function statementBoundaries(code) {
+  let out = '';
+  let i = 0;
+  let quote = null;          // ' " or ` when inside a string
+  let templateDepth = 0;     // ${ } nesting inside a template literal
+  let comment = null;        // 'line' or 'block'
+  let regex = false;
+  let lastCode = '';         // last significant character seen in code
+
+  while (i < code.length) {
+    const ch = code[i];
+    const next = code[i + 1];
+
+    if (comment) {
+      out += ch;
+      if (comment === 'line' && ch === '\n') comment = null;
+      else if (comment === 'block' && ch === '*' && next === '/') { out += next; i += 1; comment = null; }
+      i += 1;
+      continue;
+    }
+
+    if (quote) {
+      out += ch;
+      if (ch === '\\') { out += next === undefined ? '' : next; i += 2; continue; }
+      if (ch === quote && !(quote === '`' && templateDepth > 0)) quote = null;
+      else if (quote === '`' && ch === '$' && next === '{') { out += next; i += 1; templateDepth += 1; }
+      else if (quote === '`' && ch === '}' && templateDepth > 0) templateDepth -= 1;
+      i += 1;
+      continue;
+    }
+
+    if (regex) {
+      out += ch;
+      if (ch === '\\') { out += next === undefined ? '' : next; i += 2; continue; }
+      if (ch === '/') regex = false;
+      i += 1;
+      continue;
+    }
+
+    if (ch === '/' && next === '/') { out += '//'; i += 2; comment = 'line'; continue; }
+    if (ch === '/' && next === '*') { out += '/*'; i += 2; comment = 'block'; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') { out += ch; quote = ch; i += 1; continue; }
+
+    // A slash is a regex only where a value could start.
+    if (ch === '/' && (lastCode === '' || '(,=:[!&|?{};+-*%~^<>'.includes(lastCode))) {
+      out += ch; regex = true; i += 1; continue;
+    }
+
+    out += ch;
+    if (ch === ';' || ch === '{') out += '\n';
+    else if (ch === '}') out = `${out.slice(0, -1)}\n}\n`;
+    if (!/\s/.test(ch)) lastCode = ch;
+    i += 1;
+  }
+
+  return out.replace(/\n{3,}/g, '\n\n');
+}
+
+/**
  * Put newlines back into a file that arrived without any.
  *
- * Purely cosmetic, and deliberately timid: it breaks after `;` and around
- * braces, then re-parses. If the result will not compile - a semicolon inside
- * a string or a regex would do it - the original is kept. A prettier file is
- * not worth breaking a working game for.
+ * A model answering under a JSON schema will happily write a whole game on one
+ * line. That is valid JavaScript, but it is unreadable in the Code tab, and -
+ * more importantly - V8 refuses to locate an error inside a line that long, so
+ * every syntax failure becomes unfixable.
+ *
+ * Verified rather than trusted: if the split will not compile and the original
+ * would have, the original is kept.
  */
 function breakUpOneLiner(code) {
   const lines = code.split('\n').length;
   if (lines > 5 || code.length < 2000) return code;
 
-  const spaced = code
-    .replace(/;(?!\s*$)/g, ';\n')
-    .replace(/\{(?!\s*$)/g, '{\n')
-    .replace(/\}(?!\s*$)/g, '\n}\n')
-    .replace(/\n{3,}/g, '\n\n');
+  const spaced = statementBoundaries(code);
 
   try {
     new vm.Script(spaced, { filename: 'game.js' });
     return spaced;
   } catch {
-    // The split did not produce valid code. Either the original was already
-    // broken - in which case the split version is still the better one to
-    // report the error against, because it has line numbers - or the split
-    // itself broke something, in which case the original must be kept.
     try {
       new vm.Script(code, { filename: 'game.js' });
       return code;          // the original was fine; the split was not

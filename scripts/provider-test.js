@@ -508,6 +508,83 @@ async function check(name, fn) {
     }
   });
 
+  await check('reformatting never breaks a string, a comment or a regex', async () => {
+    // Six consecutive production attempts died on
+    //   "Invalid or unexpected token at this.load.image('loadingBar', 'data"
+    // and the error was ours: the reformatter split after every semicolon,
+    // including the one inside 'data:image/png;base64,...', turning valid code
+    // into an unterminated string and then blaming the model for it.
+    const { normaliseSpec } = require('../server/services/validator');
+    const smoke = require('../server/services/smoke');
+    const templates = require('../server/services/templates');
+    const vm = require('node:vm');
+
+    // The exact shape that broke: a semicolon inside a string literal.
+    const dataUri = "class S extends Phaser.Scene { preload(){ "
+      + "this.load.image('bar', 'data:image/png;base64,iVBORw0KGgo='); } } "
+      + "const re = /a;b/g; const t = `x;y${1}`; // a; comment\n"
+      + "new Phaser.Game({ scene: [S] });";
+    const good = templates.get('space-shooter').spec;
+    // Padded with real statements: trailing whitespace is trimmed away and the
+    // size gate would then call this a stub.
+    const filler = Array.from({ length: 90 }, (_, i) => `const pad${i} = ${i} * 2;`).join(' ');
+    const padded = `${dataUri}\n${filler}`;
+    new vm.Script(padded, { filename: 'f' });   // the fixture must be valid
+
+    const input = JSON.parse(JSON.stringify(good));
+    input.gameCode.javascript = padded;
+    const { spec } = normaliseSpec(input, { source: 'ai' });
+    assert.ok(/data:image\/png;base64,iVBORw0KGgo=/.test(spec.gameCode.javascript),
+      'the data URI was split apart');
+    assert.ok(/\/a;b\/g/.test(spec.gameCode.javascript), 'the regex was split apart');
+
+    /* The sharper case, and the one production actually hit. A valid file is
+       protected by the fall-back either way, so the damage a naive split does
+       is not to the code but to the DIAGNOSIS: when the file is broken
+       somewhere else, the error gets reported at the string the splitter tore
+       in half. Six attempts were spent being told the problem was a data URI
+       that was written perfectly. */
+    const brokenElsewhere = JSON.parse(JSON.stringify(good));
+    brokenElsewhere.gameCode.javascript = `${dataUri}\n${filler}\nfunction oops( { return 1;`;
+    try {
+      normaliseSpec(brokenElsewhere, { source: 'ai' });
+      assert.fail('broken code was accepted');
+    } catch (err) {
+      // The fault is the last thing in the file; the data URI is the third
+      // line. Which one the error names is the whole point.
+      assert.ok(!/data:image/.test(err.message),
+        `the error blames a data URI the model wrote correctly: ${err.message}`);
+      assert.ok(err.detail && err.detail.line > 50,
+        `the error points at line ${err.detail && err.detail.line}, not at the real fault near the end`);
+    }
+
+    // And a whole real game survives the round trip and still boots.
+    const src = good.gameCode.javascript;
+    let flat = '';
+    let quote = null;
+    let comment = null;
+    for (let i = 0; i < src.length; i += 1) {
+      const c = src[i];
+      const n = src[i + 1];
+      if (comment === 'line') { if (c === '\n') { comment = null; flat += ' '; } continue; }
+      if (comment === 'block') { if (c === '*' && n === '/') { comment = null; i += 1; } continue; }
+      if (quote) { flat += c; if (c === '\\') { flat += n; i += 1; continue; } if (c === quote) quote = null; continue; }
+      if (c === '/' && n === '/') { comment = 'line'; i += 1; continue; }
+      if (c === '/' && n === '*') { comment = 'block'; i += 1; continue; }
+      if (c === '"' || c === "'" || c === '`') { quote = c; flat += c; continue; }
+      flat += c === '\n' ? ' ' : c;
+    }
+    const oneLine = flat.replace(/\s+/g, ' ').trim();
+    new vm.Script(oneLine, { filename: 'f' });   // still a valid game
+
+    const whole = JSON.parse(JSON.stringify(good));
+    whole.gameCode.javascript = oneLine;
+    const { spec: rebuilt } = normaliseSpec(whole, { source: 'ai' });
+    assert.ok(rebuilt.gameCode.javascript.split('\n').length > 300, 'it was not reformatted');
+    assert.ok(smoke.boot(rebuilt.gameCode.javascript).scenes.length >= 5,
+      'a real game did not survive the round trip');
+  });
+
   await check('a build that cannot be generated still ships something playable', async () => {
     // The founder gets a game, and is told plainly that it is not the one they
     // asked for. A red error box is not a product.
