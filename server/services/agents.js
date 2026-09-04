@@ -162,17 +162,46 @@ async function askForSpec(messages) {
   return { spec, issues, response };
 }
 
+/* How short to ask for, once it is clear the model cannot finish a longer one.
+   Each successive cut-off drops a step. The floor is deliberately tiny: a
+   150-line game that runs is a product, and a 500-line one that stops halfway
+   is nothing at all. */
+const SHRINK_STEPS = [320, 220, 150, 110];
+
+function shrinkTarget(cutoffs) {
+  return SHRINK_STEPS[Math.min(cutoffs, SHRINK_STEPS.length - 1)];
+}
+
 /**
  * Describe a failure to the model in terms it can act on.
  *
- * The difference between "the code does not parse" and "line 143 is
- * `const x = \u201Chello\u201D;` and those are smart quotes" is the difference
- * between another guess and a fix.
+ * The difference between "the code does not parse" and "line 253, column 18,
+ * here is the character" is the difference between a fix and another guess.
+ *
+ * @param {Error} err what went wrong
+ * @param {number} [cutoffs] how many times this build has already been cut off
  */
-function correctionFor(err) {
+function correctionFor(err, cutoffs = 0) {
   const site = err.detail && err.detail.line
-    ? `\n\nThe problem is at game.js line ${err.detail.line}:\n    ${err.detail.source}`
+    ? `\n\nThe problem is at game.js line ${err.detail.line}`
+      + `${err.detail.column ? `, column ${err.detail.column}` : ''}:\n    ${err.detail.source}`
     : '';
+
+  /* Truncation is checked BEFORE the general parse failure, because it arrives
+     wearing its clothes: "Unexpected end of input" IS a parse error, and the
+     advice for one is useless for the other. Three production attempts in a row
+     stopped at the same line - the model had run out of room - and each was
+     told to check its quotation marks. */
+  const truncated = /Unexpected end of input|unterminated|ran out of room|cut off/i.test(err.message);
+  if (truncated) {
+    const lines = shrinkTarget(cutoffs);
+    return 'Your last answer stopped before the game was finished - the file ends '
+      + `mid-way${err.detail && err.detail.line ? ` (around line ${err.detail.line})` : ''}.\n\n`
+      + `You do not have room for a game that size. Write one of about ${lines} lines `
+      + 'and FINISH it. Cut scenes, cut mechanics, cut comments - keep one thing that '
+      + 'plays well. The `new Phaser.Game(...)` call is the last thing in the file and '
+      + 'you must reach it. Return the complete GameSpec JSON.';
+  }
 
   if (/does not parse/i.test(err.message)) {
     return `That code is not valid JavaScript: ${err.message}${site}\n\n`
@@ -183,9 +212,10 @@ function correctionFor(err) {
   }
 
   if (/never (called|starts)|never reaches|stub rather than/i.test(err.message)) {
+    const lines = shrinkTarget(cutoffs);
     return `That answer did not get to the end of the game: ${err.message}\n\n`
-      + 'Write a SMALLER game and finish it. Two scenes is enough, one solid '
-      + 'mechanic is enough. The `new Phaser.Game(...)` call is the last thing in '
+      + `Write a game of about ${lines} lines and finish it. Two scenes is enough, one `
+      + 'solid mechanic is enough. The `new Phaser.Game(...)` call is the last thing in '
       + 'the file and it must be there. Return the complete GameSpec JSON.';
   }
 
@@ -227,6 +257,8 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
   const issues = [];
   let last = null;
   let attemptNo = 0;
+  // Each answer that stopped short makes the next request smaller.
+  let cutoffs = 0;
 
   while (attemptNo < config.build.maxAttempts) {
     attemptNo += 1;
@@ -249,7 +281,7 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
         : [
           { role: 'user', content: coderText },
           { role: 'assistant', content: last.text },
-          { role: 'user', content: correctionFor(last.error) }
+          { role: 'user', content: correctionFor(last.error, cutoffs) }
         ];
 
       const response = await llm.complete({ messages, jsonSchema: true });
@@ -282,6 +314,9 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
       // than a restart from nothing. Capped, because a rejected answer is
       // still most of a game and re-sending all of it every round is what
       // makes a repair loop cost more than the build.
+      if (/Unexpected end of input|unterminated|ran out of room|cut off|never (called|starts)|stub rather than/i.test(err.message)) {
+        cutoffs += 1;
+      }
       last = { error: err, text: (answer || '(your previous answer)').slice(0, MAX_ECHO_CHARS) };
       const where = err.detail && err.detail.line ? ` (game.js line ${err.detail.line})` : '';
       say('improver', 'repair', `Attempt ${attemptNo} failed: ${err.message.slice(0, 120)}${where}`);
