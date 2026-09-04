@@ -155,12 +155,15 @@ function assertParses(code) {
       // prompt that names line 143 and shows it gets a fix; one that says the
       // code is broken somewhere gets another guess.
       const where = syntaxErrorSite(err, code);
-      const odd = oddCharacters(code);
-      const named = odd.length ? `\n  non-ASCII characters in the code: ${odd.join(', ')}` : '';
+      // Only the characters near the failure. Listing every non-ASCII character
+      // in the file points at the heart in a score label and sends the next
+      // attempt chasing something that was never wrong.
+      const odd = oddCharacters(where.source || '');
+      const named = odd.length ? `\n  non-ASCII characters near it: ${odd.join(', ')}` : '';
       throw new SpecError(
         `The generated code does not parse: ${err.message}${where.text}${named}`,
         ['gameCode.javascript'],
-        { line: where.line, source: where.source, odd }
+        { line: where.line, column: where.column, source: where.source, odd }
       );
     }
     throw err;
@@ -189,7 +192,16 @@ function breakUpOneLiner(code) {
     new vm.Script(spaced, { filename: 'game.js' });
     return spaced;
   } catch {
-    return code;
+    // The split did not produce valid code. Either the original was already
+    // broken - in which case the split version is still the better one to
+    // report the error against, because it has line numbers - or the split
+    // itself broke something, in which case the original must be kept.
+    try {
+      new vm.Script(code, { filename: 'game.js' });
+      return code;          // the original was fine; the split was not
+    } catch {
+      return spaced;        // both broken: keep the one that can be located
+    }
   }
 }
 
@@ -200,15 +212,39 @@ function breakUpOneLiner(code) {
  * source line is on the error object as a field.
  */
 function syntaxErrorSite(err, code) {
-  const match = /game\.js:(\d+)/.exec(err.stack || '');
-  if (!match) return { text: '', line: null, source: null };
+  const stack = String(err.stack || '');
+  const match = /game\.js:(\d+)/.exec(stack);
+  if (!match) return { text: '', line: null, source: null, column: null };
 
   const line = Number(match[1]);
-  const source = (code.split('\n')[line - 1] || '').trim().slice(0, 200);
+  const full = code.split('\n')[line - 1] || '';
+
+  /* V8 prints the offending source line and a caret under it. The caret is the
+     only thing that says WHERE, and for a one-line file it is everything: this
+     used to quote `source.slice(0, 200)`, which on a game written without
+     newlines showed the first 200 characters of the file every single time -
+     "at game.js line 1: const CONFIG = { PLAYER_SPEED: 300," on three separate
+     production builds, pointing at code that was perfectly fine. */
+  const lines = stack.split('\n');
+  const caretAt = lines.findIndex((l) => /^\s*\^\s*$/.test(l));
+  const column = caretAt > 0 ? lines[caretAt].indexOf('^') : -1;
+
+  if (column < 0) {
+    const source = full.trim().slice(0, 200);
+    return { line, column: null, source, text: `\n  at game.js line ${line}: ${source}` };
+  }
+
+  // A window around the caret, not the start of the file.
+  const from = Math.max(0, column - 60);
+  const to = Math.min(full.length, column + 60);
+  const excerpt = (from > 0 ? '…' : '') + full.slice(from, to) + (to < full.length ? '…' : '');
+  const pointer = ' '.repeat((from > 0 ? 1 : 0) + (column - from)) + '^';
+
   return {
     line,
-    source,
-    text: `\n  at game.js line ${line}: ${source}`
+    column: column + 1,
+    source: full.slice(from, to),
+    text: `\n  at game.js line ${line}, column ${column + 1}:\n    ${excerpt}\n    ${pointer}`
   };
 }
 
@@ -234,10 +270,21 @@ function normaliseSpec(input, { source = 'ai' } = {}) {
     throw new SpecError('Generated code uses eval()/new Function() - rejected', ['gameCode.javascript']);
   }
 
-  // Hard gates. Anything that fails these is not a game, and shipping it means
-  // a broken preview the player still paid for. One class of failure is worth
-  // trying to fix first, because it is mechanical and it was every attempt in
-  // production: smart quotes and dashes where JavaScript wants plain ones.
+  /* Hard gates. Anything that fails these is not a game, and shipping it means
+     a broken preview the player still paid for.
+
+     Order matters here. The file is reformatted BEFORE it is parsed, because
+     V8 gives up on locating an error in a very long line: on a 22,000-character
+     one-liner it prints a caret line of a thousand spaces and no caret at all.
+     Three production builds reported "at game.js line 1: const CONFIG = {
+     PLAYER_SPEED: 300," on every attempt - which was not the error site, just
+     the first forty characters of the file, because there was no error site to
+     be had. Split into lines first and the failure gets a real line and column,
+     which is the difference between a repair prompt that can work and one that
+     is guessing. */
+  javascript = breakUpOneLiner(javascript);
+
+  // A mechanical fault with a mechanical fix, tried before giving up.
   const detyped = repairTypography(javascript);
   if (detyped) {
     javascript = detyped;
@@ -262,9 +309,6 @@ function normaliseSpec(input, { source = 'ai' } = {}) {
     );
   }
 
-  // Give a one-line file its newlines back, so the Code tab is readable and
-  // "700 lines" means something.
-  javascript = breakUpOneLiner(javascript);
   const lineCount = javascript.split('\n').length;
   if (!/new\s+Phaser\.Game/.test(javascript) && !/MEAMUS\.boot\s*\(/.test(javascript)) {
     throw new SpecError('The generated code never starts a Phaser game.', ['gameCode.javascript']);
