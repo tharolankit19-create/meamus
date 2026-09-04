@@ -182,6 +182,13 @@ function correctionFor(err) {
       + 'must close.';
   }
 
+  if (/never (called|starts)|never reaches|stub rather than/i.test(err.message)) {
+    return `That answer did not get to the end of the game: ${err.message}\n\n`
+      + 'Write a SMALLER game and finish it. Two scenes is enough, one solid '
+      + 'mechanic is enough. The `new Phaser.Game(...)` call is the last thing in '
+      + 'the file and it must be there. Return the complete GameSpec JSON.';
+  }
+
   if (/ran out of room|cut off/i.test(err.message)) {
     return 'Your last answer was cut off before it finished. Return the complete '
       + 'GameSpec JSON again, but write a SHORTER game - fewer scenes, fewer '
