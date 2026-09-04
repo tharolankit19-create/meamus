@@ -90,6 +90,60 @@ function extractJson(text) {
  * executing - nothing in the code runs here. This is the check that was
  * missing when "Uncaught SyntaxError: Unexpected token ')'" reached a preview.
  */
+/* Characters a model reaches for that JavaScript will not accept. Left of the
+   arrow is what it writes; right is what it meant. Applied only as a whole set,
+   and only if the result then parses. */
+const TYPOGRAPHY = [
+  [/[\u201C\u201D\u201E\u201F]/g, '"'],    // “ ” „ ‟
+  [/[\u2018\u2019\u201A\u201B]/g, "'"],    // ‘ ’ ‚ ‛
+  [/[\u2013\u2014\u2212]/g, '-'],          // – — −
+  [/\u2026/g, '...'],                       // …
+  [/[\u00A0\u2007\u202F\u2009\u200B]/g, ' '],  // non-breaking and thin spaces
+  [/\u02DC/g, '~'],
+  [/[\u2032\u2033]/g, "'"]                  // ′ ″
+];
+
+/**
+ * Fix the punctuation a model typed instead of the punctuation JavaScript uses.
+ *
+ * "Invalid or unexpected token" on line 1 of a one-line file is unactionable
+ * and, in production, it was every single attempt. The cause is almost always
+ * a smart quote or an em dash where a plain one belongs - a model writing prose
+ * and code in the same breath.
+ *
+ * Mechanical, and verified: the substitution is kept only if the result parses
+ * when the original did not. It can change a curly apostrophe inside a piece of
+ * on-screen text to a straight one, which is a fair price for a game that runs.
+ */
+function repairTypography(code) {
+  let fixed = code;
+  for (const [pattern, replacement] of TYPOGRAPHY) fixed = fixed.replace(pattern, replacement);
+  if (fixed === code) return null;
+
+  try {
+    new vm.Script(fixed, { filename: 'game.js' });
+    return fixed;
+  } catch {
+    return null;
+  }
+}
+
+/** The non-ASCII characters in a string, named, so an error can point at them. */
+function oddCharacters(code) {
+  const seen = new Map();
+  for (const ch of code) {
+    const point = ch.codePointAt(0);
+    if (point < 0x20 || point > 0x7e) {
+      if (ch === '\n' || ch === '\t' || ch === '\r') continue;
+      seen.set(ch, (seen.get(ch) || 0) + 1);
+    }
+  }
+  return [...seen.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([ch, n]) => `${JSON.stringify(ch)} (U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')})${n > 1 ? ` x${n}` : ''}`);
+}
+
 function assertParses(code) {
   try {
     new vm.Script(code, { filename: 'game.js' });
@@ -101,23 +155,18 @@ function assertParses(code) {
       // prompt that names line 143 and shows it gets a fix; one that says the
       // code is broken somewhere gets another guess.
       const where = syntaxErrorSite(err, code);
+      const odd = oddCharacters(code);
+      const named = odd.length ? `\n  non-ASCII characters in the code: ${odd.join(', ')}` : '';
       throw new SpecError(
-        `The generated code does not parse: ${err.message}${where.text}`,
+        `The generated code does not parse: ${err.message}${where.text}${named}`,
         ['gameCode.javascript'],
-        { line: where.line, source: where.source }
+        { line: where.line, source: where.source, odd }
       );
     }
     throw err;
   }
 }
 
-/**
- * Pull the offending line out of a V8 SyntaxError.
- *
- * The stack's first frame reads `game.js:143`, and the frames above it repeat
- * the source line and a caret. Both are useful, and neither is on the error
- * object as a field.
- */
 /**
  * Put newlines back into a file that arrived without any.
  *
@@ -144,6 +193,12 @@ function breakUpOneLiner(code) {
   }
 }
 
+/**
+ * Pull the offending line out of a V8 SyntaxError.
+ *
+ * The stack's first frame reads `game.js:143`. Neither the line number nor the
+ * source line is on the error object as a field.
+ */
 function syntaxErrorSite(err, code) {
   const match = /game\.js:(\d+)/.exec(err.stack || '');
   if (!match) return { text: '', line: null, source: null };
@@ -180,7 +235,14 @@ function normaliseSpec(input, { source = 'ai' } = {}) {
   }
 
   // Hard gates. Anything that fails these is not a game, and shipping it means
-  // a broken preview the player still paid for.
+  // a broken preview the player still paid for. One class of failure is worth
+  // trying to fix first, because it is mechanical and it was every attempt in
+  // production: smart quotes and dashes where JavaScript wants plain ones.
+  const detyped = repairTypography(javascript);
+  if (detyped) {
+    javascript = detyped;
+    issues.push('The model used smart quotes or dashes in the code; they were replaced with plain ASCII.');
+  }
   assertParses(javascript);
 
   /* Size is measured in characters, not lines.
