@@ -372,8 +372,10 @@ async function check(name, fn) {
       return JSON.stringify(copy);
     };
     const syntaxError = (() => {
+      // Structurally broken, not just typographically: smart quotes are
+      // repaired mechanically now, so they no longer exercise the retry path.
       const lines = good.gameCode.javascript.split('\n');
-      lines[142] = 'const label = \u201CReady\u201D;';   // smart quotes, as a model emits them
+      lines[142] = 'function ready( { return 1;';
       return lines.join('\n');
     })();
 
@@ -396,7 +398,7 @@ async function check(name, fn) {
     const good = require('../server/services/templates').get('space-shooter').spec;
     const copy = JSON.parse(JSON.stringify(good));
     const lines = copy.gameCode.javascript.split('\n');
-    lines[142] = 'const label = \u201CReady\u201D;';
+    lines[142] = 'function ready( { return 1;';
     copy.gameCode.javascript = lines.join('\n');
 
     try {
@@ -439,6 +441,40 @@ async function check(name, fn) {
     const stub = JSON.parse(JSON.stringify(good));
     stub.gameCode.javascript = 'new Phaser.Game({});';
     assert.throws(() => normaliseSpec(stub, { source: 'ai' }), /stub/i, 'a real stub was accepted');
+  });
+
+  await check('smart quotes in the code are repaired, not rejected', async () => {
+    // Every attempt of three consecutive production builds died on this:
+    //   "does not parse: Invalid or unexpected token
+    //    at game.js line 1: const CONFIG = { PLAYER_SPEED: 300,"
+    // A model writing prose and code in one breath slips into typographic
+    // punctuation. It is a mechanical fault with a mechanical fix.
+    const { normaliseSpec } = require('../server/services/validator');
+    const smoke = require('../server/services/smoke');
+    const vm = require('node:vm');
+    const good = require('../server/services/templates').get('space-shooter').spec;
+
+    const oneLine = good.gameCode.javascript.split('\n')
+      .map((l) => l.replace(/\/\/.*$/, '').trim()).filter(Boolean).join(' ');
+    const target = oneLine.match(/'([A-Za-z][A-Za-z0-9 _-]{2,20})'/);
+    assert.ok(target, 'no quoted string to corrupt');
+    const broken = oneLine.replace(target[0], `\u201C${target[1]}\u201D`);
+
+    assert.throws(() => new vm.Script(broken, { filename: 'x' }), SyntaxError,
+      'the fixture is not actually broken');
+
+    const input = JSON.parse(JSON.stringify(good));
+    input.gameCode.javascript = broken;
+    const { spec, issues } = normaliseSpec(input, { source: 'ai' });
+
+    assert.ok(issues.some((i) => /smart quotes/i.test(i)), 'the repair was not reported');
+    assert.ok(smoke.boot(spec.gameCode.javascript).scenes.length >= 3, 'the repaired game does not boot');
+
+    // Something genuinely broken is still refused, and the error now names the
+    // characters instead of just saying the code is bad.
+    const hopeless = JSON.parse(JSON.stringify(good));
+    hopeless.gameCode.javascript = good.gameCode.javascript + '\nfunction oops( {';
+    assert.throws(() => normaliseSpec(hopeless, { source: 'ai' }), /does not parse/);
   });
 
   await check('a build that cannot be generated still ships something playable', async () => {
