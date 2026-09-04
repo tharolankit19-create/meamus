@@ -12,11 +12,13 @@
 const vm = require('node:vm');
 
 /**
- * A real Phaser game is hundreds of lines. A handful means the model returned a
- * stub or a placeholder, which used to ship straight to the preview as a blank
- * frame or a SyntaxError - and still charged for the build.
+ * A real Phaser game is thousands of characters. Less means the model returned
+ * a stub or a placeholder, which used to ship straight to the preview as a
+ * blank frame or a SyntaxError - and still charged for the build.
+ *
+ * Deliberately NOT a line count: a model writing under a JSON schema will
+ * happily put a whole game on one line, and that is still a whole game.
  */
-const MIN_CODE_LINES = 40;
 const MIN_CODE_CHARS = 900;
 
 const SPRITE_TYPES = ['player', 'enemy', 'collectible', 'obstacle', 'background', 'ui', 'effect'];
@@ -116,6 +118,32 @@ function assertParses(code) {
  * the source line and a caret. Both are useful, and neither is on the error
  * object as a field.
  */
+/**
+ * Put newlines back into a file that arrived without any.
+ *
+ * Purely cosmetic, and deliberately timid: it breaks after `;` and around
+ * braces, then re-parses. If the result will not compile - a semicolon inside
+ * a string or a regex would do it - the original is kept. A prettier file is
+ * not worth breaking a working game for.
+ */
+function breakUpOneLiner(code) {
+  const lines = code.split('\n').length;
+  if (lines > 5 || code.length < 2000) return code;
+
+  const spaced = code
+    .replace(/;(?!\s*$)/g, ';\n')
+    .replace(/\{(?!\s*$)/g, '{\n')
+    .replace(/\}(?!\s*$)/g, '\n}\n')
+    .replace(/\n{3,}/g, '\n\n');
+
+  try {
+    new vm.Script(spaced, { filename: 'game.js' });
+    return spaced;
+  } catch {
+    return code;
+  }
+}
+
 function syntaxErrorSite(err, code) {
   const match = /game\.js:(\d+)/.exec(err.stack || '');
   if (!match) return { text: '', line: null, source: null };
@@ -144,7 +172,7 @@ function normaliseSpec(input, { source = 'ai' } = {}) {
   const controls = input.controls && typeof input.controls === 'object' ? input.controls : {};
 
   const title = str(gc.title, 'Untitled Game');
-  const javascript = str(code.javascript);
+  let javascript = str(code.javascript);
 
   if (!javascript) throw new SpecError('gameCode.javascript is empty - the model produced no game code', ['gameCode.javascript']);
   if (/\beval\s*\(/.test(javascript) || /new\s+Function\s*\(/.test(javascript)) {
@@ -155,13 +183,27 @@ function normaliseSpec(input, { source = 'ai' } = {}) {
   // a broken preview the player still paid for.
   assertParses(javascript);
 
-  const lineCount = javascript.split('\n').length;
-  if (lineCount < MIN_CODE_LINES || javascript.length < MIN_CODE_CHARS) {
+  /* Size is measured in characters, not lines.
+
+     It used to be both, and the line half threw away working games. A model
+     answering under a JSON schema often writes the whole file on ONE line -
+     no newlines anywhere - and that is still perfectly good JavaScript.
+     Production failed seven attempts in a row on "1 lines of code, which is a
+     stub", rejecting a game that had already passed the parser each time.
+
+     A stub is short. That is what short means here now, and the boot test is
+     what decides whether the thing actually runs. */
+  if (javascript.length < MIN_CODE_CHARS) {
     throw new SpecError(
-      `The model returned ${lineCount} lines of code, which is a stub rather than a playable game.`,
+      `The model returned ${javascript.length} characters of code, which is a stub rather than a playable game.`,
       ['gameCode.javascript']
     );
   }
+
+  // Give a one-line file its newlines back, so the Code tab is readable and
+  // "700 lines" means something.
+  javascript = breakUpOneLiner(javascript);
+  const lineCount = javascript.split('\n').length;
   if (!/new\s+Phaser\.Game/.test(javascript) && !/MEAMUS\.boot\s*\(/.test(javascript)) {
     throw new SpecError('The generated code never starts a Phaser game.', ['gameCode.javascript']);
   }

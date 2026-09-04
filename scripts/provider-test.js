@@ -409,6 +409,38 @@ async function check(name, fn) {
     }
   });
 
+  await check('a whole game written on one line is not a stub', async () => {
+    // Seven attempts in a row died on this in production: "The model returned
+    // 1 lines of code, which is a stub rather than a playable game" - thrown at
+    // a 22,000-character game that had already passed the parser. A model
+    // answering under a JSON schema often emits no newlines at all, and the
+    // stub gate counted lines.
+    const { normaliseSpec } = require('../server/services/validator');
+    const smoke = require('../server/services/smoke');
+    const good = require('../server/services/templates').get('space-shooter').spec;
+
+    const oneLine = good.gameCode.javascript
+      .split('\n').map((l) => l.replace(/\/\/.*$/, '').trim()).filter(Boolean).join(' ');
+    assert.strictEqual(oneLine.split('\n').length, 1, 'the fixture is not actually one line');
+    assert.ok(oneLine.length > 10000, 'the fixture is not a whole game');
+
+    const input = JSON.parse(JSON.stringify(good));
+    input.gameCode.javascript = oneLine;
+    const { spec } = normaliseSpec(input, { source: 'ai' });
+
+    // Accepted, and given its newlines back so the Code tab is readable.
+    assert.ok(spec.gameCode.javascript.split('\n').length > 100,
+      'a one-line game was accepted but left unreadable');
+    // And it still runs after the reformatting.
+    const booted = smoke.boot(spec.gameCode.javascript);
+    assert.ok(booted.scenes.length >= 3, `only ${booted.scenes.length} scenes booted`);
+
+    // A genuine stub is still refused.
+    const stub = JSON.parse(JSON.stringify(good));
+    stub.gameCode.javascript = 'new Phaser.Game({});';
+    assert.throws(() => normaliseSpec(stub, { source: 'ai' }), /stub/i, 'a real stub was accepted');
+  });
+
   await check('a build that cannot be generated still ships something playable', async () => {
     // The founder gets a game, and is told plainly that it is not the one they
     // asked for. A red error box is not a product.
