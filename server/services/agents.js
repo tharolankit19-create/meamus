@@ -262,9 +262,14 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
         spec, issues, response, repairs: attemptNo - 1, scenes: booted.scenes.length
       };
     } catch (err) {
-      // A transport failure is not the model's fault and there is nothing to
-      // feed back, so it ends the build rather than burning the budget.
-      if (err && err.name === 'LlmError' && !/ran out of room|cut off/i.test(err.message)) throw err;
+      /* Only a failure that will still be true next time ends the build.
+         A missing or rejected key is one of those; a rate limit is not, and
+         treating it as one is what made a production build give up after a
+         single call. Transport failures are already waited out a layer down,
+         so reaching here means the provider stayed unhappy - which the time
+         budget, not this line, decides how long to keep trying. */
+      const fatal = err && err.name === 'LlmError' && (err.status === 401 || err.status === 503);
+      if (fatal) throw err;
 
       // Quote what it actually wrote, so the next attempt is an edit rather
       // than a restart from nothing. Capped, because a rejected answer is

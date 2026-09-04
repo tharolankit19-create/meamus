@@ -87,6 +87,8 @@ let truncateNext = false;
 // "answer every call with the good spec", which is what most tests want.
 let replies = null;
 let replyAt = 0;
+// Number of coder calls to answer with a rate limit before behaving.
+let rateLimitFirst = 0;
 
 const server = http.createServer((req, res) => {
   let body = '';
@@ -112,6 +114,12 @@ const server = http.createServer((req, res) => {
     // A scripted reply, when a test is driving the coder through failures.
     const sys = ((parsed.messages || []).find((m) => m.role === 'system') || {}).content || '';
     const isCoder = !/you produce the brief|You review Phaser 3/i.test(sys);
+
+    if (isCoder && rateLimitFirst > 0) {
+      rateLimitFirst -= 1;
+      res.statusCode = 429;
+      return res.end(JSON.stringify({ error: { message: 'Provider returned error' } }));
+    }
     if (replies && isCoder) {
       if (replies === 'always-garbage') {
         return res.end(JSON.stringify({
@@ -415,6 +423,50 @@ async function check(name, fn) {
       'the founder is not told what happened');
     // And it does not pretend to be the game they asked for.
     assert.ok(!/ludo/i.test(spec.gameConfig.title), `the rescue lies about itself: ${spec.gameConfig.title}`);
+  });
+
+  await check('a rate limit is waited out, not treated as a dead build', async () => {
+    // On a free tier a 429 is the common path, not an exception - the cap is
+    // per minute and one build is several calls. A production build gave up
+    // after a single 429 and shipped a fallback, because any transport error
+    // ended the build. Now it waits and asks again.
+    const previous = { retries: config.llm.retries, base: config.llm.retryBaseMs, max: config.llm.retryMaxMs };
+    config.llm.retryBaseMs = 50;
+    config.llm.retryMaxMs = 120;
+    rateLimitFirst = 3;
+
+    try {
+      const { spec, meta } = await generator.generate('a space shooter', { allowFallback: false });
+      assert.ok(spec.gameCode.javascript.length > 1000, 'no game came back');
+      assert.ok(!meta.rescued, 'a rate limit should not force the fallback');
+      assert.strictEqual(rateLimitFirst, 0, 'the rate limits were not all consumed');
+    } finally {
+      rateLimitFirst = 0;
+      config.llm.retries = previous.retries;
+      config.llm.retryBaseMs = previous.base;
+      config.llm.retryMaxMs = previous.max;
+    }
+  });
+
+  await check('a rejected key is not waited out', async () => {
+    // The opposite case: an error that will still be true in ten seconds must
+    // end the build immediately rather than burning the founder's time.
+    const key = process.env.OPENROUTER_API_KEY;
+    const started = Date.now();
+    let message = '';
+    try {
+      config.llm.apiKey = '';
+      config.llm.enabled = false;
+      await generator.generate('a space shooter', { allowFallback: false });
+      assert.fail('a missing key was accepted');
+    } catch (err) {
+      message = err.message;
+    } finally {
+      config.llm.apiKey = key;
+      config.llm.enabled = true;
+    }
+    assert.ok(/API key/i.test(message), `unhelpful error: ${message}`);
+    assert.ok(Date.now() - started < 3000, 'a hopeless call was retried anyway');
   });
 
   await check('an unknown model falls back to safe assumptions', async () => {
