@@ -203,6 +203,20 @@ function correctionFor(err, cutoffs = 0) {
       + 'you must reach it. Return the complete GameSpec JSON.';
   }
 
+  // The model reaching for a loader is its own failure mode, and the generic
+  // "check your punctuation" advice does nothing about it.
+  if (err.detail && /this\.load\.|data:[a-z]+\//i.test(err.detail.source || '')) {
+    return `That code is not valid JavaScript: ${err.message}${site}\n\n`
+      + 'The problem is the asset loader. There is nothing to load from - no server, '
+      + 'no files - and a data: URI is what your answer runs out of room writing. '
+      + 'Delete every this.load.* call and draw the sprite instead:\n\n'
+      + '    const g = this.make.graphics({ x: 0, y: 0, add: false });\n'
+      + '    g.fillStyle(0x4fa3d1, 1).fillRoundedRect(0, 0, 32, 24, 6);\n'
+      + "    g.generateTexture('ship', 32, 24);\n"
+      + '    g.destroy();\n\n'
+      + 'Return the complete corrected GameSpec JSON.';
+  }
+
   if (/does not parse/i.test(err.message)) {
     return `That code is not valid JavaScript: ${err.message}${site}\n\n`
       + 'Return the complete corrected GameSpec JSON. Write plain ASCII JavaScript: '

@@ -128,6 +128,34 @@ function repairTypography(code) {
   }
 }
 
+/**
+ * Strip HTML a model leaked into a code file.
+ *
+ * `<br>` in the middle of JavaScript is not a typo the model can be argued out
+ * of - it is writing for a web page by reflex. Production hit it as
+ * "Unexpected token '<' at line 5, column 1: <br>class BootScene extends P".
+ * A line break is what it meant, so that is what it gets, and the result is
+ * kept only if it then parses.
+ */
+function repairStrayHtml(code) {
+  if (!/<\s*br\s*\/?\s*>|&nbsp;|&amp;|&lt;|&gt;|&quot;/i.test(code)) return null;
+
+  const fixed = code
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"');
+
+  try {
+    new vm.Script(fixed, { filename: 'game.js' });
+    return fixed;
+  } catch {
+    return null;
+  }
+}
+
 /** The non-ASCII characters in a string, named, so an error can point at them. */
 function oddCharacters(code) {
   const seen = new Map();
@@ -351,7 +379,12 @@ function normaliseSpec(input, { source = 'ai' } = {}) {
      is guessing. */
   javascript = breakUpOneLiner(javascript);
 
-  // A mechanical fault with a mechanical fix, tried before giving up.
+  // Mechanical faults with mechanical fixes, tried before giving up.
+  const dehtml = repairStrayHtml(javascript);
+  if (dehtml) {
+    javascript = dehtml;
+    issues.push('The model left HTML tags in the code; they were turned back into line breaks.');
+  }
   const detyped = repairTypography(javascript);
   if (detyped) {
     javascript = detyped;
