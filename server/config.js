@@ -120,6 +120,15 @@ function buildLlmConfig() {
       return ['low', 'medium', 'high'].includes(raw) ? raw : false;
     })(),
     timeoutMs: positive('LLM_TIMEOUT_MS', process.env.LLM_TIMEOUT_MS, 300000),
+    /**
+     * How many times to ride out a provider-side failure - a rate limit, a 502,
+     * a timeout. These say nothing about the answer, so there is nothing to
+     * feed back to the model: the only sane response is to wait and ask again.
+     * On a free tier this is the common path, not the exception.
+     */
+    retries: positive('LLM_RETRIES', process.env.LLM_RETRIES, 4),
+    retryBaseMs: positive('LLM_RETRY_BASE_MS', process.env.LLM_RETRY_BASE_MS, 4000),
+    retryMaxMs: positive('LLM_RETRY_MAX_MS', process.env.LLM_RETRY_MAX_MS, 20000),
     referer: process.env.OPENROUTER_REFERER || 'https://meamus.app',
     title: process.env.OPENROUTER_TITLE || 'meamus'
   };

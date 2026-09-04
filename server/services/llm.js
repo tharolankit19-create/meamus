@@ -289,10 +289,15 @@ async function callOpenRouter({ messages, system, maxTokens, jsonSchema }) {
   if (choice.finish_reason === 'length') {
     const asked = payload.max_tokens;
     const used = (payloadBody.usage && payloadBody.usage.completion_tokens) || asked;
+    /* 422, not 502, and the distinction matters: this is a problem with the
+       ANSWER, not with reaching the provider. Asking again with the same
+       prompt gets the same over-long answer, so the transport retries below
+       must not swallow it - the build loop has to see it and tell the model to
+       write something shorter. */
     throw new LlmError(
       `The model ran out of room and its answer was cut off (${used} of ${asked} output tokens used). `
       + 'Raise LLM_MAX_TOKENS, or use a model with more output room.',
-      502,
+      422,
       { truncated: true, maxTokens: asked }
     );
   }
@@ -352,11 +357,45 @@ async function complete({ messages, system = SYSTEM_PROMPT, maxTokens, jsonSchem
   const caps = await capabilities();
   const useSchema = jsonSchema && caps.structuredOutputs && config.llm.provider === 'openrouter';
 
-  const result = config.llm.provider === 'anthropic'
-    ? await callAnthropic({ messages, system, maxTokens })
-    : await callOpenRouter({ messages, system, maxTokens, jsonSchema: useSchema });
+  const call = () => (config.llm.provider === 'anthropic'
+    ? callAnthropic({ messages, system, maxTokens })
+    : callOpenRouter({ messages, system, maxTokens, jsonSchema: useSchema }));
 
+  const result = await withTransportRetries(call);
   return { ...result, structuredOutput: useSchema, provider: config.llm.provider };
+}
+
+/**
+ * Ride out the failures that are about the provider, not the answer.
+ *
+ * A rate limit is not an error on a free tier, it is Tuesday: the cap is per
+ * minute, and one build is three to five calls. A production build died on
+ * exactly this - one call, a 429, and the whole build gave up and shipped a
+ * fallback, because the layer above treats any transport error as fatal and
+ * there was nothing to feed back to the model.
+ *
+ * There genuinely is nothing to feed back. The right response is to wait and
+ * ask again, which is what this does, and it belongs here rather than in the
+ * build loop so every agent gets it. A wrong key is not waited out.
+ */
+async function withTransportRetries(call) {
+  let wait = config.llm.retryBaseMs;
+
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await call();
+    } catch (err) {
+      const transient = err instanceof LlmError
+        && (err.status === 429 || err.status === 502 || err.status === 504);
+      if (!transient || attempt > config.llm.retries) throw err;
+
+      // Jittered, so a burst of builds does not come back in lockstep.
+      const pause = wait + Math.floor(Math.random() * 400);
+      console.error(`[llm] ${err.status} on attempt ${attempt}, retrying in ${pause}ms`);
+      await new Promise((r) => setTimeout(r, pause));
+      wait = Math.min(wait * 2, config.llm.retryMaxMs);
+    }
+  }
 }
 
 /** Test hook: forget any detected capabilities. */
