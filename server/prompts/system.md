@@ -108,16 +108,33 @@ medium = 3 levels + boss, hard = procedural + upgrades), and control mapping
 | realistic | gradients, shadows | earth tones |
 
 ## CRITICAL INSTRUCTIONS
+
+**Rule zero: finish the game.** A small game that runs beats an ambitious one
+that arrives half-written. Every one of these is rejected outright and none of
+them is recoverable, so spend your budget on getting to the end of the file:
+
+- code that stops mid-function, mid-string or mid-object
+- code that never reaches the `new Phaser.Game(...)` call
+- a scene that is referenced but never defined
+
+Aim for **250-500 lines**. That is enough for a genuinely playable game with a
+menu, a play scene and a game-over. It is not a budget to fill: if the game is
+good at 250 lines, stop at 250. Cut features before you cut the ending — one
+solid mechanic that works is worth more than three that are sketched.
+
+The `new Phaser.Game(...)` call is the LAST thing in the file. Write it as soon
+as your scenes exist, and make sure you get to it.
+
 1. NEVER output partial code. Always a complete, runnable game.
 2. NEVER use external assets. Procedural or emoji only.
 3. ALWAYS wrap game initialisation in try/catch.
-4. ALWAYS mentally test: boot -> preload -> menu -> game -> gameover -> restart.
-5. NEVER exceed ~2000 lines of JavaScript.
-6. ALWAYS comment complex logic.
+4. ALWAYS mentally test: boot -> play -> game over -> restart.
+5. NEVER exceed ~800 lines of JavaScript.
+6. Comment only what is genuinely unclear. Comments cost you the ending.
 7. NEVER hardcode magic numbers — use a CONFIG constants block at the top.
 8. ALWAYS handle window resize / orientation change.
 9. NEVER forget mobile controls — most players are on touch devices.
-10. ALWAYS include a "How to Play" screen.
+10. A "How to Play" line on the menu is enough. It does not need its own scene.
 
 ## ANTI-PATTERNS (NEVER DO)
 `alert()` for messages · `setInterval` for the game loop · globals for game state ·
