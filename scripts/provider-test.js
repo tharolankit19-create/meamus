@@ -477,6 +477,37 @@ async function check(name, fn) {
     assert.throws(() => normaliseSpec(hopeless, { source: 'ai' }), /does not parse/);
   });
 
+  await check('a syntax error in a one-line game is located, not guessed at', async () => {
+    // V8 gives up on locating an error in a very long line: on a 22,000
+    // character one-liner it prints a caret row of a thousand spaces and no
+    // caret. Three production builds reported "at game.js line 1: const CONFIG
+    // = { PLAYER_SPEED: 300," on every attempt - the first forty characters of
+    // the file, not the error. The code is split into lines before parsing so
+    // there is a real line and column to report.
+    const { normaliseSpec } = require('../server/services/validator');
+    const good = require('../server/services/templates').get('space-shooter').spec;
+
+    const oneLine = good.gameCode.javascript.split('\n')
+      .map((l) => l.replace(/\/\/.*$/, '').trim()).filter(Boolean).join(' ');
+    const broken = `${oneLine.slice(0, 9000)} const oops = 5 @ 3; ${oneLine.slice(9000)}`;
+
+    const input = JSON.parse(JSON.stringify(good));
+    input.gameCode.javascript = broken;
+
+    try {
+      normaliseSpec(input, { source: 'ai' });
+      assert.fail('broken code was accepted');
+    } catch (err) {
+      assert.ok(err.detail && err.detail.line > 1,
+        `no usable line number: ${JSON.stringify(err.detail)}`);
+      assert.ok(err.detail.column > 0, 'no column');
+      assert.ok(/const oops = 5 @ 3/.test(err.message),
+        `the error does not quote the offending code: ${err.message}`);
+      // And it does not blame innocent characters elsewhere in the file.
+      assert.ok(!/\u2665/.test(err.message), 'blamed a heart in a score label');
+    }
+  });
+
   await check('a build that cannot be generated still ships something playable', async () => {
     // The founder gets a game, and is told plainly that it is not the one they
     // asked for. A red error box is not a product.
