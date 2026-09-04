@@ -585,6 +585,57 @@ async function check(name, fn) {
       'a real game did not survive the round trip');
   });
 
+  await check('HTML tags leaked into the code are stripped, not rejected', async () => {
+    // Production: "Unexpected token '<' at line 5, column 1:
+    //              <br>class BootScene extends P"
+    // The model writes for a web page by reflex. A line break is what it meant.
+    const { normaliseSpec } = require('../server/services/validator');
+    const smoke = require('../server/services/smoke');
+    const vm = require('node:vm');
+    const good = require('../server/services/templates').get('space-shooter').spec;
+
+    const broken = good.gameCode.javascript.split('\n').join('<br>');
+    assert.throws(() => new vm.Script(broken, { filename: 'x' }), SyntaxError,
+      'the fixture is not actually broken');
+
+    const input = JSON.parse(JSON.stringify(good));
+    input.gameCode.javascript = broken;
+    const { spec, issues } = normaliseSpec(input, { source: 'ai' });
+
+    assert.ok(issues.some((i) => /HTML tags/i.test(i)), 'the repair was not reported');
+    assert.ok(smoke.boot(spec.gameCode.javascript).scenes.length >= 5,
+      'the repaired game does not boot');
+  });
+
+  await check('a loader call gets told to draw the sprite instead', async () => {
+    // The model keeps reaching for this.load.spritesheet with a data: URI -
+    // forbidden, enormous, and what its answer runs out of room writing. The
+    // generic "check your punctuation" correction did nothing about it.
+    const agentsSrc = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'server', 'services', 'agents.js'), 'utf8'
+    );
+    const body = agentsSrc.slice(
+      agentsSrc.indexOf('const SHRINK_STEPS'),
+      agentsSrc.indexOf('/**\n * Write the game')
+    );
+    // eslint-disable-next-line no-new-func
+    const correctionFor = new Function(`return (()=>{${body}; return correctionFor;})()`)();
+
+    const loader = correctionFor({
+      message: 'The generated code does not parse: Invalid or unexpected token',
+      detail: { line: 82, column: 40, source: "this.load.spritesheet('asteroid', 'data:image/png;base64," }
+    }, 0);
+    assert.ok(/generateTexture/.test(loader), 'the correction does not show how to draw it');
+    assert.ok(/this\.load/.test(loader), 'the correction does not name the loader');
+
+    // A plain syntax error elsewhere still gets the punctuation advice.
+    const plain = correctionFor({
+      message: 'The generated code does not parse: Invalid or unexpected token',
+      detail: { line: 12, column: 4, source: 'const x = 5 @ 3;' }
+    }, 0);
+    assert.ok(!/generateTexture/.test(plain), 'unrelated errors got the loader advice');
+  });
+
   await check('a build that cannot be generated still ships something playable', async () => {
     // The founder gets a game, and is told plainly that it is not the one they
     // asked for. A red error box is not a product.

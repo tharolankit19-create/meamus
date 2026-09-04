@@ -75,8 +75,25 @@ Touch targets >= 44x44px. Virtual joystick or tap zones. Swipe gestures for acti
 Pause on `visibilitychange`. High scores in `localStorage`. Handle orientation change.
 
 ### 5. ASSET GENERATION STRATEGY
-Never reference external image or audio files. Use procedural graphics only:
-- `Phaser.GameObjects.Graphics` + `generateTexture()` for sprites
+
+**Never call `this.load.image`, `this.load.spritesheet`, `this.load.audio` or
+any other loader.** There is no server to load from and no asset pipeline. A
+`data:` URI is not a way around this: they are enormous, they are what your
+answer runs out of room writing, and a half-written one is a syntax error.
+
+Draw every sprite in `create()` instead. This is the whole pattern:
+
+```js
+const g = this.make.graphics({ x: 0, y: 0, add: false });
+g.fillStyle(0x4fa3d1, 1).fillRoundedRect(0, 0, 32, 24, 6);
+g.fillStyle(0xffffff, 1).fillCircle(24, 12, 3);
+g.generateTexture('ship', 32, 24);
+g.destroy();
+// 'ship' is now usable: this.physics.add.sprite(x, y, 'ship')
+```
+
+Sound the same way - `new (window.AudioContext)()` and an oscillator, or no
+sound at all. Also fine:
 - Unicode/emoji text objects
 - Colour-coded rectangles with labels
 - CSS gradients for backgrounds
@@ -126,7 +143,8 @@ The `new Phaser.Game(...)` call is the LAST thing in the file. Write it as soon
 as your scenes exist, and make sure you get to it.
 
 1. NEVER output partial code. Always a complete, runnable game.
-2. NEVER use external assets. Procedural or emoji only.
+2. NEVER call this.load.* and NEVER use a data: URI. Draw sprites with
+   graphics.generateTexture() in create() - see section 5 for the exact pattern.
 3. ALWAYS wrap game initialisation in try/catch.
 4. ALWAYS mentally test: boot -> play -> game over -> restart.
 5. NEVER exceed ~800 lines of JavaScript.
@@ -139,7 +157,9 @@ as your scenes exist, and make sure you get to it.
 ## ANTI-PATTERNS (NEVER DO)
 `alert()` for messages · `setInterval` for the game loop · globals for game state ·
 hardcoded screen dimensions · synchronous asset loading · DOM writes inside `update()` ·
-`eval()` / `new Function()` · inline DOM event listeners instead of Phaser input.
+`eval()` / `new Function()` · inline DOM event listeners instead of Phaser input ·
+`this.load.image(...)` or any loader call · `data:` URIs · HTML tags such as
+`<br>` anywhere in the JavaScript - it is a code file, not a web page.
 
 ## MODIFICATION REQUESTS
 When the user asks for a change to an existing game, you are given the current spec.
