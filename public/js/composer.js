@@ -31,6 +31,7 @@ const readAsDataUrl = (file) => new Promise((resolve, reject) => {
 export function createComposer(opts) {
   const attachments = [];      // { id, name, kind, url, pending }
   let busy = false;
+  let submitting = false;
 
   const textarea = el('textarea', {
     rows: '1',
@@ -47,9 +48,9 @@ export function createComposer(opts) {
     title: opts.submitLabel || 'Send', 'aria-label': opts.submitLabel || 'Send'
   }, icon('arrowUp'));
 
-  const modeSelect = el('select', { class: 'mode-select', title: 'Generation mode' },
-    el('option', { value: 'build' }, 'Build'),
-    el('option', { value: 'template' }, 'Template'));
+  const hint = el('span', { class: 'composer-hint' }, 'Enter to send · Shift+Enter for a new line');
+  const counter = el('span', { class: 'composer-count' }, '0 / 2000');
+  const feedback = el('div', { class: 'composer-feedback hide', role: 'status', 'aria-live': 'polite' });
 
   const bar = el('div', { class: 'composer-bar' },
     el('button', {
@@ -58,11 +59,11 @@ export function createComposer(opts) {
       onClick: () => fileInput.click()
     }, icon('plus', 'lg')),
     el('span', { class: 'grow' }),
-    modeSelect,
+    counter,
     sendBtn);
 
   const node = el('div', { class: `composer ${opts.compact ? 'compact' : ''}` },
-    textarea, strip, bar, fileInput);
+    textarea, strip, bar, hint, feedback, fileInput);
 
   /* --- autosize + submit shortcuts ------------------------------------- */
   const autosize = () => {
@@ -71,12 +72,15 @@ export function createComposer(opts) {
   };
   const syncSend = () => {
     const pending = attachments.some((a) => a.pending);
-    sendBtn.disabled = busy || pending || !textarea.value.trim();
+    sendBtn.disabled = busy || submitting || pending || textarea.value.trim().length < 3;
+    counter.textContent = `${textarea.value.length} / 2000`;
+    node.classList.toggle('is-busy', busy || submitting);
+    node.setAttribute('aria-busy', String(busy || submitting));
   };
 
   textarea.addEventListener('input', () => { autosize(); syncSend(); });
   textarea.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
       event.preventDefault();
       submit();
     }
@@ -98,6 +102,8 @@ export function createComposer(opts) {
           type: 'button', title: `Remove ${att.name}`, 'aria-label': `Remove ${att.name}`,
           onClick: () => {
             const idx = attachments.indexOf(att);
+            if (busy || submitting) return;
+            if (att.preview) URL.revokeObjectURL(att.preview);
             if (idx > -1) attachments.splice(idx, 1);
             renderStrip();
             syncSend();
@@ -107,11 +113,20 @@ export function createComposer(opts) {
   }
 
   async function addFiles(fileList) {
+    if (busy || submitting) return;
     const files = [...fileList];
     if (!files.length) return;
     if (attachments.length + files.length > MAX_FILES) {
       toast(`You can attach up to ${MAX_FILES} files per message`, 'warn');
       return;
+    }
+
+    for (const file of files) {
+      const image = file.type.startsWith('image/');
+      if (file.size > (image ? 5 * 1024 * 1024 : 512 * 1024)) {
+        toast(`${file.name} is too large. Images: 5 MB; text files: 512 KB.`, 'warn');
+        return;
+      }
     }
 
     // Show every file immediately as pending, then upload as a single batch.
@@ -143,6 +158,7 @@ export function createComposer(opts) {
     } catch (err) {
       // Drop the failed batch rather than leaving unusable chips behind.
       for (const { entry } of entries) {
+        if (entry.preview) URL.revokeObjectURL(entry.preview);
         const idx = attachments.indexOf(entry);
         if (idx > -1) attachments.splice(idx, 1);
       }
@@ -182,13 +198,24 @@ export function createComposer(opts) {
   /* --- submit ------------------------------------------------------------ */
   async function submit() {
     const text = textarea.value.trim();
-    if (!text || busy) return;
+    if (text.length < 3 || busy || submitting) return;
     if (attachments.some((a) => a.pending)) {
       toast('Wait for the attachments to finish uploading', 'warn');
       return;
     }
     const ids = attachments.map((a) => a.id).filter(Boolean);
-    await opts.onSubmit(text, ids, { mode: modeSelect.value });
+    submitting = true;
+    feedback.classList.add('hide');
+    syncSend();
+    try {
+      await opts.onSubmit(text, ids);
+    } catch (err) {
+      feedback.textContent = err.message || 'Could not send. Your prompt is still here; try again.';
+      feedback.classList.remove('hide');
+    } finally {
+      submitting = false;
+      syncSend();
+    }
   }
 
   const controller = {
@@ -198,6 +225,7 @@ export function createComposer(opts) {
     getValue: () => textarea.value,
     clearAll() {
       textarea.value = '';
+      attachments.forEach((att) => { if (att.preview) URL.revokeObjectURL(att.preview); });
       attachments.length = 0;
       renderStrip();
       autosize();
@@ -206,7 +234,9 @@ export function createComposer(opts) {
     setBusy(value) {
       busy = value;
       textarea.disabled = value;
-      modeSelect.disabled = value;
+      fileInput.disabled = value;
+      hint.textContent = value ? 'Building your game… you can follow progress in the workspace.'
+        : 'Enter to send · Shift+Enter for a new line';
       // A ring in place of the arrow: the button itself carries the state, so
       // the eye does not have to leave the thing that was just clicked.
       clear(sendBtn).append(value ? spinner() : icon('arrowUp'));

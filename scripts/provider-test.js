@@ -183,6 +183,7 @@ async function check(name, fn) {
   const llm = require('../server/services/llm');
   const config = require('../server/config');
   const generator = require('../server/services/generator');
+  require('../server/services/research').referencesFor = async () => ({ used: false, references: [], categories: [] });
 
   console.log(`\nmeamus provider test  (mock OpenRouter on :${port})\n`);
 
@@ -332,6 +333,86 @@ async function check(name, fn) {
     config.build.crew = crewDefault;
   });
 
+  await check('free-model default uses one call and repairs truncated output', async () => {
+    assert.strictEqual(crewDefault, false);
+    replies = [
+      { content: '{"gameConfig":', finish: 'length' },
+      { content: JSON.stringify(FAKE_SPEC) }
+    ];
+    replyAt = 0;
+    captured.length = 0;
+    try {
+      const { meta } = await generator.generate('dodge blocks', { allowFallback: false, research: false });
+      assert.strictEqual(meta.attempts, 2);
+      assert.strictEqual(captured.length, 2);
+      assert.match(captured[1].body.messages.at(-1).content, /reduce mechanics/);
+    } finally { replies = null; }
+  });
+
+  await check('the build deadline includes a stalled response body', async () => {
+    const originalFetch = global.fetch;
+    const budget = config.build.budgetMs;
+    const retries = config.llm.retries;
+    config.build.budgetMs = 80;
+    config.llm.retries = 0;
+    global.fetch = async (url, opts) => ({
+      text: () => new Promise((resolve, reject) => {
+        opts.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+      })
+    });
+    const started = Date.now();
+    try {
+      await assert.rejects(llm.withBudget(() => llm.complete({ messages: [{ role: 'user', content: 'hello' }] })), /too long/);
+      assert.ok(Date.now() - started < 1000);
+    } finally { global.fetch = originalFetch; config.build.budgetMs = budget; config.llm.retries = retries; }
+  });
+
+  await check('Retry-After does not retry before the provider permits it', async () => {
+    const originalFetch = global.fetch;
+    const budget = config.build.budgetMs;
+    let calls = 0;
+    config.build.budgetMs = 100;
+    global.fetch = async () => {
+      calls++;
+      return new Response(JSON.stringify({ error: { message: 'per-minute limit' } }), {
+        status: 429, headers: { 'retry-after': '60' }
+      });
+    };
+    try {
+      await assert.rejects(llm.withBudget(() => llm.complete({ messages: [] })), (err) => err.status === 429);
+      assert.strictEqual(calls, 1, 'a retry that cannot fit the deadline must not start');
+    } finally { global.fetch = originalFetch; config.build.budgetMs = budget; }
+  });
+
+  await check('unsupported schema fallback reports the actual output mode', async () => {
+    const originalFetch = global.fetch;
+    const calls = [];
+    global.fetch = async (url, opts) => {
+      calls.push(JSON.parse(opts.body));
+      return calls.length === 1
+        ? new Response('unsupported response_format', { status: 400 })
+        : new Response(JSON.stringify({ choices: [{ message: { content: '{}' }, finish_reason: 'stop' }] }));
+    };
+    try {
+      const result = await llm.complete({ messages: [], jsonSchema: true });
+      assert.strictEqual(calls.length, 2);
+      assert.ok(calls[0].response_format);
+      assert.strictEqual(calls[1].response_format, undefined);
+      assert.strictEqual(result.structuredOutput, false);
+    } finally { global.fetch = originalFetch; }
+  });
+
+  await check('catalogue output limits cap the request budget', async () => {
+    const caps = await llm.capabilities();
+    const previous = caps.maxOutput;
+    caps.maxOutput = 4000;
+    captured.length = 0;
+    try {
+      await llm.complete({ messages: [{ role: 'user', content: 'test' }] });
+      assert.strictEqual(captured[0].body.max_tokens, 4000);
+    } finally { caps.maxOutput = previous; }
+  });
+
   await check('reasoning is switched off, so it cannot eat the answer', async () => {
     captured.length = 0;
     await generator.generate('dodge blocks', { allowFallback: false });
@@ -361,6 +442,8 @@ async function check(name, fn) {
   });
 
   await check('every way a build can fail is retried, not just a boot failure', async () => {
+    const previousCrew = config.build.crew;
+    config.build.crew = true;
     // Production died at 56 seconds on "does not parse: Invalid or unexpected
     // token" having tried exactly once, because only a BOOT failure was
     // retried. A bad token, malformed JSON or a truncated answer all threw
@@ -391,6 +474,7 @@ async function check(name, fn) {
     assert.ok(spec.gameCode.javascript.length > 1000, 'no game came back');
     assert.strictEqual(meta.attempts, 5, `expected 5 coder attempts, got ${meta.attempts}`);
     replies = null;
+    config.build.crew = previousCrew;
   });
 
   await check('a parse failure names the line so the fix is possible', async () => {
@@ -693,12 +777,12 @@ async function check(name, fn) {
     assert.ok(!built.isDailyCap('Rate limit exceeded: 20 requests per minute'), 'a per-minute cap was misread as daily');
 
     const message = built.rateLimitMessage(daily);
-    assert.ok(/daily cap/i.test(message), 'the message does not say it is a daily cap');
+    assert.ok(/daily (cap|request limit)/i.test(message), 'the message does not say it is a daily cap');
     assert.ok(!/wait a minute/i.test(message), 'the message still tells them to wait a minute');
-    assert.ok(/openrouter\.com\/credits|openrouter\.ai\/credits/.test(message), 'no way forward is offered');
+    assert.ok(/choose another available model/.test(message), 'no way forward is offered');
 
     // And the per-minute case keeps its own, correct advice.
-    assert.ok(/wait a minute/i.test(built.rateLimitMessage('Rate limit exceeded: 20 requests per minute')),
+    assert.ok(/try again shortly/i.test(built.rateLimitMessage('Rate limit exceeded: 20 requests per minute')),
       'the per-minute message lost its advice');
   });
 

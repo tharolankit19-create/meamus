@@ -39,14 +39,17 @@ const id = (prefix) => `${prefix}_${crypto.randomBytes(9).toString('hex')}`;
 /* --- plans ---------------------------------------------------------------- */
 
 /** Park an approved brief so start() cannot be called with different terms. */
-function savePlan(userId, plan) {
+async function savePlan(userId, plan) {
   const planId = id('pln');
-  plans.set(planId, { ...plan, planId, userId, createdAt: Date.now() });
+  const record = { ...plan, planId, userId, createdAt: Date.now() };
+  if (db.saveBuildPlan) await db.saveBuildPlan(record);
+  else plans.set(planId, record);
   sweep();
   return planId;
 }
 
-function takePlan(planId, userId) {
+async function takePlan(planId, userId) {
+  if (db.takeBuildPlan) return db.takeBuildPlan(planId, userId);
   const plan = plans.get(planId);
   if (!plan) return null;
   if (plan.userId !== userId) return null;
@@ -118,7 +121,8 @@ function flush(build, force = false) {
         stopRequested: build.stopRequested,
         error: build.error,
         plan: build.plan,
-        claimed: build.claimed
+        claimed: build.claimed,
+        completion: build.result ? { credits: build.result.credits, summary: build.result.summary, hype: build.result.hype } : null
       }
     });
   } catch (err) {
@@ -149,10 +153,34 @@ function get(buildId, userId) {
     // the last thing the working instance managed to say.
     result: game.spec
       ? { game: { id: game.id, title: game.spec.gameConfig.title, genre: game.spec.gameConfig.genre },
-        spec: game.spec, meta: game.meta, messages: game.messages || [] }
+        spec: game.spec, meta: game.meta, messages: game.messages || [], ...(game.build.completion || {}) }
       : null,
     fromStorage: true
   };
+}
+
+async function refresh(buildId, userId) {
+  if (!db.gameForBuild) return get(buildId, userId);
+  const game = await db.gameForBuild(buildId, userId);
+  if (!game) return null;
+  const local = builds.get(buildId);
+  if (local) {
+    local.stopRequested = local.stopRequested || game.build.stopRequested;
+    // Only a finished durable row supersedes the active writer's local steps.
+    if (game.build.state !== 'running' || !local.claimed) builds.delete(buildId);
+    else if (local.claimed) return local;
+  }
+  return get(buildId, userId);
+}
+
+async function claimDurable(build) {
+  if (!db.claimBuild) return claim(build);
+  if (!build || build.claimed || build.state !== 'running') return false;
+  const game = await db.gameForBuild(build.buildId, build.userId);
+  if (!game || !await db.claimBuild(game)) return false;
+  build.claimed = true;
+  builds.set(build.buildId, build);
+  return true;
 }
 
 /**
@@ -202,7 +230,7 @@ function fail(build, error) {
  * @returns {boolean} true if this caller may do the work
  */
 function claim(build) {
-  if (!build || build.claimed) return false;
+  if (!build || build.claimed || build.state !== 'running') return false;
   build.claimed = true;
   flush(build, true);
   return true;
@@ -255,4 +283,4 @@ function sweep() {
 /** Test hook. */
 function reset() { plans.clear(); builds.clear(); }
 
-module.exports = { savePlan, takePlan, start, get, claim, step, finish, fail, requestStop, view, flush, reset };
+module.exports = { savePlan, takePlan, start, get, refresh, claimDurable, claim, step, finish, fail, requestStop, view, flush, reset };
