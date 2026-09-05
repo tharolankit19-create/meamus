@@ -1161,6 +1161,100 @@ async function check(name, fn) {
       'the model should be told how far it got, not just given a smaller number');
   });
 
+  await check('running out of time ends the build instead of spinning', async () => {
+    /* A watched build logged attempts 4 through 12 in the same second, each
+       failing with "The build time limit was reached", and reported "12
+       attempts" and a message blaming the prompt. The llm layer's budget starts
+       when the build does and the coder loop's deadline starts later, so the
+       layer below knew the time was gone while this one still thought there was
+       some. Out of time is the end, not a failure to feed back.
+       
+       Note this is a regression guard, not a red-then-green test: against the
+       previous code it passes for an unrelated reason - the designer threw and
+       took the whole build with it, so the coder loop never ran to spin. The
+       fix for that is in the same change, which is why the two cannot be
+       separated here. */
+    const agents = require('../server/services/agents');
+    const original = global.fetch;
+    const budget = config.build.budgetMs;
+    config.build.budgetMs = 40;
+    config.build.crew = true;
+
+    /* withBudget is what the build route wraps the work in, and it is the
+       thing that runs out - so the test has to use it, or the condition never
+       occurs and the test passes against the bug. */
+    const started = Date.now();
+    const attempts = [];
+    try {
+      await llm.withBudget(() => agents.buildWithCrew('dodge blocks', {
+        /* The shape production was in: the route's deadline is generous, and
+           the llm budget - which started earlier, when the build did - is
+           already gone. The coder loop's own reserve check looks at the
+           deadline, sees plenty of time, and keeps asking. */
+        deadline: Date.now() + 200000,
+        onStep: (step) => { if (step.attempt) attempts.push(step.attempt); }
+      }));
+    } catch { /* failing is expected; how it fails is the point */ }
+    finally {
+      global.fetch = original;
+      config.build.budgetMs = budget;
+      config.build.crew = crewDefault;
+    }
+
+    assert.ok(Date.now() - started < 20000, 'it kept going long after the budget was gone');
+    const highest = attempts.length ? Math.max(...attempts) : 0;
+    assert.ok(highest <= 3,
+      `reached attempt ${highest} with no time left - every one of those failed instantly `
+      + 'with the same sentence and told the founder their prompt was too complex');
+  });
+
+  await check('a model that wrote a whole game is not dropped for one bad call', async () => {
+    /* dots-3 wrote 523 lines that parsed, and tripped on a single wrong method
+       name. It was dropped, and the build started over with a model that had
+       written nothing and then ran out of time. A boot failure on a complete
+       game is one precise correction away - it is the best position in the
+       build, not evidence the model cannot do it. */
+    const router = require('../server/services/models');
+    config.build.crew = true;
+    router.reset();
+    refuse.clear();
+    captured.length = 0;
+
+    // A complete game that parses and then throws on an invented Phaser method.
+    const wontBoot = JSON.stringify({
+      ...FAKE_SPEC,
+      gameCode: {
+        ...FAKE_SPEC.gameCode,
+        javascript: FAKE_SPEC.gameCode.javascript
+          .replace('this.cursors = this.input.keyboard.createCursorKeys();',
+            'this.cursors = this.input.keyboard.createArrowKeys();')
+      }
+    });
+    replies = [
+      { content: wontBoot }, { content: wontBoot }, { content: wontBoot }, { content: wontBoot }
+    ];
+    replyAt = 0;
+
+    try {
+      await generator.generate('dodge blocks', { allowFallback: true, research: false });
+    } catch { /* the point is who was asked, not the outcome */ }
+    replies = null;
+
+    const coderModels = captured
+      .filter((c) => {
+        const sys = (c.body.messages.find((m) => m.role === 'system') || {}).content || '';
+        return !/you produce the brief|You review Phaser 3/i.test(sys);
+      })
+      .map((c) => c.body.model);
+
+    assert.ok(coderModels.length >= 3, `only ${coderModels.length} coder attempts were made`);
+    assert.strictEqual(new Set(coderModels).size, 1,
+      `a model that kept writing complete games was swapped out anyway: ${[...new Set(coderModels)].join(', ')}`);
+
+    config.build.crew = crewDefault;
+    router.reset();
+  });
+
   await check('a model that keeps writing unusable code is replaced', async () => {
     /* Production: nine attempts, one model, nine unusable answers, 182 seconds,
        no game - with five other models sitting untried. A rate limit is a
