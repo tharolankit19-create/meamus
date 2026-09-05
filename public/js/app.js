@@ -20,6 +20,48 @@ function parseRoute() {
   return { name: head || '', params: rest };
 }
 
+/**
+ * Which view a route wants, given who is asking.
+ *
+ * Pulled out of render() so the decision can be read - and tested - in one
+ * place. It was three separate pieces of control flow (a guest switch, an
+ * if for protected routes, a signed-in switch) and the disagreement between
+ * them is where the bug lived: a signed-in visitor asking for the home page was
+ * redirected to the dashboard by the third piece, so the landing page was
+ * unreachable while signed in. From the sidebar wordmark, from #/home, and from
+ * the bare URL - three ways of asking, all refused.
+ *
+ * @param {object} where
+ * @param {string} where.name        the first hash segment ('' for the home page)
+ * @param {boolean} where.signedIn
+ * @param {boolean} [where.hasProjectId] whether #/project carries an id
+ * @returns {{view:string, redirect?:string, askToSignIn?:boolean}}
+ */
+export function routeFor({ name, signedIn, hasProjectId = true }) {
+  // The home page is a page, not a signed-out state. Everybody may see it; the
+  // nav shows "Dashboard" rather than "Log in" to whoever is already signed in.
+  if (name === '' || name === 'home') return { view: 'landing' };
+
+  if (name === 'templates') return { view: signedIn ? 'templates' : 'marketing-templates' };
+  if (name === 'pricing') return { view: signedIn ? 'pricing' : 'marketing-pricing' };
+  if (name === 'docs') return { view: 'docs' };
+
+  // A signed-out visitor following a project link is asked to sign in rather
+  // than dropped on the homepage with no explanation.
+  if (!signedIn) {
+    if (name === 'project' || name === 'dashboard' || name === 'account') {
+      return { view: 'landing', askToSignIn: true };
+    }
+    return { view: 'landing' };
+  }
+
+  if (name === 'project') {
+    return hasProjectId ? { view: 'workspace' } : { view: 'dashboard', redirect: '#/dashboard' };
+  }
+  if (name === 'account') return { view: 'account' };
+  return { view: 'dashboard' };
+}
+
 async function render() {
   const { name, params } = parseRoute();
 
@@ -41,64 +83,30 @@ async function render() {
     return;
   }
 
-  const browsing = !state.user;
+  const { view, redirect, askToSignIn } = routeFor({
+    name,
+    signedIn: Boolean(state.user),
+    hasProjectId: Boolean(params[0])
+  });
 
-  if (browsing) {
-    switch (name) {
-      case '':
-      case 'home':
-        renderLanding(host);
-        return;
-      case 'templates':
-        renderMarketingTemplates(host);
-        return;
-      case 'pricing':
-        await renderMarketingPricing(host);
-        return;
-      case 'docs':
-        renderDocs(host);
-        return;
-      default:
-        break;      // a guest still gets the app for dashboard/project routes
-    }
-  }
+  if (redirect) { location.hash = redirect; return; }
 
-  // A signed-out visitor following a project link is asked to sign in rather
-  // than being dropped on the homepage with no explanation.
-  if (!state.user) {
-    if (name === 'project' || name === 'dashboard' || name === 'account') {
+  switch (view) {
+    case 'landing':
       renderLanding(host);
-      const user = await openAuth('login');
-      if (user) render();
+      if (askToSignIn) {
+        const user = await openAuth('login');
+        if (user) render();
+      }
       return;
-    }
-    renderLanding(host);
-    return;
-  }
-
-  switch (name) {
-    case 'project':
-      if (!params[0]) { location.hash = '#/dashboard'; return; }
-      await renderWorkspace(host, params[0]);
-      return;
-    case 'templates':
-      renderTemplatesPage(host);
-      return;
-    case 'pricing':
-      await renderPricing(host);
-      return;
-    case 'account':
-      renderAccount(host);
-      return;
-    case 'docs':
-      renderDocs(host);
-      return;
-    case '':
-    case 'home':
-      location.hash = '#/dashboard';
-      return;
-    default:
-      renderDashboard(host);
+    case 'marketing-templates': renderMarketingTemplates(host); return;
+    case 'marketing-pricing': await renderMarketingPricing(host); return;
+    case 'docs': renderDocs(host); return;
+    case 'workspace': await renderWorkspace(host, params[0]); return;
+    case 'templates': renderTemplatesPage(host); return;
+    case 'pricing': await renderPricing(host); return;
+    case 'account': renderAccount(host); return;
+    default: renderDashboard(host);
   }
 }
 

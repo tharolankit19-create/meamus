@@ -348,12 +348,20 @@ async function check(name, fn) {
       assert.ok(agents.has(who), `${who} never reported in`);
     }
 
-    // How much code, and into which file.
-    const wrote = steps.find((s) => s.lines);
-    assert.ok(wrote, 'no step reported how many lines were written');
-    assert.strictEqual(wrote.file, 'game.js', 'the file written was not named');
+    // How much code, and into which file. Each real file the build produces
+    // reports itself twice: once when work on it starts, so a live timer has
+    // something to count, and once when it lands.
+    const wrote = steps.find((s) => s.artifact === 'game.js' && s.artifactState === 'done');
+    assert.ok(wrote, 'no step reported game.js as finished');
+    assert.ok(steps.some((s) => s.artifact === 'game.js' && s.artifactState === 'writing'),
+      'game.js never reported that it had started, so its timer has nothing to count from');
     assert.ok(wrote.lines > 10, `${wrote.lines} lines is not a game`);
     assert.ok(wrote.bytes > 0, 'the size was not reported');
+    assert.ok(wrote.added > 0, 'nothing was reported as added, on a file written from nothing');
+    assert.strictEqual(wrote.removed, 0, 'lines were reported as removed from a file that did not exist');
+
+    // The brief is a real artifact too - the coder builds from it.
+    assert.ok(steps.some((s) => s.artifact === 'brief.json'), 'the brief was not reported as a file');
 
     // Which model answered, so a slow build can be told apart from a refused one.
     const named = steps.filter((s) => s.model);
@@ -372,6 +380,44 @@ async function check(name, fn) {
     assert.ok(meta.model, 'the finished game does not say which model wrote it');
     assert.ok(meta.transcript && meta.transcript.some((t) => t.lines),
       'the saved transcript lost the line count, so a reload shows less than the build did');
+    assert.ok(meta.transcript.some((t) => t.artifact === 'game.js'),
+      'the saved transcript lost the files, so a reload shows a log where the build showed cards');
+  });
+
+  await check('games are briefed light by default, and playable with a thumb', async () => {
+    /* Two things a generated game gives itself away with: a dark canvas covered
+       in saturated neon, and controls that assume a keyboard. Both are defaults
+       the model falls into unless it is told otherwise, and both are decided
+       before a line of code is written - in the system prompt and in the
+       designer's brief - so that is where they are answered. */
+    const fs = require('fs');
+    const path = require('path');
+    const prompt = fs.readFileSync(
+      path.join(__dirname, '..', 'server', 'prompts', 'system.md'), 'utf8'
+    );
+    const designer = require('../server/services/agents').CREW.designer.system;
+
+    for (const [what, text] of Object.entries({ 'system prompt': prompt, 'designer brief': designer })) {
+      assert.match(text, /light/i, `${what} does not say to default to a light palette`);
+      assert.match(text, /dark/i, `${what} does not say when dark is allowed`);
+      assert.ok(/only.{0,40}(asks?|request)/is.test(text),
+        `${what} allows dark without tying it to the player asking for it`);
+    }
+
+    // Both control schemes, in every game, not one or the other.
+    assert.match(prompt, /touch/i, 'the prompt never mentions touch controls');
+    assert.match(prompt, /keyboard/i, 'the prompt never mentions keyboard controls');
+    assert.match(prompt, /44/, 'no minimum tap target is given, so buttons will be mouse-sized');
+    assert.match(prompt, /pointerdown/i,
+      'the prompt does not say to use pointer events, which is what serves mouse and touch at once');
+    assert.match(designer, /thumb/i, 'the designer is not told the game must work on a phone');
+
+    // Concrete instructions, not adjectives. "Make it look good" produces
+    // nothing; a named tween ease and a named shadow technique produce output.
+    for (const concrete of ['fillRoundedRect', 'setScrollFactor', 'easeOut', 'shake']) {
+      assert.ok(prompt.includes(concrete),
+        `the prompt asks for polish without naming how: ${concrete} is missing`);
+    }
   });
 
   await check('the chat summary states facts, not compliments', async () => {

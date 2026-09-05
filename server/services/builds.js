@@ -211,12 +211,22 @@ const STEP_FIELDS = [
   'model',        // which model was asked
   'modelIndex',   // and where it sits on the roster, when the first one refused
   'modelCount',
-  'file',         // what was written
-  'lines',        // and how much of it
+  'lines',        // how much was written
   'bytes',
   'scenes',       // what the tester booted
   'attempts',
-  'mechanics'     // what the designer specified
+  'mechanics',    // what the designer specified
+
+  /* Artifact fields. A step naming an artifact is rendered as a card in the
+     chat rather than a line in a log - so it carries what a card has to show:
+     which file, whether it is still being written, how long it took, and how
+     many lines moved in each direction. */
+  'artifact',     // the file this step is about, e.g. 'game.js'
+  'artifactState',// 'writing' | 'done' | 'failed'
+  'added',        // lines this rewrite introduced
+  'removed',      // lines it took out
+  'exactDiff',    // false when the diff was too large to compute properly
+  'tookMs'        // how long the artifact took, once it is finished
 ];
 
 /**

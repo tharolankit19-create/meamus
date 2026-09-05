@@ -235,16 +235,37 @@ router.post('/build/:id/run', requireAuth, asyncRoute(async (req, res) => {
  * artifact with nothing in it is skipped rather than reported as empty.
  */
 function shipSteps(build, spec) {
-  const say = (detail) => builds.step(build, { phase: 'ship', detail, agent: 'Bundler' });
-  const lines = spec.gameCode.javascript.split('\n').length;
+  const say = (detail, extra) => builds.step(build, { phase: 'ship', detail, agent: 'Bundler', ...extra });
+  const js = spec.gameCode.javascript;
+  const lines = js.split('\n').length;
 
-  say(`Saving game.js — ${lines} lines`);
-  if (spec.assets.sprites.length) {
-    say(`Saving ${spec.assets.sprites.length} sprite${spec.assets.sprites.length > 1 ? 's' : ''} — drawn in code`);
-  }
+  /* The artifacts that actually exist.
+  
+     A meamus game is one JavaScript file bundled into one HTML page. Sprites
+     and sound are drawn and synthesised inside that file - they are not
+     downloads and they are not files, and listing them as though they were
+     would be the invented detail this build report is meant to replace. So the
+     cards are game.js and index.html, and the sprite and sound counts are what
+     is inside game.js, said as a sentence. */
+  say(`${lines} lines, ${Math.round(js.length / 1024)} KB`, {
+    artifact: 'game.js', artifactState: 'done', lines, bytes: js.length
+  });
+
+  builds.step(build, {
+    phase: 'ship', agent: 'Bundler', detail: 'Bundling the page',
+    artifact: 'index.html', artifactState: 'writing'
+  });
+
+  const sprites = (spec.assets && spec.assets.sprites) || [];
   const audio = (spec.assets && spec.assets.audio) || [];
-  if (audio.length) say(`Saving ${audio.length} sound cue${audio.length > 1 ? 's' : ''} — synthesised at runtime`);
-  say(`Bundling index.html — ${spec.gameConfig.title}`);
+  const inside = [
+    sprites.length ? `${sprites.length} sprite${sprites.length > 1 ? 's' : ''} drawn in code` : null,
+    audio.length ? `${audio.length} sound cue${audio.length > 1 ? 's' : ''} synthesised at runtime` : null
+  ].filter(Boolean).join(' · ');
+
+  say(inside ? `${spec.gameConfig.title} · ${inside}` : spec.gameConfig.title, {
+    artifact: 'index.html', artifactState: 'done'
+  });
 }
 
 /**

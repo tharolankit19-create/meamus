@@ -325,7 +325,7 @@ const check = async (name, fn) => {
       model: 'nvidia/nemotron-3-super-120b-a12b:free',
       modelIndex: 2,
       modelCount: 6,
-      file: 'game.js',
+      artifact: 'game.js',
       lines: 341,
       bytes: 18220,
       spec: { enormous: 'x'.repeat(50000) }   // must not reach the row
@@ -333,7 +333,7 @@ const check = async (name, fn) => {
 
     const [step] = build.steps;
     assert.strictEqual(step.lines, 341, 'the line count was dropped');
-    assert.strictEqual(step.file, 'game.js', 'the file name was dropped');
+    assert.strictEqual(step.artifact, 'game.js', 'the file name was dropped');
     assert.strictEqual(step.model, 'nvidia/nemotron-3-super-120b-a12b:free');
     assert.strictEqual(step.modelIndex, 2);
     assert.strictEqual(step.agent, 'Coder');

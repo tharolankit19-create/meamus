@@ -9,13 +9,27 @@ class Node {
   constructor(tag, attrs = {}, children = []) {
     this.tag = tag; this.attrs = attrs; this.children = children; this.handlers = {};
     this.value = ''; this.style = {}; this.scrollHeight = 80; this.disabled = attrs.disabled || false;
-    const names = new Set((attrs.class || '').split(' '));
-    this.classList = { add: (x) => names.add(x), remove: (x) => names.delete(x),
-      toggle: (x, yes) => yes ? names.add(x) : names.delete(x), contains: (x) => names.has(x) };
+    /* classList and `class` are the same thing in a browser, so they are the
+       same thing here. They used to be a private Set that nothing wrote back
+       from, which meant a test reading attrs.class saw the classes an element
+       was BORN with and none of the ones it was given afterwards - a fake DOM
+       that quietly disagrees with the real one is worse than no fake DOM. */
+    const names = new Set((attrs.class || '').split(' ').filter(Boolean));
+    const sync = () => { this.attrs.class = [...names].join(' '); };
+    this.classList = {
+      add: (...xs) => { xs.forEach((x) => names.add(x)); sync(); },
+      remove: (...xs) => { xs.forEach((x) => names.delete(x)); sync(); },
+      toggle: (x, yes) => { const on = yes === undefined ? !names.has(x) : yes; if (on) names.add(x); else names.delete(x); sync(); },
+      contains: (x) => names.has(x)
+    };
   }
   addEventListener(name, fn) { this.handlers[name] = fn; }
+  remove() { if (this.parent) this.parent.children = this.parent.children.filter((n) => n !== this); }
   setAttribute(name, value) { this.attrs[name] = value; }
-  append(...nodes) { this.children.push(...nodes); }
+  append(...nodes) {
+    for (const n of nodes) { if (n && typeof n === 'object') n.parent = this; }
+    this.children.push(...nodes);
+  }
   focus() {}
   contains() { return false; }
 }
@@ -78,4 +92,147 @@ async function load(file, mocks, globals = {}) {
   nextPoll.resolve({state:'running',steps:[]}); await tick();
   assert.equal(view.state,'done', 'late stale poll must not overwrite completion');
   console.log('  ok    poll retry, /run completion, stale progress race');
+  /* --- the build panel -----------------------------------------------------
+   *
+   * A build produces a few real files; each should become a card that says what
+   * it is, how long it took and what changed, with prose around them rather
+   * than a scrolling log of sentences.
+   */
+  const panelTimers = new Map();
+  let nextTimer = 1;
+  const buildModule = await load('build.js', {
+    './ui.js': { ...ui, modal: () => ({}), spinner: () => new Node('span') },
+    './api.js': { builds: { stop: () => Promise.resolve() }, state: { user: { credits: 100 } } }
+  }, {
+    setInterval: (fn, ms) => { const id = nextTimer++; panelTimers.set(id, { fn, ms }); return id; },
+    clearInterval: (id) => panelTimers.delete(id),
+    Date, Math, window: { matchMedia: () => ({ matches: false }) }
+  });
+
+  const panel = buildModule.buildPanel('bld_1');
+  const cards = () => {
+    const found = [];
+    const walk = (n) => {
+      if (!n || typeof n !== 'object') return;
+      if (typeof n.attrs?.class === 'string' && n.attrs.class.includes('artifact-card')) found.push(n);
+      for (const child of n.children || []) walk(child);
+    };
+    walk(panel.node);
+    return found;
+  };
+  const textOf = (n) => {
+    let out = '';
+    const walk = (x) => {
+      if (x == null) return;
+      if (typeof x === 'string' || typeof x === 'number') { out += `${x} `; return; }
+      if (typeof x !== 'object') return;
+      for (const child of x.children || []) walk(child);
+    };
+    walk(n);
+    return out;
+  };
+
+  // Nothing has happened yet, so there are no files.
+  assert.equal(cards().length, 0, 'a build shows file cards before any file exists');
+
+  // A file that has started being written gets a card immediately - otherwise
+  // its live timer has nothing to count from.
+  panel.update({ elapsedMs: 100, steps: [
+    { at: 0, phase: 'design', agent: 'Designer', detail: 'Designing', artifact: 'brief.json', artifactState: 'writing' }
+  ] });
+  assert.equal(cards().length, 1, 'a file being written did not appear');
+  assert.ok(cards()[0].attrs.class.includes('is-writing'), 'a file in progress is not marked as such');
+  assert.ok(panelTimers.size >= 1, 'nothing is ticking, so the live counter is not live');
+
+  // ...and the same file finishing updates that card rather than adding another.
+  panel.update({ elapsedMs: 3000, steps: [
+    { at: 0, artifact: 'brief.json', artifactState: 'writing' },
+    { at: 2000, phase: 'design', agent: 'Designer', detail: 'Dodge Rush — dodge the rocks',
+      artifact: 'brief.json', artifactState: 'done', lines: 22, added: 22, removed: 0, exactDiff: true }
+  ] });
+  assert.equal(cards().length, 1, 'a file finishing added a second card for the same file');
+  assert.ok(cards()[0].attrs.class.includes('is-done'), 'a finished file is still shown as writing');
+  assert.match(textOf(cards()[0]), /\+22/, 'the lines added were not shown');
+  assert.match(textOf(cards()[0]), /−0/, 'the lines removed were not shown');
+
+  // A rewrite reports both directions, and they are the measured ones.
+  panel.update({ elapsedMs: 9000, steps: [
+    { at: 0, artifact: 'brief.json', artifactState: 'writing' },
+    { at: 2000, artifact: 'brief.json', artifactState: 'done', lines: 22, added: 22, removed: 0 },
+    { at: 3000, artifact: 'game.js', artifactState: 'writing' },
+    { at: 8000, phase: 'build', agent: 'Coder', detail: '412 lines, 14 KB',
+      artifact: 'game.js', artifactState: 'done', lines: 412, added: 96, removed: 38,
+      exactDiff: true, model: 'dots-studio/dots-3-note-preview:free' }
+  ] });
+  const game = cards().find((c) => textOf(c).includes('game.js'));
+  assert.ok(game, 'the game file never got a card');
+  assert.match(textOf(game), /\+96/, 'lines added missing');
+  assert.match(textOf(game), /−38/, 'lines removed missing');
+  assert.match(textOf(game), /dots-3-note-preview/, 'the model that wrote it is not named');
+
+  // Finishing stops every timer - a card left ticking after the build is over
+  // is a counter that lies for as long as the tab stays open.
+  panel.done({ state: 'done', elapsedMs: 9000, steps: [{ at: 8000, scenes: 3 }] });
+  assert.equal(panelTimers.size, 0, `${panelTimers.size} timers still running after the build finished`);
+  assert.match(textOf(panel.node), /You can play it now/, 'the founder is never told it is playable');
+  console.log('  ok    files become cards, diffs are shown, and the timers stop');
+
+  /* --- routing ------------------------------------------------------------
+   *
+   * The landing page was unreachable while signed in: the wordmark, #/home and
+   * the bare URL all bounced to the dashboard. Three ways of asking to see the
+   * front of the product, all refused, with nothing on screen saying why - so
+   * it read as the app being stuck. The decision now lives in one exported
+   * function, and this is the whole table.
+   */
+  const app = await load('app.js', {
+    './ui.js': { ...ui, $: () => new Node('div') },
+    './api.js': { state:{}, loadStatus:()=>{}, loadSession:()=>{}, onChange:()=>{}, projects:{}, consumeOAuthFragment:()=>{} },
+    './landing.js': { renderLanding: ()=>{} },
+    './setup.js': { setupRequired: ()=>false, renderSetup: ()=>{} },
+    './dashboard.js': { renderDashboard:()=>{}, renderTemplatesPage:()=>{}, renderPricing:()=>{}, sidebar:()=>new Node('aside') },
+    './workspace.js': { renderWorkspace: ()=>{} },
+    './auth-dialog.js': { openAuth: ()=>Promise.resolve(null) },
+    './marketing.js': { renderMarketingTemplates:()=>{}, renderMarketingPricing:()=>{}, renderDocs:()=>{} },
+    './watcher.js': { releaseAll: ()=>{} }
+  }, {
+    location: { hash: '' },
+    document: { body: { classList: { toggle: ()=>{} } } },
+    window: { addEventListener: ()=>{} }
+  });
+
+  const route = (name, signedIn, extra) => app.routeFor({ name, signedIn, ...extra });
+
+  // The bug, from both sides: the home page belongs to everybody.
+  assert.equal(route('', true).view, 'landing', 'a signed-in visitor cannot reach the home page');
+  assert.equal(route('home', true).view, 'landing', '#/home is refused while signed in');
+  assert.equal(route('', false).view, 'landing');
+  assert.equal(route('home', false).view, 'landing');
+  assert.equal(route('', true).redirect, undefined, 'the home page still redirects somewhere else');
+
+  // Signing in changes which version of a shared page you get, not whether you
+  // get one.
+  assert.equal(route('templates', false).view, 'marketing-templates');
+  assert.equal(route('templates', true).view, 'templates');
+  assert.equal(route('pricing', false).view, 'marketing-pricing');
+  assert.equal(route('pricing', true).view, 'pricing');
+  assert.equal(route('docs', false).view, 'docs');
+  assert.equal(route('docs', true).view, 'docs');
+
+  // A signed-out visitor following a project link is asked to sign in, not
+  // dumped on the homepage with no explanation.
+  for (const name of ['project', 'dashboard', 'account']) {
+    const r = route(name, false);
+    assert.equal(r.view, 'landing', `${name} should show the landing page to a guest`);
+    assert.equal(r.askToSignIn, true, `${name} should ask a guest to sign in`);
+  }
+
+  // Signed in, the app routes proper.
+  assert.equal(route('project', true, { hasProjectId: true }).view, 'workspace');
+  assert.equal(route('project', true, { hasProjectId: false }).redirect, '#/dashboard',
+    'a project link with no id must go somewhere, not render an empty workspace');
+  assert.equal(route('account', true).view, 'account');
+  assert.equal(route('dashboard', true).view, 'dashboard');
+  assert.equal(route('anything-else', true).view, 'dashboard');
+  console.log('  ok    the home page is reachable signed in, and every other route still lands');
 })().catch((err)=> { console.error(err); process.exitCode=1; });
