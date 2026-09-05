@@ -46,6 +46,67 @@ class SmokeError extends Error {
  * chainable no-ops and unknown reads to a number-ish, string-ish value, so the
  * stub never invents a failure the browser would not have.
  * ---------------------------------------------------------------------- */
+/**
+ * The real Phaser 3 keyboard plugin surface.
+ *
+ * `loose` invents any member it is asked for, which is right almost everywhere:
+ * the aim is to catch the game's mistakes, not to fail it for a gap in the
+ * stub. It is wrong here, and a shipped production game showed why. It called
+ *
+ *     this.input.keyboard.createArrowKeys()
+ *
+ * which does not exist - the method is createCursorKeys - and the stub happily
+ * invented it. The game booted, passed, shipped, and in a real browser create()
+ * threw on the first line of input setup, so the scene never started and the
+ * player got the black screen this whole test exists to prevent.
+ *
+ * The keyboard plugin is small enough to write down, so it is written down. A
+ * name not on this list is one Phaser does not have, and the sooner that is
+ * said the better - the model is told, and rewrites, instead of the player
+ * finding out.
+ *
+ * The rest of the stub stays permissive. This is the surface models actually
+ * invent on, and a closed list is only safe where the real one is known.
+ */
+const KEYBOARD_API = new Set([
+  'addKey', 'addKeys', 'createCursorKeys', 'removeKey', 'removeAllKeys',
+  'addCapture', 'removeCapture', 'clearCaptures', 'checkDown',
+  'enableGlobalCapture', 'disableGlobalCapture', 'resetKeys',
+  'on', 'once', 'off', 'emit', 'addListener', 'removeListener', 'removeAllListeners',
+  'enabled', 'keys', 'manager', 'destroy', 'shutdown'
+]);
+
+/** The real method a made-up one was probably reaching for. */
+function keyboardHint(name) {
+  if (/cursor|arrow|direction|wasd|movement/i.test(name)) return 'createCursorKeys()';
+  if (/keys/i.test(name)) return "addKeys('W,A,S,D')";
+  if (/key/i.test(name)) return "addKey('SPACE')";
+  return 'createCursorKeys() or addKey(...)';
+}
+
+/**
+ * A stub that refuses to invent members it knows Phaser does not have.
+ */
+function strict(name, seed, allowed, hint) {
+  const target = Object.assign(Object.create(null), seed);
+  return new Proxy(target, {
+    get(obj, prop) {
+      if (typeof prop === 'symbol') return undefined;
+      if (prop in obj) return obj[prop];
+      if (allowed.has(prop)) {
+        const fn = () => undefined;
+        obj[prop] = fn;
+        return fn;
+      }
+      throw new TypeError(
+        `this.input.${name}.${String(prop)} is not a function - Phaser has no such method. `
+        + `Use ${hint(String(prop))} instead.`
+      );
+    },
+    set(obj, prop, value) { obj[prop] = value; return true; }
+  });
+}
+
 function loose(name, seed = {}) {
   const target = Object.assign(Object.create(null), seed);
 
@@ -199,7 +260,7 @@ function sceneServices(scene, world) {
     off: () => scene.input,
     setDefaultCursor: () => {},
     activePointer: { x: 0, y: 0, isDown: false, worldX: 0, worldY: 0 },
-    keyboard: loose('keyboard', {
+    keyboard: strict('keyboard', {
       on: () => {}, once: () => {}, off: () => {},
       addKey: () => loose('Key', { isDown: false, isUp: true, on: () => {} }),
       addKeys: () => loose('Keys'),
@@ -208,7 +269,7 @@ function sceneServices(scene, world) {
         left: { isDown: false }, right: { isDown: false },
         space: { isDown: false }, shift: { isDown: false }
       })
-    })
+    }, KEYBOARD_API, keyboardHint)
   });
 
   scene.cameras = loose('cameras', {

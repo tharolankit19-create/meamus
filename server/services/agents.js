@@ -291,6 +291,19 @@ function correctionFor(err, cutoffs = 0) {
       + 'markdown fences, no trailing commas.';
   }
 
+  /* A method Phaser does not have. The boot test names the real one, so the
+     correction's job is to make sure that lands rather than being buried under
+     the generic "declare every variable" advice. */
+  if (/is not a function - Phaser has no such method/.test(err.message)) {
+    return `That build does not run: ${err.message}\n\n`
+      + 'You called a Phaser method that does not exist. Use only the real API. For '
+      + 'keyboard input that is:\n\n'
+      + '    this.cursors = this.input.keyboard.createCursorKeys();   // arrows + space + shift\n'
+      + "    this.wasd = this.input.keyboard.addKeys('W,A,S,D');\n"
+      + "    this.fire = this.input.keyboard.addKey('SPACE');\n\n"
+      + 'Return the complete corrected GameSpec JSON.';
+  }
+
   // A boot failure: the code parsed, but running it threw.
   return `That build does not run. Booting it threw: ${err.message}${site}\n\n`
     + 'Return the complete corrected GameSpec JSON. Every scene is constructed and '
