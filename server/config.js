@@ -221,9 +221,11 @@ const config = {
      * The Hermes crew: designer -> coder -> tester -> reviewer -> improver ->
      * tester. More model calls than a single-shot build, and better games,
      * because no one agent has to design, write and critique in one breath.
-     * Set AGENT_CREW=false for the single-call path.
+     * Free models use the single-call path by default. AGENT_CREW overrides it.
      */
-    crew: (process.env.AGENT_CREW || 'true').trim() !== 'false',
+    crew: process.env.AGENT_CREW && process.env.AGENT_CREW.trim()
+      ? process.env.AGENT_CREW.trim() === 'true'
+      : !/:free$/.test(buildLlmConfig().model),
     // How many times the review loop hands a rejected build back to the model.
     /**
      * How many times the coder may be sent back.

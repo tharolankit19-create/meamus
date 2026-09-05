@@ -512,31 +512,36 @@ async function buildWithCrew(prompt, opts = {}) {
   /* --- 5. Improver -------------------------------------------------------- */
   if (actionable.length) {
     say('improver', 'improve', WORKING_COPY.improver);
-    const improved = await askForSpec([
-      { role: 'user', content: coderText },
-      { role: 'assistant', content: JSON.stringify(spec) },
-      {
-        role: 'user',
-        content: 'A reviewer found these problems. Fix all of them and change nothing else.\n\n'
-          + actionable.map((f, i) =>
-            `${i + 1}. [${f.severity}] ${f.what}${f.where ? ` (in ${f.where})` : ''}\n   Suggested fix: ${f.fix || 'use your judgement'}`
-          ).join('\n')
-          + '\n\nReturn the complete corrected GameSpec JSON.'
-      }
-    ]);
-    usage.add(improved.response.usage);
+    try {
+      const improved = await askForSpec([
+        { role: 'user', content: coderText },
+        { role: 'assistant', content: JSON.stringify(spec) },
+        {
+          role: 'user',
+          content: 'A reviewer found these problems. Fix all of them and change nothing else.\n\n'
+            + actionable.map((f, i) =>
+              `${i + 1}. [${f.severity}] ${f.what}${f.where ? ` (in ${f.where})` : ''}\n   Suggested fix: ${f.fix || 'use your judgement'}`
+            ).join('\n')
+            + '\n\nReturn the complete corrected GameSpec JSON.'
+        }
+      ]);
+      usage.add(improved.response.usage);
 
-    // The improver's work only counts if it still boots. If the fix broke the
-    // game, the version that passed is the one that ships.
-    say('tester', 'test', `${WORKING_COPY.tester} (run 2 of 2)`);
-    const after = runTest(improved.spec, 2);
-    if (after.ok) {
-      spec = improved.spec;
-      issues.push(...improved.issues);
-      say('improver', 'improve', `Applied ${actionable.length} fix${actionable.length > 1 ? 'es' : ''}, still boots`);
-    } else {
-      issues.push(`The review fixes broke the build (${after.reason}), so the version that passed was shipped instead.`);
-      say('improver', 'improve', 'Fixes broke the build — kept the version that passed');
+      // The improver's work only counts if it still boots. If the fix broke the
+      // game, the version that passed is the one that ships.
+      say('tester', 'test', `${WORKING_COPY.tester} (run 2 of 2)`);
+      const after = runTest(improved.spec, 2);
+      if (after.ok) {
+        spec = improved.spec;
+        issues.push(...improved.issues);
+        say('improver', 'improve', `Applied ${actionable.length} fix${actionable.length > 1 ? 'es' : ''}, still boots`);
+      } else {
+        issues.push(`The review fixes broke the build (${after.reason}), so the version that passed was shipped instead.`);
+        say('improver', 'improve', 'Fixes broke the build — kept the version that passed');
+      }
+    } catch (err) {
+      issues.push(`Review fixes could not be completed (${err.message}); kept the tested version.`);
+      say('improver', 'improve', 'Kept the tested version; review fixes could not be completed');
     }
   } else {
     /* --- 6. Tester, second run ------------------------------------------- */
@@ -584,10 +589,10 @@ function summarise(meta) {
 
   const fixes = (review.findings || []).filter((f) => f.severity === 'blocker' || f.severity === 'major');
   lines.push(fixes.length
-    ? `The reviewer found ${fixes.length} issue${fixes.length > 1 ? 's' : ''} and they were fixed: ${fixes.map((f) => f.what).join('; ')}`
+    ? `The reviewer flagged ${fixes.length} issue${fixes.length > 1 ? 's' : ''}: ${fixes.map((f) => f.what).join('; ')}`
     : `The reviewer found nothing blocking${review.summary ? ` — ${review.summary}` : ''}.`);
 
-  lines.push('Booted and ticked twice before shipping.');
+  lines.push('The shipped version passed the scene boot check.');
   if (meta.attempts > 1) lines.push(`Took ${meta.attempts} attempts to get it running.`);
 
   return lines.join('\n');

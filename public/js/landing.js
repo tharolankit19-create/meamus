@@ -94,7 +94,7 @@ export function renderLanding(root) {
   const composer = createComposer({
     placeholder: 'A space shooter where I tap to blast asteroids…',
     submitLabel: 'Generate game',
-    async onSubmit(text) {
+    async onSubmit(text, attachmentIds) {
       // Anything typed here goes to sign-in first. No exceptions, no guest
       // path: building spends credits, and credits belong to an account. The
       // prompt is parked so it runs the moment the account exists.
@@ -103,7 +103,8 @@ export function renderLanding(root) {
         const user = await openAuth('register');
         if (!user) return;
       }
-      location.hash = '#/dashboard';
+      const started = await startProject(text, attachmentIds);
+      if (started) takePrompt();
     }
   });
 

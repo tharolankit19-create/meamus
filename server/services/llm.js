@@ -17,6 +17,16 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
+const { AsyncLocalStorage } = require('node:async_hooks');
+const budgets = new AsyncLocalStorage();
+
+function remainingMs() {
+  return budgets.getStore() ? budgets.getStore() - Date.now() : config.llm.timeoutMs;
+}
+
+function withBudget(work) {
+  return budgets.run(Date.now() + config.build.budgetMs, work);
+}
 const { RESPONSE_FORMAT } = require('./schema');
 
 const SYSTEM_PROMPT = fs.readFileSync(path.join(__dirname, '..', 'prompts', 'system.md'), 'utf8');
@@ -175,14 +185,19 @@ function buildUserMessage(text, attachments = [], caps = { images: false }) {
 
 async function post(url, headers, payload) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.llm.timeoutMs);
+  const remaining = remainingMs();
+  if (remaining <= 0) throw new LlmError('The build time limit was reached. Try a simpler game prompt.', 504);
+  const timer = setTimeout(() => controller.abort(), Math.min(config.llm.timeoutMs, remaining));
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       method: 'POST',
       signal: controller.signal,
       headers: { 'content-type': 'application/json', ...headers },
       body: JSON.stringify(payload)
     });
+    // Keep the abort timer alive through OpenRouter's delayed response body.
+    const body = await response.text();
+    return new Response(body, { status: response.status, headers: response.headers });
   } catch (err) {
     if (err.name === 'AbortError') throw new LlmError('The model took too long to answer', 504);
     throw new LlmError(`Could not reach ${config.llm.provider}: ${err.message}`, 502);
@@ -206,28 +221,17 @@ function isDailyCap(detail) {
 }
 
 function rateLimitMessage(detail) {
-  const free = /:free$/.test(config.llm.model);
+  return isDailyCap(detail)
+    ? 'The model provider has reached its daily request limit. Try again after it resets, or choose another available model. No AI game was generated.'
+    : 'The model is busy or rate limited. Please try again shortly. No AI game was generated.';
+}
 
-  /* A per-day cap and a per-minute one both arrive as 429, and the advice for
-     them is opposite. "Wait a minute and try again" is true of one and a lie
-     about the other - production hit the daily cap and was told to wait sixty
-     seconds for something that resets at midnight. */
-  if (isDailyCap(detail)) {
-    return `Today's free requests for ${config.llm.model} are used up - this is a daily cap, `
-      + 'not a short pause, so waiting will not clear it until it resets.\n\n'
-      + 'Two ways on: add $10 of credit at https://openrouter.ai/credits, which raises the '
-      + 'free tier from 50 requests a day to 1000 and still costs nothing per request; or set '
-      + `OPENROUTER_MODEL=${config.llm.model.replace(/:free$/, '')} to use the paid tier at `
-      + `about $0.09 per million input tokens. (${detail})`;
-  }
-
-  if (!free) {
-    return `The model is rate limited right now. Wait a minute and try again. (${detail})`;
-  }
-  return 'The free tier for ' + config.llm.model + ' is rate limited, and this build asked for '
-    + 'more than it allows right now. Wait a minute and try again, or switch OPENROUTER_MODEL to '
-    + config.llm.model.replace(/:free$/, '') + ' — the same model on the paid tier, at about '
-    + `$0.09 per million input tokens. (${detail})`;
+function retryAfterMs(response) {
+  const value = response.headers.get('retry-after');
+  if (!value) return 0;
+  const seconds = Number(value);
+  return Number.isFinite(seconds) ? Math.max(0, seconds * 1000)
+    : Math.max(0, Date.parse(value) - Date.now()) || 0;
 }
 
 async function readError(response) {
@@ -288,16 +292,22 @@ async function callOpenRouter({ messages, system, maxTokens, jsonSchema }) {
       // 429s are retried a layer up, which is right for a per-minute cap and
       // pointless for a per-day one: it burns the founder's remaining time
       // waiting for something that resets tomorrow. 402 marks it as final.
-      throw new LlmError(rateLimitMessage(detail), isDailyCap(detail) ? 402 : 429);
+      throw new LlmError(rateLimitMessage(detail), isDailyCap(detail) ? 402 : 429, { retryAfterMs: retryAfterMs(response) });
     }
-    const status = response.status === 401 || response.status === 403 ? 401
+    const status = response.status === 402 ? 402 : response.status === 401 || response.status === 403 ? 401
       : response.status >= 500 ? 502 : 400;
     throw new LlmError(`${config.llm.provider} error (${response.status}): ${detail}`, status);
   }
 
   const payloadBody = await response.json();
+  if (payloadBody.error) {
+    const code = Number(payloadBody.error.code) || 502;
+    const detail = String(payloadBody.error.message || 'Provider failed');
+    throw new LlmError(code === 429 ? rateLimitMessage(detail) : `Model provider: ${detail}`,
+      code === 429 && isDailyCap(detail) ? 402 : code >= 500 ? 502 : code);
+  }
   const choice = (payloadBody.choices || [])[0];
-  if (!choice) throw new LlmError('The model returned no choices', 502);
+  if (!choice || !choice.message) throw new LlmError('The model returned no choices', 502);
 
   const text = typeof choice.message.content === 'string'
     ? choice.message.content
@@ -330,6 +340,7 @@ async function callOpenRouter({ messages, system, maxTokens, jsonSchema }) {
     text,
     usage: payloadBody.usage || null,
     model: payloadBody.model || config.llm.model,
+    structuredOutput: Boolean(payload.response_format),
     stopReason: choice.finish_reason || null
   };
 }
@@ -379,6 +390,7 @@ async function complete({ messages, system = SYSTEM_PROMPT, maxTokens, jsonSchem
     );
   }
   const caps = await capabilities();
+  if (caps.maxOutput) maxTokens = Math.min(maxTokens || config.llm.maxTokens, caps.maxOutput);
   const useSchema = jsonSchema && caps.structuredOutputs && config.llm.provider === 'openrouter';
 
   const call = () => (config.llm.provider === 'anthropic'
@@ -386,7 +398,7 @@ async function complete({ messages, system = SYSTEM_PROMPT, maxTokens, jsonSchem
     : callOpenRouter({ messages, system, maxTokens, jsonSchema: useSchema }));
 
   const result = await withTransportRetries(call);
-  return { ...result, structuredOutput: useSchema, provider: config.llm.provider };
+  return { ...result, structuredOutput: result.structuredOutput ?? useSchema, provider: config.llm.provider };
 }
 
 /**
@@ -414,7 +426,8 @@ async function withTransportRetries(call) {
       if (!transient || attempt > config.llm.retries) throw err;
 
       // Jittered, so a burst of builds does not come back in lockstep.
-      const pause = wait + Math.floor(Math.random() * 400);
+      const pause = Math.max(wait + Math.floor(Math.random() * 400), (err.details && err.details.retryAfterMs) || 0);
+      if (remainingMs() <= pause + 1000) throw err;
       console.error(`[llm] ${err.status} on attempt ${attempt}, retrying in ${pause}ms`);
       await new Promise((r) => setTimeout(r, pause));
       wait = Math.min(wait * 2, config.llm.retryMaxMs);
@@ -429,6 +442,6 @@ function resetCapabilities() {
 }
 
 module.exports = {
-  complete, buildUserMessage, capabilities, resetCapabilities,
+  complete, withBudget, buildUserMessage, capabilities, resetCapabilities,
   SYSTEM_PROMPT, LlmError, KNOWN
 };

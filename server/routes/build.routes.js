@@ -120,7 +120,7 @@ router.post('/build/plan', requireAuth, asyncRoute(async (req, res) => {
     });
   }
 
-  const planId = builds.savePlan(req.user.id, { kind, prompt, gameId, attachmentIds, estimate });
+  const planId = await builds.savePlan(req.user.id, { kind, prompt, gameId, attachmentIds, estimate });
 
   res.json({
     planId,
@@ -144,7 +144,7 @@ router.post('/build/plan', requireAuth, asyncRoute(async (req, res) => {
 /* --- start ---------------------------------------------------------------- */
 
 router.post('/build/start', requireAuth, asyncRoute(async (req, res) => {
-  const plan = builds.takePlan(String(req.body.planId || ''), req.user.id);
+  const plan = await builds.takePlan(String(req.body.planId || ''), req.user.id);
   if (!plan) {
     return res.status(410).json({
       error: 'That estimate has expired. Send the prompt again for a fresh one.',
@@ -193,6 +193,7 @@ router.post('/build/start', requireAuth, asyncRoute(async (req, res) => {
   // is frozen the moment it responds, so the build died seconds in and the row
   // sat at "building" for ever - which is exactly what production did. The
   // browser calls /run next, and that request is awaited for the whole build.
+  await db.flush();
   res.status(202).json({ buildId, gameId, state: build.state, estimate: plan.estimate });
 }));
 
@@ -204,11 +205,11 @@ router.post('/build/start', requireAuth, asyncRoute(async (req, res) => {
  * for progress, which reads the game row and so works on any instance.
  */
 router.post('/build/:id/run', requireAuth, asyncRoute(async (req, res) => {
-  const build = builds.get(req.params.id, req.user.id);
+  const build = await builds.refresh(req.params.id, req.user.id);
   if (!build) return res.status(404).json({ error: 'Build not found', code: 'not_found' });
 
   // Claim it, so two tabs cannot build the same game twice.
-  if (!builds.claim(build)) {
+  if (!await builds.claimDurable(build)) {
     return res.status(409).json({
       error: build.state === 'running'
         ? 'That build is already running.'
@@ -223,6 +224,7 @@ router.post('/build/:id/run', requireAuth, asyncRoute(async (req, res) => {
   } catch (err) {
     builds.fail(build, err.message);
   }
+  await db.flush();
   res.json(builds.view(build));
 }));
 
@@ -268,7 +270,7 @@ async function run(build, plan, user) {
   try {
     ({ spec, meta } = plan.kind === 'iterate'
       ? await generator.modify(plan.prompt, existing.spec, { attachments, onStep })
-      : await generator.generate(plan.prompt, { attachments, onStep }));
+      : await generator.generate(plan.prompt, { attachments, onStep, allowFallback: false }));
   } catch (err) {
     // The row already exists, so it has to say what happened rather than sit
     // in "building" forever.
@@ -278,6 +280,7 @@ async function run(build, plan, user) {
     throw err;
   }
 
+  await builds.refresh(build.buildId, build.userId);
   if (build.stopRequested) {
     if (plan.kind === 'create') db.update('games', build.gameId, { status: 'stopped' });
     return builds.fail(build, 'Stopped after the build finished but before it was saved');
@@ -334,16 +337,19 @@ async function run(build, plan, user) {
 
 /* --- poll + stop ---------------------------------------------------------- */
 
-router.get('/build/:id', requireAuth, (req, res) => {
-  const build = builds.get(req.params.id, req.user.id);
+router.get('/build/:id', requireAuth, asyncRoute(async (req, res) => {
+  const build = await builds.refresh(req.params.id, req.user.id);
   if (!build) return res.status(404).json({ error: 'Build not found', code: 'not_found' });
   res.json(builds.view(build));
-});
+}));
 
-router.post('/build/:id/stop', requireAuth, (req, res) => {
+router.post('/build/:id/stop', requireAuth, asyncRoute(async (req, res) => {
+  await builds.refresh(req.params.id, req.user.id);
   const build = builds.requestStop(req.params.id, req.user.id);
+  if (build && db.stopBuild) await db.stopBuild(req.params.id, req.user.id);
   if (!build) return res.status(404).json({ error: 'Build not found', code: 'not_found' });
+  await db.flush();
   res.json(builds.view(build));
-});
+}));
 
 module.exports = router;

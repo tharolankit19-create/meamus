@@ -50,7 +50,7 @@ Respond with a single JSON object containing exactly these fields:
 - Resolution: 800x600 base, responsive scaling for mobile
 
 ### 2. CODE STRUCTURE (ALWAYS FOLLOW)
-Five scenes minimum: BootScene, PreloadScene, MenuScene, GameScene, GameOverScene.
+Use a compact complete game: MenuScene, GameScene and GameOverScene. Add BootScene/PreloadScene only when needed. Keep one clear core loop, score, loss/win and restart; finish the entire JSON within the output budget.
 Config object with `scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH }`,
 `parent: 'game-container'`, and the scene array in that order. Instantiate with `new Phaser.Game(config)`.
 

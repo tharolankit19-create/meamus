@@ -187,15 +187,16 @@ async function aiGenerate(messages, extraIssues = [], onStep) {
 
     // Schema-constrained output where the model supports it; llm.complete()
     // downgrades on its own when it does not.
-    const response = await llm.complete({ messages: conversation, jsonSchema: true });
-    if (response.usage) {
-      usage.prompt_tokens += response.usage.prompt_tokens || 0;
-      usage.completion_tokens += response.usage.completion_tokens || 0;
-      usage.total_tokens += response.usage.total_tokens
-        || ((response.usage.prompt_tokens || 0) + (response.usage.completion_tokens || 0));
-    }
-
+    let response;
     try {
+      response = await llm.complete({ messages: conversation, jsonSchema: true });
+      if (response.usage) {
+        usage.prompt_tokens += response.usage.prompt_tokens || 0;
+        usage.completion_tokens += response.usage.completion_tokens || 0;
+        usage.total_tokens += response.usage.total_tokens
+          || ((response.usage.prompt_tokens || 0) + (response.usage.completion_tokens || 0));
+      }
+
       if (onStep) onStep({ attempt, total: MAX_BUILD_ATTEMPTS, phase: 'review', detail: 'Checking the code parses' });
       const raw = extractJson(response.text);
       const { spec, issues } = normaliseSpec(raw, { source: 'ai' });
@@ -238,21 +239,21 @@ async function aiGenerate(messages, extraIssues = [], onStep) {
         }
       };
     } catch (err) {
-      if (!(err instanceof SpecError)) throw err;
+      if (!(err instanceof SpecError) && !(err.details && err.details.truncated)) throw err;
       lastError = err;
       attempts.push({ attempt, reason: err.message });
 
       // Hand the model its own output plus the reason it was refused. Naming
       // the failure is what makes the next attempt different from a re-roll.
       conversation = [
-        ...conversation,
-        { role: 'assistant', content: response.text },
+        ...messages,
+        ...(response ? [{ role: 'assistant', content: response.text.slice(0, 48000) }] : []),
         {
           role: 'user',
           content: `That build was rejected: ${err.message}\n\n`
             + 'Return the complete corrected GameSpec JSON. The gameCode.javascript field '
-            + 'must be a complete Phaser 3 game of at least 200 lines with a full boot, '
-            + 'preload, menu, game and game-over flow. Do not return a stub, a summary, '
+            + 'must be a compact complete Phaser 3 game with a playable start, game and restart flow. '
+            + 'If the answer was cut off, reduce mechanics and comments so the complete JSON fits. Do not return a stub, a summary, '
             + 'or a partial file.\n\n'
             + 'It is not enough for the code to parse — every scene is constructed and its '
             + 'init/preload/create run, then update() is ticked, and any throw fails the '
@@ -446,4 +447,8 @@ async function answer(question, currentSpec) {
   return { text: String(result.text || '').trim(), meta: { mode: 'chat', provider: result.provider } };
 }
 
-module.exports = { generate, modify, answer, templateGenerate, analysePrompt, titleFromPrompt };
+module.exports = {
+  generate: (...args) => llm.withBudget(() => generate(...args)),
+  modify: (...args) => llm.withBudget(() => modify(...args)),
+  answer, templateGenerate, analysePrompt, titleFromPrompt
+};

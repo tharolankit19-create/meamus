@@ -20,7 +20,7 @@
 import { el, icon, $ } from './ui.js';
 import { builds, state, playUrl } from './api.js';
 
-const POLL_MS = 600;
+const POLL_MS = 2000;
 
 /** buildId -> { info, view, subs:Set<fn>, finished:boolean, announced:boolean } */
 const live = new Map();
@@ -33,7 +33,7 @@ const live = new Map();
 export function track(info) {
   if (live.has(info.buildId)) return live.get(info.buildId);
 
-  const entry = { info, view: null, subs: new Set(), finished: false, announced: false };
+  const entry = { info, view: null, subs: new Set(), finished: false, announced: false, failures: 0, watchedAt: Date.now() };
   live.set(info.buildId, entry);
 
   /* Kick off the work, and poll it separately.
@@ -47,7 +47,12 @@ export function track(info) {
    * Nothing is done with the result: whatever it says, the poll below sees the
    * same outcome, and a build already claimed by another tab answers 409, which
    * is a correct refusal rather than an error worth showing. */
-  builds.run(info.buildId).catch(() => { /* the poll is the source of truth */ });
+  builds.run(info.buildId).then((view) => {
+    if (view && view.state !== 'running') complete(entry, view);
+  }).catch((err) => {
+    // 409 means another tab owns the run. Poll it normally.
+    if (err.status !== 409) entry.runError = err.message;
+  });
 
   void poll(entry);
   return entry;
@@ -100,31 +105,40 @@ export function releaseAll() {
 }
 
 async function poll(entry) {
-  for (;;) {
+  while (!entry.finished) {
+    if (Date.now() - entry.watchedAt > 330000) {
+      complete(entry, { state: 'failed', error: entry.runError || 'Build progress timed out. Reopen your game to check its saved status.', steps: entry.view?.steps || [] });
+      return;
+    }
     let view;
     try {
       view = await builds.poll(entry.info.buildId);
     } catch (err) {
-      // A build the server has forgotten is not worth retrying forever.
-      entry.finished = true;
-      entry.view = { state: 'failed', error: err.message, steps: (entry.view && entry.view.steps) || [] };
-      emit(entry);
-      return;
+      entry.failures += 1;
+      if ((err.status === 401 || err.status === 403) || entry.failures >= 6) {
+        complete(entry, { state: 'failed', error: err.message, steps: entry.view?.steps || [] });
+        return;
+      }
+      await new Promise((r) => setTimeout(r, Math.min(POLL_MS * entry.failures, 10000)));
+      continue;
     }
-
+    if (entry.finished) return; // /run may have completed while this poll waited.
+    entry.failures = 0;
+    if (view.state !== 'running') { complete(entry, view); return; }
     entry.view = view;
     emit(entry);
 
-    if (view.state !== 'running') {
-      entry.finished = true;
-      if (shouldAnnounce(entry)) announce(entry);
-      // Keep it around briefly so a view opening right now can still read it.
-      setTimeout(() => live.delete(entry.info.buildId), 60_000);
-      return;
-    }
-
     await new Promise((r) => setTimeout(r, POLL_MS));
   }
+}
+
+function complete(entry, view) {
+  if (entry.finished) return;
+  entry.finished = true;
+  entry.view = view;
+  emit(entry);
+  if (shouldAnnounce(entry)) announce(entry);
+  setTimeout(() => live.delete(entry.info.buildId), 60000);
 }
 
 function emit(entry) {
