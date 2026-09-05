@@ -949,6 +949,33 @@ async function check(name, fn) {
       'a cut-off file was blamed on punctuation, which is what wasted four attempts');
   });
 
+  await check('the retry asks for less than the model just managed', async () => {
+    /* Watched in production: the model ran out of room at line 147, and the
+       correction asked it for a 320-line game - more than twice what it had
+       just failed to finish. It ran out of room again at 151, and again. The
+       ladder was a guess made before the model had written anything; the length
+       it reached is a measurement. */
+    const agents = require('../server/services/agents');
+    const cutOffAt = (line) => Object.assign(
+      new Error('The generated code does not parse: Unexpected end of input'),
+      { detail: { line, totalLines: line } }
+    );
+
+    const first = agents.correctionFor(cutOffAt(147), 0);
+    const asked = Number(/about (\d+) lines/.exec(first)[1]);
+    assert.ok(asked < 147,
+      `after failing to finish 147 lines the model was asked for ${asked} - more room is not the fix`);
+    assert.ok(asked >= 90, `${asked} lines is not a game any more`);
+
+    // Repeated cut-offs keep pulling it down, even at a similar length.
+    const later = Number(/about (\d+) lines/.exec(agents.correctionFor(cutOffAt(140), 3))[1]);
+    assert.ok(later < asked, `the target did not fall: ${asked} then ${later}`);
+
+    // And it says what it measured, so the instruction is not arbitrary.
+    assert.match(first, /reached line 147/,
+      'the model should be told how far it got, not just given a smaller number');
+  });
+
   await check('a model that keeps writing unusable code is replaced', async () => {
     /* Production: nine attempts, one model, nine unusable answers, 182 seconds,
        no game - with five other models sitting untried. A rate limit is a
