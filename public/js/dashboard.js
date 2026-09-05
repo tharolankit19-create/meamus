@@ -115,7 +115,11 @@ export function sidebar(active) {
 
   const node = el('aside', { class: 'sidebar' },
     el('div', { class: 'side-head' },
-      el('a', { class: 'brand', href: '#/dashboard' },
+      /* The wordmark goes home, the way a wordmark does everywhere else. It
+         pointed at the dashboard, which meant clicking it from the dashboard
+         did nothing at all - and there was then no way at all to reach the
+         landing page while signed in. */
+      el('a', { class: 'brand', href: '#/home' },
         el('span', { class: 'brand-mark' }, icon('gamepad')), 'meamus')),
 
     el('button', { class: 'workspace-pill', onClick: () => { location.hash = '#/account'; } },

@@ -78,4 +78,62 @@ async function load(file, mocks, globals = {}) {
   nextPoll.resolve({state:'running',steps:[]}); await tick();
   assert.equal(view.state,'done', 'late stale poll must not overwrite completion');
   console.log('  ok    poll retry, /run completion, stale progress race');
+  /* --- routing ------------------------------------------------------------
+   *
+   * The landing page was unreachable while signed in: the wordmark, #/home and
+   * the bare URL all bounced to the dashboard. Three ways of asking to see the
+   * front of the product, all refused, with nothing on screen saying why - so
+   * it read as the app being stuck. The decision now lives in one exported
+   * function, and this is the whole table.
+   */
+  const app = await load('app.js', {
+    './ui.js': { ...ui, $: () => new Node('div') },
+    './api.js': { state:{}, loadStatus:()=>{}, loadSession:()=>{}, onChange:()=>{}, projects:{}, consumeOAuthFragment:()=>{} },
+    './landing.js': { renderLanding: ()=>{} },
+    './setup.js': { setupRequired: ()=>false, renderSetup: ()=>{} },
+    './dashboard.js': { renderDashboard:()=>{}, renderTemplatesPage:()=>{}, renderPricing:()=>{}, sidebar:()=>new Node('aside') },
+    './workspace.js': { renderWorkspace: ()=>{} },
+    './auth-dialog.js': { openAuth: ()=>Promise.resolve(null) },
+    './marketing.js': { renderMarketingTemplates:()=>{}, renderMarketingPricing:()=>{}, renderDocs:()=>{} },
+    './watcher.js': { releaseAll: ()=>{} }
+  }, {
+    location: { hash: '' },
+    document: { body: { classList: { toggle: ()=>{} } } },
+    window: { addEventListener: ()=>{} }
+  });
+
+  const route = (name, signedIn, extra) => app.routeFor({ name, signedIn, ...extra });
+
+  // The bug, from both sides: the home page belongs to everybody.
+  assert.equal(route('', true).view, 'landing', 'a signed-in visitor cannot reach the home page');
+  assert.equal(route('home', true).view, 'landing', '#/home is refused while signed in');
+  assert.equal(route('', false).view, 'landing');
+  assert.equal(route('home', false).view, 'landing');
+  assert.equal(route('', true).redirect, undefined, 'the home page still redirects somewhere else');
+
+  // Signing in changes which version of a shared page you get, not whether you
+  // get one.
+  assert.equal(route('templates', false).view, 'marketing-templates');
+  assert.equal(route('templates', true).view, 'templates');
+  assert.equal(route('pricing', false).view, 'marketing-pricing');
+  assert.equal(route('pricing', true).view, 'pricing');
+  assert.equal(route('docs', false).view, 'docs');
+  assert.equal(route('docs', true).view, 'docs');
+
+  // A signed-out visitor following a project link is asked to sign in, not
+  // dumped on the homepage with no explanation.
+  for (const name of ['project', 'dashboard', 'account']) {
+    const r = route(name, false);
+    assert.equal(r.view, 'landing', `${name} should show the landing page to a guest`);
+    assert.equal(r.askToSignIn, true, `${name} should ask a guest to sign in`);
+  }
+
+  // Signed in, the app routes proper.
+  assert.equal(route('project', true, { hasProjectId: true }).view, 'workspace');
+  assert.equal(route('project', true, { hasProjectId: false }).redirect, '#/dashboard',
+    'a project link with no id must go somewhere, not render an empty workspace');
+  assert.equal(route('account', true).view, 'account');
+  assert.equal(route('dashboard', true).view, 'dashboard');
+  assert.equal(route('anything-else', true).view, 'dashboard');
+  console.log('  ok    the home page is reachable signed in, and every other route still lands');
 })().catch((err)=> { console.error(err); process.exitCode=1; });
