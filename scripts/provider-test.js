@@ -429,8 +429,14 @@ async function check(name, fn) {
     config.build.crew = crewDefault;
   });
 
-  await check('free-model default uses one call and repairs truncated output', async () => {
-    assert.strictEqual(crewDefault, false);
+  await check('the single-call path repairs truncated output', async () => {
+    /* This used to open by asserting that a free model defaults to one call.
+       That default is gone: the single-call path asks three times and gives up,
+       while every repair worth having lives in the crew, and a free model is
+       the one that most needs them. What is still worth holding is the
+       behaviour below - AGENT_CREW=false is a supported setting, and the path
+       it selects has to repair a cut-off answer rather than fail on it. */
+    config.build.crew = false;   // AGENT_CREW=false, which is what this covers
     replies = [
       { content: '{"gameConfig":', finish: 'length' },
       { content: JSON.stringify(FAKE_SPEC) }
@@ -442,7 +448,7 @@ async function check(name, fn) {
       assert.strictEqual(meta.attempts, 2);
       assert.strictEqual(captured.length, 2);
       assert.match(captured[1].body.messages.at(-1).content, /reduce mechanics/);
-    } finally { replies = null; }
+    } finally { replies = null; config.build.crew = crewDefault; }
   });
 
   await check('the build deadline includes a stalled response body', async () => {

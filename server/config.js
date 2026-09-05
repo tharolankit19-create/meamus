@@ -221,11 +221,31 @@ const config = {
      * The Hermes crew: designer -> coder -> tester -> reviewer -> improver ->
      * tester. More model calls than a single-shot build, and better games,
      * because no one agent has to design, write and critique in one breath.
-     * Free models use the single-call path by default. AGENT_CREW overrides it.
+     *
+     * This used to be off for `:free` models, on the reasoning that the crew
+     * costs three to five calls and a free tier is capped. Two things make that
+     * wrong now.
+     *
+     * The cap is no longer one model's cap: a refusal moves to the next model on
+     * the roster, so the calls are spread rather than stacked on one quota.
+     *
+     * And the two paths are not equivalent. Everything that makes a build
+     * survive a bad answer lives in the crew: recognising a cut-off file and
+     * asking for a shorter game, shrinking the target on each successive
+     * cut-off, the correction that stops the model reaching for an asset
+     * loader, booting every scene before shipping, and a retry loop bounded by
+     * the time budget rather than by three. The single-call path has none of
+     * it - it asks three times and gives up.
+     *
+     * A free model is the one that most needs that help, and it was the one not
+     * getting it. Production proved it: three attempts, all cut off at line
+     * 129, each told to check its punctuation, sixty-one seconds, no game.
+     *
+     * AGENT_CREW=false still forces the old single-call path.
      */
     crew: process.env.AGENT_CREW && process.env.AGENT_CREW.trim()
       ? process.env.AGENT_CREW.trim() === 'true'
-      : !/:free$/.test(buildLlmConfig().model),
+      : true,
     // How many times the review loop hands a rejected build back to the model.
     /**
      * How many times the coder may be sent back.
