@@ -860,6 +860,28 @@ async function check(name, fn) {
     assert.ok(!/ludo/i.test(spec.gameConfig.title), `the rescue lies about itself: ${spec.gameConfig.title}`);
   });
 
+  await check('the build route lets the rescue ship, and does not bill for it', async () => {
+    /* The rescue existed and was unreachable: /build/start passed
+       allowFallback:false, so a build the model could not finish ended as a red
+       error box rather than something playable. It ships now - and it is free,
+       because a labelled template is better than an error and is still not what
+       the founder asked for. Billing for it would make the honest fallback a
+       worse deal than the failure it replaced. */
+    const routeSrc = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'server', 'routes', 'build.routes.js'), 'utf8'
+    );
+    assert.doesNotMatch(routeSrc, /allowFallback:\s*false/,
+      'the build route still refuses the rescue, so a failed build ships nothing');
+    assert.match(routeSrc, /meta\.rescued \? 0/,
+      'a rescue is still billed as though it were the game that was asked for');
+
+    // And zero really means zero, rather than a floor somewhere below.
+    const credits = require('../server/credits');
+    const user = { id: 'u_test', credits: 200, plan: 'free' };
+    assert.deepStrictEqual(credits.chargeExact(user, 0), { charged: 0, balance: 200 });
+    assert.strictEqual(user.credits, 200, 'a free rescue still moved the balance');
+  });
+
   await check('a rate limit is waited out, not treated as a dead build', async () => {
     // On a free tier a 429 is the common path, not an exception - the cap is
     // per minute and one build is several calls. A production build gave up

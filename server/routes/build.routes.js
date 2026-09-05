@@ -272,7 +272,7 @@ async function run(build, plan, user) {
   try {
     ({ spec, meta } = plan.kind === 'iterate'
       ? await generator.modify(plan.prompt, existing.spec, { attachments, onStep })
-      : await generator.generate(plan.prompt, { attachments, onStep, allowFallback: false }));
+      : await generator.generate(plan.prompt, { attachments, onStep }));
   } catch (err) {
     // The row already exists, so it has to say what happened rather than sit
     // in "building" forever.
@@ -295,8 +295,12 @@ async function run(build, plan, user) {
   // real - nothing here is a progress bar pretending to know the future.
   shipSteps(build, spec);
 
-  // Charge on real usage, only now that there is a game to charge for.
-  const owed = estimator.creditsForUsage(meta.usage, plan.kind);
+  /* Charge on real usage, only now that there is a game to charge for - and
+     not at all for a rescue. A labelled template is better than a red error
+     box, which is why it ships; it is not what the founder asked for, so it is
+     not what they pay for. Billing for it would turn an honest fallback into
+     a worse deal than the failure it replaced. */
+  const owed = meta.rescued ? 0 : estimator.creditsForUsage(meta.usage, plan.kind);
   const billed = credits.chargeExact(user, owed);
 
   let game;
