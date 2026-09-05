@@ -1035,54 +1035,87 @@ async function check(name, fn) {
     }
   });
 
-  await check('a game built above its scene classes is reordered, not sent back', async () => {
-    /* A watched production build: dots-3 wrote a complete, correct, 726-line
-       game and it would not start, because `new Phaser.Game({ scene:
-       [BootScene] })` sat above `class BootScene`. Classes are not hoisted, so
-       the array is evaluated before the class exists. Sending that back to the
-       model cost a full round trip - 112 seconds on the only model in the build
-       that had managed a complete game - to be told something already visible
-       here. */
+  await check('scene classes declared after their use are moved above it', async () => {
+    /* Two production builds lost a complete game to this. The second one is why
+       the fix had to change shape: moving `new Phaser.Game(...)` to the end is
+       what every Phaser example looks like, and it does nothing here, because
+       the scene array lives in a `config` object declared earlier still. */
     const { normaliseSpec } = require('../server/services/validator');
+    const smoke = require('../server/services/smoke');
     const wrap = (javascript) => ({ ...FAKE_SPEC, gameCode: { ...FAKE_SPEC.gameCode, javascript } });
     const filler = '\n' + '// keeping this above the stub gate\n'.repeat(40);
 
-    const wrongWayRound = [
-      'const CFG = { W: 320, H: 480 };',
-      'new Phaser.Game({',
-      '  type: Phaser.AUTO, width: CFG.W, height: CFG.H,',
-      '  scene: [BootScene]',
-      '});',
+    const boot = [
       'class BootScene extends Phaser.Scene {',
       '  constructor() { super({ key: "BootScene" }); }',
+      '  create() { this.scene.start("GameScene"); }',
+      '}',
+      'class GameScene extends Phaser.Scene {',
+      '  constructor() { super({ key: "GameScene" }); }',
       '  create() { this.add.text(12, 12, "SCORE 0"); }',
+      '  update() {}',
+      '}'
+    ].join('\n');
+
+    // The shape the models actually write: a config object, then the game, then
+    // the classes. Not one scene name appears inside `new Phaser.Game(config)`.
+    const viaConfig = [
+      'const config = {',
+      '  type: Phaser.AUTO, width: 320, height: 480,',
+      '  scene: [BootScene, GameScene]',
+      '};',
+      'const game = new Phaser.Game(config);',
+      boot
+    ].join('\n') + filler;
+
+    // And the simpler one, with the array written inline.
+    const inline = [
+      'new Phaser.Game({ type: Phaser.AUTO, width: 320, height: 480, scene: [BootScene] });',
+      boot
+    ].join('\n') + filler;
+
+    for (const [what, source] of Object.entries({ viaConfig, inline })) {
+      const fixed = normaliseSpec(wrap(source), { source: 'ai' });
+      const js = fixed.spec.gameCode.javascript;
+      assert.ok(js.indexOf('class BootScene') < js.indexOf('new Phaser.Game'),
+        `${what}: the classes are still declared after the code that uses them`);
+      assert.ok(fixed.issues.some((i) => /moved to the top/.test(i)),
+        `${what}: the code was changed silently`);
+
+      // Booting is the only thing that settles it - the first version of this
+      // repair reordered the file and the game still would not start.
+      const booted = smoke.boot(js);
+      assert.strictEqual(booted.ok, true, `${what}: still does not boot: ${booted.reason}`);
+    }
+
+    // A correctly ordered file is left alone. A repair that fires when it
+    // should not is worse than one that never fires.
+    const rightWayRound = boot
+      + '\nnew Phaser.Game({ type: Phaser.AUTO, width: 320, height: 480, scene: [BootScene] });'
+      + filler;
+    assert.strictEqual(
+      normaliseSpec(wrap(rightWayRound), { source: 'ai' }).spec.gameCode.javascript.trim(),
+      rightWayRound.trim(),
+      'a correctly ordered file was rewritten anyway'
+    );
+
+    // A static initialiser runs at declaration time, so it can legitimately
+    // depend on something above it; moving that would trade one ordering bug
+    // for another. Left alone and reported to the model instead.
+    const withStatic = [
+      'const PALETTE = { ship: 0x33ddff };',
+      'new Phaser.Game({ type: Phaser.AUTO, width: 320, height: 480, scene: [BootScene] });',
+      'class BootScene extends Phaser.Scene {',
+      '  static colour = PALETTE.ship;',
+      '  constructor() { super({ key: "BootScene" }); }',
+      '  create() {}',
       '}'
     ].join('\n') + filler;
-
-    const fixed = normaliseSpec(wrap(wrongWayRound), { source: 'ai' });
-    const js = fixed.spec.gameCode.javascript;
-    assert.ok(js.indexOf('class BootScene') < js.indexOf('new Phaser.Game'),
-      'the game is still constructed before the class it needs');
-    assert.ok(fixed.issues.some((i) => /moved to the end/.test(i)),
-      'a change to the code was made silently');
-
-    // It really runs now, which is the only thing that settles it.
-    const booted = require('../server/services/smoke').boot(js);
-    assert.ok(booted.ok, `still does not boot: ${booted.reason}`);
-
-    // And it leaves a correctly ordered file alone - a repair that fires when
-    // it should not is worse than one that never fires.
-    const rightWayRound = [
-      'class BootScene extends Phaser.Scene {',
-      '  constructor() { super({ key: "BootScene" }); }',
-      '  create() { this.add.text(12, 12, "SCORE 0"); }',
-      '}',
-      'new Phaser.Game({ type: Phaser.AUTO, width: 320, height: 480, scene: [BootScene] });'
-    ].join('\n') + filler;
-
-    const untouched = normaliseSpec(wrap(rightWayRound), { source: 'ai' });
-    assert.strictEqual(untouched.spec.gameCode.javascript.trim(), rightWayRound.trim(),
-      'a correctly ordered file was rewritten anyway');
+    let refused = false;
+    try { normaliseSpec(wrap(withStatic), { source: 'ai' }); } catch { refused = true; }
+    assert.ok(refused || !normaliseSpec(wrap(withStatic), { source: 'ai' }).issues
+      .some((i) => /moved to the top/.test(i)),
+    'a class with a static initialiser was moved, which can break it');
   });
 
   await check('the retry asks for less than the model just managed', async () => {
