@@ -36,32 +36,42 @@ const config = require('./../config');
 /**
  * Verified against the live OpenRouter catalogue. See scripts/models-check.js.
  *
- * Ordering, and the reasoning behind it:
+ * Ordering, and the evidence behind it:
  *
  *  1. Schema support first. Without it the spec has to be scraped out of prose,
  *     which is where malformed games come from - a model that cannot be held to
  *     the schema is not cheaper, it just fails later.
- *  2. Among those, the one we have actually watched write a running game goes
- *     first. That is nemotron-3-super: it is what production has been using, it
- *     produces games, and its failure mode has been the daily cap rather than
- *     bad code. The others are ranked on output ceiling, which is measurable,
- *     because running out of room is the failure this pipeline sees most.
+ *  2. Among those, the one that has actually written finished games leads. That
+ *     is measured, not assumed. Across six watched production builds:
+ *
+ *       dots-3-note-preview   4 complete games (726, 536, 500, 477 lines)
+ *       nemotron-3-super      0 complete games in ~18 attempts, cut off at
+ *                             roughly line 150 every time
+ *
+ *     nemotron led this list until that evidence existed, on the grounds that
+ *     it was what production had been using. Six builds later it had spent
+ *     three attempts and most of the time budget on every one of them and never
+ *     once finished a game, so it does not lead any more. It is fast and it
+ *     honours a schema, which still makes it the right first ask for a brief -
+ *     see BRIEF below - but a brief is a page of JSON and a game is not.
  *  3. Non-schema models last, largest output first. They need the JSON scraping
  *     back out, so they are a fallback, not a peer - but a game scraped out of
  *     prose beats no game.
  */
 const CODER = [
-  { id: 'nvidia/nemotron-3-super-120b-a12b:free', schema: true, out: 235929, why: 'schema, 236k output, proven in production' },
-  { id: 'dots-studio/dots-3-note-preview:free', schema: true, out: 460800, why: 'schema + 461k output' },
+  { id: 'dots-studio/dots-3-note-preview:free', schema: true, out: 460800, why: 'schema, 461k output, the only model to finish a game' },
   { id: 'z-ai/glm-5.2:free', schema: true, out: 230400, why: 'schema + 230k output' },
+  { id: 'nvidia/nemotron-3-super-120b-a12b:free', schema: true, out: 235929, why: 'schema + 236k output' },
   { id: 'minimax/minimax-m3:free', schema: false, out: 943718, why: 'no schema, very large output' },
   { id: 'thinkingmachines/inkling:free', schema: false, out: 262144, why: 'no schema, 262k output' },
   { id: 'minimax/minimax-m2.7:free', schema: false, out: 176947, why: 'no schema, 177k output' }
 ];
 
-/** A brief is a page of JSON. Anything that answers reliably will do. */
+/* A brief is a page of JSON, so output ceiling is irrelevant and turnaround is
+   everything - and nemotron answers one in three to twenty seconds. The thing
+   it is bad at is finishing a long file, which a brief never asks for. */
 const BRIEF = [
-  { id: 'nvidia/nemotron-3-super-120b-a12b:free', schema: true, out: 235929, why: 'schema' },
+  { id: 'nvidia/nemotron-3-super-120b-a12b:free', schema: true, out: 235929, why: 'schema, fast on short answers' },
   { id: 'z-ai/glm-5.2:free', schema: true, out: 230400, why: 'schema' },
   { id: 'liquid/lfm-2.5-2.6b:free', schema: true, out: 8192, why: 'small and quick' },
   { id: 'minimax/minimax-m2.7:free', schema: false, out: 176947, why: 'fallback' }

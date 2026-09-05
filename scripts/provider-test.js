@@ -115,6 +115,12 @@ const server = http.createServer((req, res) => {
           supported_parameters: ['max_tokens', 'response_format', 'structured_outputs', 'temperature'],
           top_provider: { max_completion_tokens: 460800 }
         }, {
+          id: 'z-ai/glm-5.2:free',
+          context_length: 230400,
+          architecture: { input_modalities: ['text'], output_modalities: ['text'] },
+          supported_parameters: ['max_tokens', 'response_format', 'structured_outputs', 'temperature'],
+          top_provider: { max_completion_tokens: 230400 }
+        }, {
           // Deliberately small, so the ceiling clamp has something to bite on.
           id: 'liquid/lfm-2.5-2.6b:free',
           context_length: 32768,
@@ -234,7 +240,10 @@ async function check(name, fn) {
     assert.strictEqual(req.headers.authorization, 'Bearer sk-or-test-key');
     assert.strictEqual(req.headers['x-title'], 'meamus');
     assert.ok(req.headers['http-referer'], 'missing the OpenRouter attribution header');
-    assert.strictEqual(req.body.model, 'nvidia/nemotron-3-super-120b-a12b:free');
+    // The roster leads with whichever model has actually been finishing games,
+    // and that changes with the evidence; what must hold is that the request
+    // goes to the top of it.
+    assert.strictEqual(req.body.model, require('../server/services/models').CODER[0].id);
     assert.strictEqual(req.body.messages[0].role, 'system');
     assert.ok(req.body.messages[0].content.includes('meamus'), 'system prompt was not sent');
     assert.strictEqual(req.body.messages[1].role, 'user');
@@ -511,12 +520,19 @@ async function check(name, fn) {
   });
 
   await check('catalogue output limits cap the request budget', async () => {
-    const caps = await llm.capabilities();
+    /* The ceiling that matters is the one belonging to the model actually being
+       asked, which is the head of the coder roster - not config.llm.model. This
+       used to read capabilities() with no argument, which answers for the
+       configured model, and started asserting against a model the router was
+       never going to pick the moment the roster order changed. */
+    const first = require('../server/services/models').CODER[0].id;
+    const caps = await llm.capabilities(first);
     const previous = caps.maxOutput;
     caps.maxOutput = 4000;
     captured.length = 0;
     try {
       await llm.complete({ messages: [{ role: 'user', content: 'test' }] });
+      assert.strictEqual(captured[0].body.model, first, 'the roster head was not asked');
       assert.strictEqual(captured[0].body.max_tokens, 4000);
     } finally { caps.maxOutput = previous; }
   });
@@ -1180,6 +1196,10 @@ async function check(name, fn) {
   /* --- routing ----------------------------------------------------------- */
 
   const modelRouter = require('../server/services/models');
+  /* By position, not by name: the roster order is set by which models have
+     actually been finishing games, and that has already changed once. */
+  const FIRST_CODER = modelRouter.CODER[0].id;
+  const SECOND_CODER = modelRouter.CODER[1].id;
   const ask = (opts = {}) => llm.complete({
     messages: [{ role: 'user', content: 'make a game' }], jsonSchema: true, ...opts
   });
@@ -1187,10 +1207,10 @@ async function check(name, fn) {
   await check('a model that will not answer hands the job to the next one', async () => {
     modelRouter.reset();
     refuse.clear();
-    refuse.set('nvidia/nemotron-3-super-120b-a12b:free', { status: 429, message: 'rate limit exceeded' });
+    refuse.set(FIRST_CODER, { status: 429, message: 'rate limit exceeded' });
 
     const result = await ask();
-    assert.strictEqual(result.model, 'dots-studio/dots-3-note-preview:free',
+    assert.strictEqual(result.model, SECOND_CODER,
       'the second model on the roster should have answered');
     assert.strictEqual(result.attempts.length, 2, 'both attempts should be recorded');
     assert.strictEqual(result.attempts[0].ok, false);
@@ -1202,7 +1222,7 @@ async function check(name, fn) {
   await check('a rate-limited model is skipped, not re-asked, on the next call', async () => {
     modelRouter.reset();
     refuse.clear();
-    refuse.set('nvidia/nemotron-3-super-120b-a12b:free', { status: 429, message: 'rate limit exceeded' });
+    refuse.set(FIRST_CODER, { status: 429, message: 'rate limit exceeded' });
     await ask();
     refuse.clear();
 
@@ -1210,25 +1230,23 @@ async function check(name, fn) {
     // must not spend a request finding that out.
     const before = captured.length;
     const result = await ask();
-    assert.strictEqual(result.model, 'dots-studio/dots-3-note-preview:free');
+    assert.strictEqual(result.model, SECOND_CODER);
     assert.strictEqual(captured.length - before, 1, 'a benched model was asked again anyway');
     const benched = modelRouter.benchedNow().map((b) => b.id);
-    assert.ok(benched.includes('nvidia/nemotron-3-super-120b-a12b:free'));
+    assert.ok(benched.includes(FIRST_CODER));
   });
 
   await check('a daily cap benches a model for the day, a rate limit for minutes', async () => {
     modelRouter.reset();
     refuse.clear();
-    refuse.set('nvidia/nemotron-3-super-120b-a12b:free',
-      { status: 429, message: 'Rate limit exceeded: free-models-per-day' });
-    refuse.set('dots-studio/dots-3-note-preview:free',
-      { status: 429, message: 'rate limit exceeded' });
+    refuse.set(FIRST_CODER, { status: 429, message: 'Rate limit exceeded: free-models-per-day' });
+    refuse.set(SECOND_CODER, { status: 429, message: 'rate limit exceeded' });
 
     await ask();
     const held = Object.fromEntries(modelRouter.benchedNow().map((b) => [b.id, b.forMs]));
-    assert.ok(held['nvidia/nemotron-3-super-120b-a12b:free'] > 20 * 60 * 60 * 1000,
+    assert.ok(held[FIRST_CODER] > 20 * 60 * 60 * 1000,
       'a daily cap should be remembered for the rest of the day, not a few minutes');
-    assert.ok(held['dots-studio/dots-3-note-preview:free'] < 10 * 60 * 1000,
+    assert.ok(held[SECOND_CODER] < 10 * 60 * 1000,
       'a per-minute limit should clear on its own, not be held for a day');
     refuse.clear();
   });
@@ -1284,17 +1302,17 @@ async function check(name, fn) {
     modelRouter.reset();
     refuse.clear();
     const original = process.env.OPENROUTER_MODEL;
-    process.env.OPENROUTER_MODEL = 'dots-studio/dots-3-note-preview:free';
+    process.env.OPENROUTER_MODEL = SECOND_CODER;
 
     const first = await ask();
-    assert.strictEqual(first.model, 'dots-studio/dots-3-note-preview:free',
+    assert.strictEqual(first.model, SECOND_CODER,
       'an explicit setting is an instruction, not a suggestion');
 
     // ...and being pinned does not mean being the only option.
-    refuse.set('dots-studio/dots-3-note-preview:free', { status: 502, message: 'upstream error' });
+    refuse.set(SECOND_CODER, { status: 502, message: 'upstream error' });
     modelRouter.reset();
     const second = await ask();
-    assert.notStrictEqual(second.model, 'dots-studio/dots-3-note-preview:free',
+    assert.notStrictEqual(second.model, SECOND_CODER,
       '"the model you chose is down" is not a reason to have no product');
 
     refuse.clear();
@@ -1339,12 +1357,12 @@ async function check(name, fn) {
   await check('the build is told which model is being asked, before it answers', async () => {
     modelRouter.reset();
     refuse.clear();
-    refuse.set('nvidia/nemotron-3-super-120b-a12b:free', { status: 502, message: 'upstream error' });
+    refuse.set(FIRST_CODER, { status: 502, message: 'upstream error' });
 
     const seen = [];
     await ask({ onModel: (info) => seen.push(info) });
     assert.strictEqual(seen.length, 2, 'both models tried should have been announced');
-    assert.strictEqual(seen[0].model, 'nvidia/nemotron-3-super-120b-a12b:free');
+    assert.strictEqual(seen[0].model, FIRST_CODER);
     assert.strictEqual(seen[0].index, 1);
     assert.ok(seen[0].of >= 2, 'the founder should be able to see how many are left to try');
     refuse.clear();
