@@ -243,6 +243,72 @@ const check = async (name, fn) => {
       `the failure was not logged: ${JSON.stringify(captured)}`);
   });
 
+  await check('a database missing the build-coordination migration degrades, not 502s', async () => {
+    // Exactly what production answered after the 20260905 migration shipped in
+    // code but was never run against the database: every single /build/plan
+    // came back 502 with "Could not find the table 'public.meamus_build_plans'
+    // in the schema cache". The founder cannot run our SQL and cannot read that
+    // sentence, and a missing migration is a deployment one file behind - not a
+    // reason to have no product.
+    const missing = tables.meamus_build_plans;
+    delete tables.meamus_build_plans;
+
+    const store = createSupabaseStore(config);
+    await store.init();
+
+    try {
+      const plan = { planId: 'pln_x', userId: 'u1', createdAt: Date.now(), prompt: 'a game' };
+
+      // undefined, not a throw: "this database cannot hold plans".
+      assert.strictEqual(await store.saveBuildPlan(plan), undefined,
+        'a missing table should be reported, not thrown');
+      assert.strictEqual(store.buildCoordination, false,
+        'the store should record that coordination is unavailable');
+
+      // And it stops asking, rather than paying a round trip per call to
+      // rediscover the same thing.
+      const before = seen.length;
+      assert.strictEqual(await store.takeBuildPlan('pln_x', 'u1'), undefined);
+      assert.strictEqual(await store.gameForBuild('bld_x', 'u1'), undefined);
+      assert.strictEqual(await store.stopBuild('bld_x', 'u1'), undefined);
+      assert.strictEqual(seen.length, before,
+        'a store that knows the table is missing should not keep asking for it');
+
+      // The real error still gets through. A missing table is recoverable; a
+      // dead database is not, and swallowing it would hide a real outage.
+      assert.strictEqual(store.kind, 'supabase');
+    } finally {
+      tables.meamus_build_plans = missing;
+    }
+  });
+
+  await check('builds fall back to memory when coordination is unavailable', async () => {
+    // The other half: the store saying "I cannot" has to actually produce a
+    // working build rather than a 500 one layer up.
+    const builds = require('../server/services/builds');
+    const db = require('../server/db');
+    builds.reset();
+
+    const saved = { saveBuildPlan: db.saveBuildPlan, takeBuildPlan: db.takeBuildPlan };
+    db.saveBuildPlan = async () => undefined;
+    db.takeBuildPlan = async () => undefined;
+
+    try {
+      const planId = await builds.savePlan('u1', { kind: 'create', prompt: 'a game' });
+      const taken = await builds.takePlan(planId, 'u1');
+      assert.ok(taken, 'the approval was lost even though it was held in memory');
+      assert.strictEqual(taken.prompt, 'a game');
+
+      // Still single-use, degraded or not: an approval buys one build.
+      assert.strictEqual(await builds.takePlan(planId, 'u1'), null,
+        'a plan was spent twice, which is a second charge to the founder');
+    } finally {
+      db.saveBuildPlan = saved.saveBuildPlan;
+      db.takeBuildPlan = saved.takeBuildPlan;
+      builds.reset();
+    }
+  });
+
   await check('a build step keeps its numbers, and drops what it should not', async () => {
     // The route hands builds.step() whatever an agent reported. What survives
     // is this whitelist's decision, and it used to be five fields - so adding a
