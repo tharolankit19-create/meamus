@@ -620,25 +620,56 @@ async function buildWithCrew(prompt, opts = {}) {
  *
  * Written from the transcript rather than asked for, so it cannot claim
  * anything that did not happen.
+ *
+ * It used to end on "Booted and ticked twice before shipping" and repeat the
+ * reviewer's own verdict on its own work - "the reviewer found nothing blocking
+ * — this is a solid arcade experience". Both are the house style of a machine
+ * congratulating itself, and a founder reading it learns nothing they could
+ * check. So the evaluative half is gone and what is left is countable: what the
+ * game is, what is in it, what the test did, and what went wrong on the way.
+ *
+ * The one judgement kept is the reviewer's list of problems it FOUND, because a
+ * named fix is a fact about the code. Its summary sentence is not.
  */
 function summarise(meta) {
   const brief = meta.brief || {};
   const review = meta.review || {};
   const lines = [];
 
+  // What it is. The pitch is the designer describing the game, not the crew
+  // describing its own work, so it stays.
   if (brief.pitch) lines.push(`**${brief.title}** — ${brief.pitch}`);
   if (brief.coreLoop) lines.push(`Core loop: ${brief.coreLoop}`);
   if ((brief.mechanics || []).length) {
     lines.push(`Mechanics: ${brief.mechanics.map((m) => m.name).join(', ')}`);
   }
 
-  const fixes = (review.findings || []).filter((f) => f.severity === 'blocker' || f.severity === 'major');
-  lines.push(fixes.length
-    ? `The reviewer found ${fixes.length} issue${fixes.length > 1 ? 's' : ''} and they were fixed: ${fixes.map((f) => f.what).join('; ')}`
-    : `The reviewer found nothing blocking${review.summary ? ` — ${review.summary}` : ''}.`);
+  /* What happened, as numbers. Every one of these is either true of the file
+     that shipped or of a test that ran, which is the difference between a
+     report and a press release. */
+  const facts = [];
+  const scenes = (meta.transcript || []).reduce((n, t) => Math.max(n, t.scenes || 0), 0);
+  if (scenes) facts.push(`${scenes} scene${scenes > 1 ? 's' : ''} booted and ticked`);
+  if (meta.attempts > 1) facts.push(`${meta.attempts} attempts to get it running`);
 
-  lines.push('Booted and ticked twice before shipping.');
-  if (meta.attempts > 1) lines.push(`Took ${meta.attempts} attempts to get it running.`);
+  /* Which model wrote it, when it was not the first one asked. Silent on the
+     happy path - naming the model every time is noise - but a build that took
+     two minutes because three models refused is a different story from a slow
+     one, and the founder is owed the difference. */
+  const switched = (meta.transcript || []).some((t) => t.modelIndex > 1);
+  if (switched && meta.model) facts.push(`written by ${meta.model} after earlier models declined`);
+
+  const fixes = (review.findings || []).filter((f) => f.severity === 'blocker' || f.severity === 'major');
+  if (fixes.length) {
+    lines.push(`Fixed before shipping: ${fixes.map((f) => f.what).join('; ')}`);
+  }
+
+  if (facts.length) lines.push(facts.join(' · '));
+
+  /* Anything that did not go to plan. A build that quietly dropped a reference
+     image or shipped the second-best version should say so here rather than
+     leave the founder to notice on their own. */
+  for (const issue of (meta.issues || []).slice(0, 3)) lines.push(issue);
 
   return lines.join('\n');
 }

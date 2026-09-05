@@ -364,6 +364,38 @@ async function check(name, fn) {
       'the saved transcript lost the line count, so a reload shows less than the build did');
   });
 
+  await check('the chat summary states facts, not compliments', async () => {
+    const agents = require('../server/services/agents');
+    const text = agents.summarise({
+      model: 'z-ai/glm-5.2:free',
+      attempts: 2,
+      brief: {
+        title: 'Block Dodge',
+        pitch: 'Dodge falling blocks, grab coins.',
+        coreLoop: 'Move, dodge, collect.',
+        mechanics: [{ name: 'Dodge' }, { name: 'Combo' }]
+      },
+      review: {
+        summary: 'A polished and engaging arcade experience that players will love.',
+        findings: [{ severity: 'major', what: 'the jump never fired' }]
+      },
+      transcript: [{ scenes: 2 }],
+      issues: []
+    });
+
+    // The reviewer marking its own homework is where the slop came from.
+    assert.ok(!text.includes('polished'), `the model's self-praise reached the chat:\n${text}`);
+    assert.ok(!/nothing blocking|looks sound|solid/i.test(text),
+      `an evaluative claim survived:\n${text}`);
+
+    // What is left has to be checkable against the file that shipped.
+    assert.ok(text.includes('Block Dodge'), 'the game is not named');
+    assert.ok(/2 scenes booted/.test(text), 'the test result is missing');
+    assert.ok(/2 attempts/.test(text), 'the attempt count is missing');
+    assert.ok(text.includes('the jump never fired'),
+      'a fix that was actually made is a fact and should be reported');
+  });
+
   await check('crew usage is summed across every agent, not just the coder', async () => {
     captured.length = 0;
     const { meta } = await generator.generate('dodge blocks', { allowFallback: false });
