@@ -918,6 +918,69 @@ async function check(name, fn) {
     assert.ok(Date.now() - started < 3000, 'a hopeless call was retried anyway');
   });
 
+  await check('an unfinished try block is truncation, not a punctuation mistake', async () => {
+    // Production, four attempts running: "Missing catch or finally after try
+    // at game.js line 193" - a `try {` the model never got to close because it
+    // ran out of room. It reads like a mistake, and the model was told to check
+    // its punctuation each time. Where the error sits in the file is what
+    // tells the two apart.
+    const { normaliseSpec } = require('../server/services/validator');
+    const agents = require('../server/services/agents');
+
+    const cut = [...Array(190).keys()].map((i) => `const filler${i} = ${i};`).join('\n')
+      + '\nfunction boom() {\n  try {\n';
+
+    let thrown = null;
+    try {
+      normaliseSpec({ ...FAKE_SPEC, gameCode: { ...FAKE_SPEC.gameCode, javascript: cut } },
+        { source: 'ai' });
+    } catch (err) { thrown = err; }
+
+    assert.ok(thrown, 'an unfinished file should not pass validation');
+    assert.ok(thrown.detail && thrown.detail.totalLines,
+      'the error must carry how long the file is, or the end cannot be recognised');
+    assert.ok(thrown.detail.totalLines - thrown.detail.line <= 3,
+      'the failure should be located at the end of the file');
+
+    const correction = agents.correctionFor(thrown, 0);
+    assert.match(correction, /stopped before the game was finished|ends\s+mid-way/i,
+      `the model was not told it ran out of room:\n${correction}`);
+    assert.doesNotMatch(correction, /straight quotes|smart dashes/i,
+      'a cut-off file was blamed on punctuation, which is what wasted four attempts');
+  });
+
+  await check('a model that keeps writing unusable code is replaced', async () => {
+    /* Production: nine attempts, one model, nine unusable answers, 182 seconds,
+       no game - with five other models sitting untried. A rate limit is a
+       transport failure and routing already handles it; a model answering
+       badly is only visible here. */
+    const router = require('../server/services/models');
+    config.build.crew = true;
+    router.reset();
+    refuse.clear();
+    captured.length = 0;
+    replies = 'always-garbage';   // parses as a reply, never as a game
+
+    try {
+      await generator.generate('dodge blocks', { allowFallback: true, research: false });
+    } catch { /* the point is which models were asked, not the outcome */ }
+    replies = null;
+
+    const coderCalls = captured.filter((c) => {
+      const sys = (c.body.messages.find((m) => m.role === 'system') || {}).content || '';
+      return !/you produce the brief|You review Phaser 3/i.test(sys);
+    });
+    const asked = [...new Set(coderCalls.map((c) => c.body.model))];
+
+    assert.ok(coderCalls.length >= 4, `only ${coderCalls.length} coder attempts were made`);
+    assert.ok(asked.length >= 2,
+      `every one of ${coderCalls.length} attempts went to ${asked[0]} - a model that cannot `
+      + 'write the game is not going to write it on the ninth ask');
+
+    config.build.crew = crewDefault;
+    router.reset();
+  });
+
   /* --- routing ----------------------------------------------------------- */
 
   const modelRouter = require('../server/services/models');
