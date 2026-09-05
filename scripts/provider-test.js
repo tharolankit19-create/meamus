@@ -384,6 +384,42 @@ async function check(name, fn) {
       'the saved transcript lost the files, so a reload shows a log where the build showed cards');
   });
 
+  await check('games are briefed light by default, and playable with a thumb', async () => {
+    /* Two things a generated game gives itself away with: a dark canvas covered
+       in saturated neon, and controls that assume a keyboard. Both are defaults
+       the model falls into unless it is told otherwise, and both are decided
+       before a line of code is written - in the system prompt and in the
+       designer's brief - so that is where they are answered. */
+    const fs = require('fs');
+    const path = require('path');
+    const prompt = fs.readFileSync(
+      path.join(__dirname, '..', 'server', 'prompts', 'system.md'), 'utf8'
+    );
+    const designer = require('../server/services/agents').CREW.designer.system;
+
+    for (const [what, text] of Object.entries({ 'system prompt': prompt, 'designer brief': designer })) {
+      assert.match(text, /light/i, `${what} does not say to default to a light palette`);
+      assert.match(text, /dark/i, `${what} does not say when dark is allowed`);
+      assert.ok(/only.{0,40}(asks?|request)/is.test(text),
+        `${what} allows dark without tying it to the player asking for it`);
+    }
+
+    // Both control schemes, in every game, not one or the other.
+    assert.match(prompt, /touch/i, 'the prompt never mentions touch controls');
+    assert.match(prompt, /keyboard/i, 'the prompt never mentions keyboard controls');
+    assert.match(prompt, /44/, 'no minimum tap target is given, so buttons will be mouse-sized');
+    assert.match(prompt, /pointerdown/i,
+      'the prompt does not say to use pointer events, which is what serves mouse and touch at once');
+    assert.match(designer, /thumb/i, 'the designer is not told the game must work on a phone');
+
+    // Concrete instructions, not adjectives. "Make it look good" produces
+    // nothing; a named tween ease and a named shadow technique produce output.
+    for (const concrete of ['fillRoundedRect', 'setScrollFactor', 'easeOut', 'shake']) {
+      assert.ok(prompt.includes(concrete),
+        `the prompt asks for polish without naming how: ${concrete} is missing`);
+    }
+  });
+
   await check('the chat summary states facts, not compliments', async () => {
     const agents = require('../server/services/agents');
     const text = agents.summarise({

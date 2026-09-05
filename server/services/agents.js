@@ -61,7 +61,17 @@ const CREW = {
       'Rules. Three to six mechanics, no more — a game that does four things well',
       'beats one that does nine badly. Every mechanic must be reachable in the',
       'first thirty seconds of play. Name a real fail state; "the player loses"',
-      'is not one. Assume procedural art only: no downloads, no asset packs.'
+      'is not one. Assume procedural art only: no downloads, no asset packs.',
+      '',
+      'Art direction defaults to LIGHT: a soft, light ground with one accent',
+      'colour carrying the player and one carrying rewards. Describe a dark or',
+      'neon palette ONLY if the request asks for one — "dark", "night", "space",',
+      '"horror", "neon". A dark canvas with saturated neon on it is what a',
+      'generated game looks like, and it is the look to avoid unless it was',
+      'asked for. Name four to six colours in words, and say which is the',
+      'player, which is the reward and which is the danger.',
+      '',
+      'Controls must work with a thumb and with a keyboard. Fill in both.'
     ].join('\n')
   },
 
