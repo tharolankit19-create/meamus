@@ -243,6 +243,40 @@ const check = async (name, fn) => {
       `the failure was not logged: ${JSON.stringify(captured)}`);
   });
 
+  await check('a build step keeps its numbers, and drops what it should not', async () => {
+    // The route hands builds.step() whatever an agent reported. What survives
+    // is this whitelist's decision, and it used to be five fields - so adding a
+    // line count to the coder's progress changed nothing on screen, because it
+    // was dropped one layer below where it was written.
+    const builds = require('../server/services/builds');
+    builds.reset();
+    const { build } = builds.start('user_1', { kind: 'create', prompt: 'x', estimate: {} });
+
+    builds.step(build, {
+      phase: 'build',
+      detail: 'Wrote game.js',
+      agent: 'Coder',
+      model: 'nvidia/nemotron-3-super-120b-a12b:free',
+      modelIndex: 2,
+      modelCount: 6,
+      file: 'game.js',
+      lines: 341,
+      bytes: 18220,
+      spec: { enormous: 'x'.repeat(50000) }   // must not reach the row
+    });
+
+    const [step] = build.steps;
+    assert.strictEqual(step.lines, 341, 'the line count was dropped');
+    assert.strictEqual(step.file, 'game.js', 'the file name was dropped');
+    assert.strictEqual(step.model, 'nvidia/nemotron-3-super-120b-a12b:free');
+    assert.strictEqual(step.modelIndex, 2);
+    assert.strictEqual(step.agent, 'Coder');
+    assert.ok(typeof step.at === 'number', 'a step arrived without a timestamp');
+    assert.strictEqual(step.spec, undefined,
+      'a whole spec on a progress line would be written onto the row on every step');
+    builds.reset();
+  });
+
   server.close();
   console.log(`\n${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);

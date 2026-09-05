@@ -184,25 +184,53 @@ async function claimDurable(build) {
 }
 
 /**
+ * Fields a step may carry beyond its sentence.
+ *
+ * A whitelist, not a spread, for two reasons: every step is written onto the
+ * game row, so an agent that started attaching a whole spec to its progress
+ * would double the size of every write; and the browser renders these by name,
+ * so what is allowed through is worth being able to read in one place.
+ */
+const STEP_FIELDS = [
+  'agent',        // who is working - Designer, Coder, Tester, Reviewer, Improver
+  'attempt',      // which try this is
+  'total',        // out of how many
+  'model',        // which model was asked
+  'modelIndex',   // and where it sits on the roster, when the first one refused
+  'modelCount',
+  'file',         // what was written
+  'lines',        // and how much of it
+  'bytes',
+  'scenes',       // what the tester booted
+  'attempts',
+  'mechanics'     // what the designer specified
+];
+
+/**
  * Append a progress line. This is what the chat renders while it works.
  *
  * `agent` is who is speaking - Designer, Coder, Tester, Reviewer, Improver.
  * The crew reports it; the single-model path does not, and those lines fall
  * back to the phase name.
+ *
+ * The numbers matter as much as the sentence. "Coder: writing the game" for
+ * ninety seconds is indistinguishable from a hang, and a founder watching that
+ * reasonably concludes the product is broken. The same ninety seconds shown as
+ * "Coder · nemotron-3-super · attempt 2 · game.js, 340 lines" is a machine
+ * working. So the fields go through rather than being flattened into prose.
  */
-function step(build, { phase, detail, attempt, total, agent }) {
+function step(build, fields = {}) {
   if (!build) return;
   const previous = build.steps[build.steps.length - 1];
-  build.steps.push({
-    at: Date.now() - build.startedAt,
-    phase,
-    detail,
-    agent: agent || null,
-    attempt: attempt || null,
-    total: total || null
-  });
+
+  const entry = { at: Date.now() - build.startedAt, phase: fields.phase, detail: fields.detail };
+  for (const key of STEP_FIELDS) {
+    if (fields[key] !== undefined && fields[key] !== null) entry[key] = fields[key];
+  }
+  build.steps.push(entry);
+
   // A new phase is worth a write immediately; more of the same can wait.
-  flush(build, !previous || previous.phase !== phase);
+  flush(build, !previous || previous.phase !== fields.phase);
 }
 
 function finish(build, result) {
@@ -283,4 +311,7 @@ function sweep() {
 /** Test hook. */
 function reset() { plans.clear(); builds.clear(); }
 
-module.exports = { savePlan, takePlan, start, get, refresh, claimDurable, claim, step, finish, fail, requestStop, view, flush, reset };
+module.exports = {
+  savePlan, takePlan, start, get, refresh, claimDurable, claim, step, finish, fail,
+  requestStop, view, flush, reset, STEP_FIELDS
+};

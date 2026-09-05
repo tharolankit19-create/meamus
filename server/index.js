@@ -9,6 +9,7 @@ const path = require('path');
 const express = require('express');
 
 const config = require('./config');
+const modelRouter = require('./services/models');
 const db = require('./db');
 const middleware = require('./middleware');
 const access = require('./access');
@@ -70,6 +71,20 @@ app.get('/api/status', (req, res) => {
     mode: config.aiEnabled ? 'ai' : 'template',
     provider: config.llm.provider,
     model: config.aiEnabled ? config.llm.model : null,
+    /* The roster, and anything currently benched.
+       
+       "Generation is slow today" and "four of the six free models are capped
+       until midnight" look identical from outside, and only one of them is
+       worth adding credit over. Ids only - no keys, no values. */
+    models: config.aiEnabled && config.llm.provider === 'openrouter'
+      ? {
+        coder: modelRouter.CODER.map((m) => m.id),
+        brief: modelRouter.BRIEF.map((m) => m.id),
+        unavailable: modelRouter.benchedNow().map((b) => ({
+          model: b.id, forSeconds: Math.round(b.forMs / 1000)
+        }))
+      }
+      : null,
     testMode: config.testMode,
     templates: templates.list().length,
     showcase: config.showcaseTemplate,

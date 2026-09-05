@@ -138,12 +138,16 @@ const BRIEF_TOKENS = 8000;
 const MAX_ECHO_CHARS = 48000;
 
 /** A JSON-answering agent. Returns the parsed object plus its usage. */
-async function ask(role, userContent, { maxTokens } = {}) {
+async function ask(role, userContent, { maxTokens, onModel } = {}) {
   const agent = CREW[role];
   const response = await llm.complete({
     system: agent.system,
     messages: [{ role: 'user', content: userContent }],
-    maxTokens
+    maxTokens,
+    // A brief is a page of JSON; it does not need the model with the biggest
+    // output ceiling, it needs one that answers.
+    role: 'brief',
+    onModel
   });
   let parsed;
   try {
@@ -155,8 +159,8 @@ async function ask(role, userContent, { maxTokens } = {}) {
 }
 
 /** A GameSpec-producing agent, schema-constrained where the model supports it. */
-async function askForSpec(messages) {
-  const response = await llm.complete({ messages, jsonSchema: true });
+async function askForSpec(messages, { onModel } = {}) {
+  const response = await llm.complete({ messages, jsonSchema: true, role: 'coder', onModel });
   const raw = extractJson(response.text);
   const { spec, issues } = normaliseSpec(raw, { source: 'ai' });
   return { spec, issues, response };
@@ -286,7 +290,7 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
 
     say('coder', 'build', attemptNo === 1
       ? WORKING_COPY.coder
-      : `Rewriting it (attempt ${attemptNo})`);
+      : `Rewriting it (attempt ${attemptNo})`, { attempt: attemptNo });
 
     let answer = null;
     try {
@@ -298,14 +302,24 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
           { role: 'user', content: correctionFor(last.error, cutoffs) }
         ];
 
-      const response = await llm.complete({ messages, jsonSchema: true });
+      const response = await llm.complete({
+        messages, jsonSchema: true, role: 'coder',
+        onModel: (info) => say('coder', 'build',
+          info.index === 1
+            ? `Asking ${info.model}`
+            : `${info.model} instead (model ${info.index} of ${info.of})`,
+          { model: info.model, modelIndex: info.index, modelCount: info.of, attempt: attemptNo })
+      });
       usage.add(response.usage);
       answer = response.text;
 
       // Each of these can throw, and each throw is a retry with the reason.
       const raw = extractJson(response.text);
       const { spec, issues: specIssues } = normaliseSpec(raw, { source: 'ai' });
-      say('coder', 'build', `Wrote ${spec.gameCode.javascript.split('\n').length} lines`);
+      const lines = spec.gameCode.javascript.split('\n').length;
+      const chars = spec.gameCode.javascript.length;
+      say('coder', 'build', `Wrote game.js — ${lines} lines, ${Math.round(chars / 1024)} KB`,
+        { file: 'game.js', lines, bytes: chars, model: response.model, attempt: attemptNo });
 
       say('tester', 'test', `${WORKING_COPY.tester} (run 1 of 2)`);
       const booted = smoke.boot(spec.gameCode.javascript);
@@ -432,17 +446,45 @@ async function buildWithCrew(prompt, opts = {}) {
   const transcript = [];
   const issues = [];
 
-  const say = (agent, phase, detail) => {
-    transcript.push({ agent: CREW[agent] ? CREW[agent].label : 'Tester', phase, detail, at: Date.now() - started });
-    onStep({ phase, detail, agent: CREW[agent] ? CREW[agent].label : 'Tester' });
+  /* Progress is structured, not just a sentence.
+     
+     "Coder: writing the game" for ninety seconds looks identical to a hang.
+     What separates the two is the detail underneath it - which model is being
+     asked, which attempt this is, how many lines came back, which file they
+     went into - so every step carries those as fields the browser can render,
+     rather than folding them into prose it would have to parse back out. */
+  const say = (agent, phase, detail, meta = {}) => {
+    const entry = {
+      agent: CREW[agent] ? CREW[agent].label : 'Tester',
+      phase,
+      detail,
+      at: Date.now() - started,
+      ...meta
+    };
+    transcript.push(entry);
+    onStep(entry);
+  };
+
+  /* Which model each agent is being put to, as it happens. A founder watching
+     "Coder · glm-5.2 (2 of 6)" understands a slow build; "Coder: writing the
+     game" tells them nothing and looks broken. */
+  const watchModels = (agent, phase) => (info) => {
+    say(agent, phase,
+      info.index === 1
+        ? `Asking ${info.model}`
+        : `${info.model} instead (model ${info.index} of ${info.of})`,
+      { model: info.model, modelIndex: info.index, modelCount: info.of });
   };
 
   /* --- 1. Designer -------------------------------------------------------- */
   say('designer', 'design', WORKING_COPY.designer);
-  const design = await ask('designer', `Request: ${prompt}`, { maxTokens: BRIEF_TOKENS });
+  const design = await ask('designer', `Request: ${prompt}`, {
+    maxTokens: BRIEF_TOKENS, onModel: watchModels('designer', 'design')
+  });
   usage.add(design.usage);
   const brief = design.parsed;
-  say('designer', 'design', `Brief ready: ${brief.title} — ${brief.pitch}`);
+  say('designer', 'design', `Brief ready: ${brief.title} — ${brief.pitch}`,
+    { model: design.model, mechanics: (brief.mechanics || []).length });
 
   /* --- 2. Coder ----------------------------------------------------------- */
   //
@@ -489,13 +531,16 @@ async function buildWithCrew(prompt, opts = {}) {
   issues.push(...attempt.issues);
   const response = attempt.response;
   const repairs = attempt.repairs;
-  say('tester', 'test', `Run 1 passed — ${attempt.scenes} scenes booted`);
+  say('tester', 'test', `Run 1 passed — ${attempt.scenes} scenes booted`,
+    { scenes: attempt.scenes, attempts: attempt.repairs + 1 });
 
   /* --- 4. Reviewer -------------------------------------------------------- */
   let review = { verdict: 'ship', findings: [], summary: 'Not reviewed.' };
   try {
     say('reviewer', 'review', WORKING_COPY.reviewer);
-    const reviewed = await ask('reviewer', reviewPrompt(brief, spec), { maxTokens: BRIEF_TOKENS });
+    const reviewed = await ask('reviewer', reviewPrompt(brief, spec), {
+      maxTokens: BRIEF_TOKENS, onModel: watchModels('reviewer', 'review')
+    });
     usage.add(reviewed.usage);
     review = reviewed.parsed || review;
   } catch (err) {
@@ -524,8 +569,15 @@ async function buildWithCrew(prompt, opts = {}) {
             ).join('\n')
             + '\n\nReturn the complete corrected GameSpec JSON.'
         }
-      ]);
+      ], { onModel: watchModels('improver', 'improve') });
       usage.add(improved.response.usage);
+      say('improver', 'improve',
+        `Rewrote game.js — ${improved.spec.gameCode.javascript.split('\n').length} lines`,
+        {
+          file: 'game.js',
+          lines: improved.spec.gameCode.javascript.split('\n').length,
+          model: improved.response.model
+        });
 
       // The improver's work only counts if it still boots. If the fix broke the
       // game, the version that passed is the one that ships.
@@ -575,25 +627,56 @@ async function buildWithCrew(prompt, opts = {}) {
  *
  * Written from the transcript rather than asked for, so it cannot claim
  * anything that did not happen.
+ *
+ * It used to end on "Booted and ticked twice before shipping" and repeat the
+ * reviewer's own verdict on its own work - "the reviewer found nothing blocking
+ * — this is a solid arcade experience". Both are the house style of a machine
+ * congratulating itself, and a founder reading it learns nothing they could
+ * check. So the evaluative half is gone and what is left is countable: what the
+ * game is, what is in it, what the test did, and what went wrong on the way.
+ *
+ * The one judgement kept is the reviewer's list of problems it FOUND, because a
+ * named fix is a fact about the code. Its summary sentence is not.
  */
 function summarise(meta) {
   const brief = meta.brief || {};
   const review = meta.review || {};
   const lines = [];
 
+  // What it is. The pitch is the designer describing the game, not the crew
+  // describing its own work, so it stays.
   if (brief.pitch) lines.push(`**${brief.title}** — ${brief.pitch}`);
   if (brief.coreLoop) lines.push(`Core loop: ${brief.coreLoop}`);
   if ((brief.mechanics || []).length) {
     lines.push(`Mechanics: ${brief.mechanics.map((m) => m.name).join(', ')}`);
   }
 
-  const fixes = (review.findings || []).filter((f) => f.severity === 'blocker' || f.severity === 'major');
-  lines.push(fixes.length
-    ? `The reviewer flagged ${fixes.length} issue${fixes.length > 1 ? 's' : ''}: ${fixes.map((f) => f.what).join('; ')}`
-    : `The reviewer found nothing blocking${review.summary ? ` — ${review.summary}` : ''}.`);
+  /* What happened, as numbers. Every one of these is either true of the file
+     that shipped or of a test that ran, which is the difference between a
+     report and a press release. */
+  const facts = [];
+  const scenes = (meta.transcript || []).reduce((n, t) => Math.max(n, t.scenes || 0), 0);
+  if (scenes) facts.push(`${scenes} scene${scenes > 1 ? 's' : ''} booted and ticked`);
+  if (meta.attempts > 1) facts.push(`${meta.attempts} attempts to get it running`);
 
-  lines.push('The shipped version passed the scene boot check.');
-  if (meta.attempts > 1) lines.push(`Took ${meta.attempts} attempts to get it running.`);
+  /* Which model wrote it, when it was not the first one asked. Silent on the
+     happy path - naming the model every time is noise - but a build that took
+     two minutes because three models refused is a different story from a slow
+     one, and the founder is owed the difference. */
+  const switched = (meta.transcript || []).some((t) => t.modelIndex > 1);
+  if (switched && meta.model) facts.push(`written by ${meta.model} after earlier models declined`);
+
+  const fixes = (review.findings || []).filter((f) => f.severity === 'blocker' || f.severity === 'major');
+  if (fixes.length) {
+    lines.push(`Fixed before shipping: ${fixes.map((f) => f.what).join('; ')}`);
+  }
+
+  if (facts.length) lines.push(facts.join(' · '));
+
+  /* Anything that did not go to plan. A build that quietly dropped a reference
+     image or shipped the second-best version should say so here rather than
+     leave the founder to notice on their own. */
+  for (const issue of (meta.issues || []).slice(0, 3)) lines.push(issue);
 
   return lines.join('\n');
 }

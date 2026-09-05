@@ -17,6 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
+const models = require('./models');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const budgets = new AsyncLocalStorage();
 
@@ -58,58 +59,94 @@ const KNOWN = {
   'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free': { images: true, structuredOutputs: false }
 };
 
-let capabilityCache = null;
-let capabilityPromise = null;
+/**
+ * Capabilities, per model.
+ *
+ * This used to be one cached answer for one configured model, which was fine
+ * while there was one model. Routing means asking a different model the moment
+ * the first will not serve, and asking it for a JSON schema it does not support
+ * is a hard 400 - so the answer has to be per model, and the catalogue is worth
+ * fetching once and reading many times.
+ */
+const capabilityCache = new Map();   // model id -> capabilities
+let cataloguePromise = null;
 
 function staticCapabilities(model) {
   if (KNOWN[model]) return { ...KNOWN[model], source: 'static' };
   // Anthropic and the OpenAI-style majors all take images.
   if (/^(anthropic\/|claude)/.test(model)) return { images: true, structuredOutputs: false, source: 'static' };
+  // A roster entry carries what the catalogue said when it was written down,
+  // which beats assuming "no" and losing the schema for the whole build.
+  const listed = [...models.CODER, ...models.BRIEF].find((m) => m.id === model);
+  if (listed) return { images: false, structuredOutputs: listed.schema, maxOutput: listed.out, source: 'roster' };
   return { images: false, structuredOutputs: false, source: 'assumed' };
 }
 
-/**
- * Ask OpenRouter what the configured model can do. Cached for the process
- * lifetime; a failure falls back to the static table rather than throwing,
- * because a catalogue outage must not take generation down with it.
- */
-async function capabilities() {
-  if (capabilityCache) return capabilityCache;
-  if (config.llm.provider !== 'openrouter') {
-    capabilityCache = staticCapabilities(config.llm.model);
-    return capabilityCache;
-  }
-  if (capabilityPromise) return capabilityPromise;
-
-  capabilityPromise = (async () => {
+/** The OpenRouter catalogue, fetched at most once per process. */
+async function catalogue() {
+  if (cataloguePromise) return cataloguePromise;
+  cataloguePromise = (async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
       const response = await fetch(`${config.llm.baseUrl}/models`, { signal: controller.signal });
-      clearTimeout(timer);
       if (!response.ok) throw new Error(`catalogue returned ${response.status}`);
-
       const { data } = await response.json();
-      const entry = (data || []).find((m) => m.id === config.llm.model);
-      if (!entry) throw new Error(`model ${config.llm.model} is not in the catalogue`);
+      return data || [];
+    } finally {
+      clearTimeout(timer);
+    }
+  })().catch((err) => {
+    // One failed fetch must not make every later lookup wait on a dead promise,
+    // and it must not take generation down either: fall back to the table.
+    cataloguePromise = null;
+    return { error: err.message };
+  });
+  return cataloguePromise;
+}
 
+/**
+ * What a model can do. Defaults to the configured model so existing callers -
+ * and /api/status - keep working unchanged.
+ *
+ * A catalogue outage falls back to the static table rather than throwing,
+ * because not knowing whether a model reads images must not stop it writing a
+ * game.
+ */
+async function capabilities(model = config.llm.model) {
+  if (capabilityCache.has(model)) return capabilityCache.get(model);
+
+  if (config.llm.provider !== 'openrouter') {
+    const caps = staticCapabilities(model);
+    capabilityCache.set(model, caps);
+    return caps;
+  }
+
+  const list = await catalogue();
+  let caps;
+  if (Array.isArray(list)) {
+    const entry = list.find((m) => m.id === model);
+    if (entry) {
       const modalities = (entry.architecture && entry.architecture.input_modalities) || [];
       const params = entry.supported_parameters || [];
-      capabilityCache = {
+      caps = {
         images: modalities.includes('image'),
         structuredOutputs: params.includes('structured_outputs') && params.includes('response_format'),
         contextLength: entry.context_length,
         maxOutput: entry.top_provider && entry.top_provider.max_completion_tokens,
         source: 'catalogue'
       };
-    } catch (err) {
-      capabilityCache = staticCapabilities(config.llm.model);
-      capabilityCache.detectionError = err.message;
+    } else {
+      caps = staticCapabilities(model);
+      caps.detectionError = `model ${model} is not in the catalogue`;
     }
-    return capabilityCache;
-  })();
+  } else {
+    caps = staticCapabilities(model);
+    caps.detectionError = list.error;
+  }
 
-  return capabilityPromise;
+  capabilityCache.set(model, caps);
+  return caps;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -186,7 +223,13 @@ function buildUserMessage(text, attachments = [], caps = { images: false }) {
 async function post(url, headers, payload) {
   const controller = new AbortController();
   const remaining = remainingMs();
-  if (remaining <= 0) throw new LlmError('The build time limit was reached. Try a simpler game prompt.', 504);
+  if (remaining <= 0) {
+    /* Not this model's fault, and not fixable by asking a different one - the
+       whole build is out of time. Marked so the roster walk stops here instead
+       of spending what is left discovering the same thing five more times. */
+    throw new LlmError('The build time limit was reached. Try a simpler game prompt.', 504,
+      { budgetExhausted: true });
+  }
   const timer = setTimeout(() => controller.abort(), Math.min(config.llm.timeoutMs, remaining));
   try {
     const response = await fetch(url, {
@@ -220,12 +263,22 @@ function isDailyCap(detail) {
   return /per-?day|daily limit|free-models-per-day/i.test(String(detail));
 }
 
-function rateLimitMessage(detail) {
-  return isDailyCap(detail)
-    ? 'The model provider has reached its daily request limit. Try again after it resets, or choose another available model. No AI game was generated.'
-    : 'The model is busy or rate limited. Please try again shortly. No AI game was generated.';
+/* With a roster, one model refusing is no longer the end of the build - the
+   next one is asked - so this text only reaches the founder when every model
+   said the same thing. It names which model refused (the attempt list names
+   them all) and keeps the one instruction that changes the outcome: on a daily
+   cap, credit raises the free tier from 50 requests a day to 1000. */
+function rateLimitMessage(detail, model = config.llm.model) {
+  if (isDailyCap(detail)) {
+    return `${model} has used up today's free requests - a daily cap, not a short pause, `
+      + 'so waiting will not clear it until it resets. $10 of credit at '
+      + 'https://openrouter.ai/credits raises the free tier from 50 requests a day to 1000 '
+      + `and still costs nothing per request. (${detail})`;
+  }
+  return `${model} is rate limited right now - please try again shortly. (${detail})`;
 }
 
+/** Some providers say when to come back. Believe them over a fixed guess. */
 function retryAfterMs(response) {
   const value = response.headers.get('retry-after');
   if (!value) return 0;
@@ -244,9 +297,9 @@ async function readError(response) {
   return typeof detail === 'string' ? detail : JSON.stringify(detail);
 }
 
-async function callOpenRouter({ messages, system, maxTokens, jsonSchema }) {
+async function callOpenRouter({ messages, system, maxTokens, jsonSchema, model = config.llm.model }) {
   const payload = {
-    model: config.llm.model,
+    model,
     max_tokens: maxTokens || config.llm.maxTokens,
     temperature: config.llm.temperature,
     messages: [{ role: 'system', content: system }, ...messages]
@@ -292,18 +345,19 @@ async function callOpenRouter({ messages, system, maxTokens, jsonSchema }) {
       // 429s are retried a layer up, which is right for a per-minute cap and
       // pointless for a per-day one: it burns the founder's remaining time
       // waiting for something that resets tomorrow. 402 marks it as final.
-      throw new LlmError(rateLimitMessage(detail), isDailyCap(detail) ? 402 : 429, { retryAfterMs: retryAfterMs(response) });
+      throw new LlmError(rateLimitMessage(detail, model), isDailyCap(detail) ? 402 : 429,
+        { retryAfterMs: retryAfterMs(response) });
     }
     const status = response.status === 402 ? 402 : response.status === 401 || response.status === 403 ? 401
       : response.status >= 500 ? 502 : 400;
-    throw new LlmError(`${config.llm.provider} error (${response.status}): ${detail}`, status);
+    throw new LlmError(`${model} returned ${response.status}: ${detail}`, status);
   }
 
   const payloadBody = await response.json();
   if (payloadBody.error) {
     const code = Number(payloadBody.error.code) || 502;
     const detail = String(payloadBody.error.message || 'Provider failed');
-    throw new LlmError(code === 429 ? rateLimitMessage(detail) : `Model provider: ${detail}`,
+    throw new LlmError(code === 429 ? rateLimitMessage(detail, model) : `${model}: ${detail}`,
       code === 429 && isDailyCap(detail) ? 402 : code >= 500 ? 502 : code);
   }
   const choice = (payloadBody.choices || [])[0];
@@ -339,7 +393,9 @@ async function callOpenRouter({ messages, system, maxTokens, jsonSchema }) {
   return {
     text,
     usage: payloadBody.usage || null,
-    model: payloadBody.model || config.llm.model,
+    model: payloadBody.model || model,
+    // What was actually sent, not what was asked for: the schema is dropped on
+    // a 400 retry above, and reporting it as used would be a lie.
     structuredOutput: Boolean(payload.response_format),
     stopReason: choice.finish_reason || null
   };
@@ -375,30 +431,181 @@ async function callAnthropic({ messages, system, maxTokens }) {
 }
 
 /**
+ * Why a model was given up on, and whether another one is worth trying.
+ *
+ * The distinction that matters is transport versus answer. "This model will not
+ * serve you" - rate limited, capped for the day, 500ing, refusing the schema -
+ * says nothing about the request, so the same request put to a different model
+ * is likely to work. "Your answer was too long" or "your key is wrong" is not
+ * about the model at all, and walking the whole roster to hear it five more
+ * times just spends the founder's time.
+ *
+ * @returns {null|'daily'|'rate'|'error'} bench reason, or null to stop here
+ */
+function benchReasonFor(err) {
+  if (!(err instanceof LlmError)) return 'error';
+  if (err.details && err.details.budgetExhausted) return null;   // the build is out of time
+  if (err.status === 401) return null;        // the key is wrong everywhere
+  if (err.status === 422) return null;        // truncated: shorten, do not reshuffle
+  if (err.status === 402) return 'daily';     // free quota gone until midnight
+  if (err.status === 429) return 'rate';      // clears on its own in a minute
+  if (err.status === 502 || err.status === 504) return 'error';
+  if (err.status === 400) return 'error';     // usually the schema, sometimes the payload
+  return 'error';
+}
+
+/**
  * Send a conversation and return the model's reply text.
+ *
+ * With OpenRouter this walks a roster rather than asking one model: the first
+ * that answers wins, and one that will not serve is benched so the rest of the
+ * build does not keep knocking on the same closed door. A single model was a
+ * single point of failure - when its free tier ran out the product stopped, and
+ * every founder got the fallback game.
+ *
  * @param {object} opts
  * @param {Array} opts.messages
  * @param {string} [opts.system]
  * @param {number} [opts.maxTokens]
  * @param {boolean} [opts.jsonSchema] request schema-constrained output
+ * @param {'coder'|'brief'} [opts.role] which roster to walk
+ * @param {(info:{model:string, index:number, of:number, why:string}) => void} [opts.onModel]
+ *        called before each attempt, so the build can say who is being asked
  */
-async function complete({ messages, system = SYSTEM_PROMPT, maxTokens, jsonSchema = false }) {
+async function complete({
+  messages, system = SYSTEM_PROMPT, maxTokens, jsonSchema = false, role = 'coder', onModel
+} = {}) {
   if (!config.llm.enabled) {
     throw new LlmError(
       'No model API key is configured. Set OPENROUTER_API_KEY in .env and restart.',
       503
     );
   }
-  const caps = await capabilities();
-  if (caps.maxOutput) maxTokens = Math.min(maxTokens || config.llm.maxTokens, caps.maxOutput);
-  const useSchema = jsonSchema && caps.structuredOutputs && config.llm.provider === 'openrouter';
 
-  const call = () => (config.llm.provider === 'anthropic'
-    ? callAnthropic({ messages, system, maxTokens })
-    : callOpenRouter({ messages, system, maxTokens, jsonSchema: useSchema }));
+  if (config.llm.provider === 'anthropic') {
+    const result = await withTransportRetries(() => callAnthropic({ messages, system, maxTokens }));
+    return { ...result, structuredOutput: false, provider: 'anthropic', attempts: [] };
+  }
 
-  const result = await withTransportRetries(call);
-  return { ...result, structuredOutput: result.structuredOutput ?? useSchema, provider: config.llm.provider };
+  /* Two passes, and the order matters.
+     
+     A pass is one try at each model on the roster, with no waiting: when the
+     first model is rate limited, asking the second one costs nothing and
+     answers now, whereas waiting a second and re-asking the first costs a
+     second and may well fail again. Switching beats waiting.
+     
+     Waiting is what is left when every model has said no. Then, and only then,
+     this backs off and goes round again, because "the whole free tier is busy
+     this minute" is a real thing that clears - and the alternative is telling
+     the founder their game cannot be built because of a sixty-second blip.
+     
+     Twice, though, not five times. LLM_RETRIES was written when there was one
+     model and re-asking it was the only move available; the roster is that
+     redundancy now, and a third full round is twenty more seconds off a build
+     budget of five minutes for a failure that has already repeated twelve
+     times. One retry catches a blip. More is just a slower way to fail. */
+  const ROUNDS = Math.min(config.llm.retries, 1);
+  /* The floor for "is there time to ask anybody else". Below this a call can
+     only time out. */
+  const MIN_CALL_MS = 1000;
+  const attempts = [];
+  let lastError = null;
+  let wait = config.llm.retryBaseMs;
+
+  for (let round = 0; round <= ROUNDS; round += 1) {
+    if (round > 0) {
+      const pause = wait + Math.floor(Math.random() * 400);
+      console.error(`[llm] every model refused; waiting ${pause}ms before round ${round + 1}`);
+      await new Promise((r) => setTimeout(r, pause));
+      wait = Math.min(wait * 2, config.llm.retryMaxMs);
+    }
+
+    const roster = models.candidates(role);
+    let worthWaitingFor = false;
+
+    for (let i = 0; i < roster.length; i += 1) {
+      const candidate = roster[i];
+      const caps = await capabilities(candidate.id);
+      const useSchema = Boolean(jsonSchema && caps.structuredOutputs);
+
+      /* Never ask for more room than the model has. Asking for 32k from a model
+         that tops out at 8k is a 400 from some providers and a silent clamp from
+         others, and the silent one is worse: the answer comes back cut off and
+         the error downstream blames the model's competence. */
+      const ceiling = caps.maxOutput || candidate.out || 0;
+      const want = maxTokens || config.llm.maxTokens;
+      const room = ceiling ? Math.min(want, ceiling) : want;
+
+      /* A call needs seconds. Once one attempt has been made, starting another
+         with a fraction of a second left does not produce an answer, it
+         produces a second identical timeout - so the walk stops while there is
+         still time to ship the rescue template. The first attempt always runs:
+         post() aborts it if the deadline really has passed. */
+      if (attempts.length && remainingMs() < MIN_CALL_MS) throw lastError;
+
+      if (onModel) {
+        onModel({ model: candidate.id, index: i + 1, of: roster.length, round: round + 1, why: candidate.why || '' });
+      }
+
+      try {
+        const result = await callOpenRouter({
+          messages, system, maxTokens: room, jsonSchema: useSchema, model: candidate.id
+        });
+        attempts.push({ model: candidate.id, ok: true });
+        return {
+          ...result,
+          structuredOutput: result.structuredOutput ?? useSchema,
+          provider: 'openrouter',
+          attempts,
+          // Worth surfacing: "the model you configured did not answer, this one
+          // did" is a different story from "it worked".
+          routedFrom: attempts.length > 1 ? attempts[0].model : null
+        };
+      } catch (err) {
+        const reason = benchReasonFor(err);
+        attempts.push({
+          model: candidate.id, ok: false, status: err.status || null, error: err.message, reason
+        });
+        lastError = err;
+
+        // Nothing another model can fix. Hand it up while it still says what it is.
+        if (!reason) throw err;
+
+        // A daily cap will still be a daily cap in four seconds; the rest might not.
+        if (reason !== 'daily') worthWaitingFor = true;
+
+        models.bench(candidate.id, reason,
+          err.details && err.details.retryAfterMs);
+        console.error(`[llm] ${candidate.id} out (${reason}): ${String(err.message).slice(0, 160)}`);
+      }
+    }
+
+    if (!worthWaitingFor) break;
+  }
+
+  /* Every model refused, and waiting did not change that. Say it plainly, with
+     what each one said: "the model is rate limited" while six were tried reads
+     as one flaky call rather than an exhausted free tier, and the founder makes
+     a different decision about the two. */
+  const tried = [...new Set(attempts.map((a) => a.model))];
+  const summary = tried
+    .map((id) => {
+      const last = [...attempts].reverse().find((a) => a.model === id);
+      return `${id}: ${last.status || 'failed'} (${last.reason})`;
+    })
+    .join('; ');
+
+  // One model tried is not "the roster is exhausted" - it is that model's
+  // error, and dressing it up as a roster failure hides what went wrong.
+  if (tried.length < 2 && lastError) throw lastError;
+
+  const error = new LlmError(
+    `All ${tried.length} models were unavailable. ${summary}\n\n${lastError ? lastError.message : ''}`,
+    lastError && lastError.status === 402 ? 402 : 503,
+    { attempts }
+  );
+  error.attempts = attempts;
+  throw error;
 }
 
 /**
@@ -411,8 +618,12 @@ async function complete({ messages, system = SYSTEM_PROMPT, maxTokens, jsonSchem
  * there was nothing to feed back to the model.
  *
  * There genuinely is nothing to feed back. The right response is to wait and
- * ask again, which is what this does, and it belongs here rather than in the
- * build loop so every agent gets it. A wrong key is not waited out.
+ * ask again. A wrong key is not waited out.
+ *
+ * This is the Anthropic path only. OpenRouter has a roster, and there the same
+ * failure is better answered by asking a different model than by waiting for
+ * this one - so complete() does the waiting itself, once every model has said
+ * no rather than after each one.
  */
 async function withTransportRetries(call) {
   let wait = config.llm.retryBaseMs;
@@ -437,11 +648,12 @@ async function withTransportRetries(call) {
 
 /** Test hook: forget any detected capabilities. */
 function resetCapabilities() {
-  capabilityCache = null;
-  capabilityPromise = null;
+  capabilityCache.clear();
+  cataloguePromise = null;
+  models.reset();
 }
 
 module.exports = {
   complete, withBudget, buildUserMessage, capabilities, resetCapabilities,
-  SYSTEM_PROMPT, LlmError, KNOWN
+  benchReasonFor, SYSTEM_PROMPT, LlmError, KNOWN
 };

@@ -91,11 +91,138 @@ export function confirmBuild(plan) {
  * transcript instead of showing an empty chat above a working game.
  */
 export function buildLine(step) {
-  const attempt = step.attempt ? ` ${step.attempt}/${step.total}` : '';
+  const attempt = step.attempt ? ` ${step.attempt}/${step.total || '·'}` : '';
+
+  /* The facts under the sentence, as separate chips.
+     
+     "Wrote game.js — 340 lines, 12 KB" is a claim; the chips are the same thing
+     as fields, which means they can be scanned down the column and compared
+     between attempts. Which model answered matters most of all when it is not
+     the first one: a build that took two minutes because four models refused
+     is a different story from a slow model, and only the chip tells them
+     apart. */
+  const chips = [];
+  if (step.model) {
+    chips.push(el('span', { class: 'build-chip model', title: step.model },
+      shortModel(step.model),
+      step.modelIndex > 1 ? el('em', {}, ` ${step.modelIndex}/${step.modelCount}`) : null));
+  }
+  if (step.file) chips.push(el('span', { class: 'build-chip file mono' }, step.file));
+  if (step.lines) chips.push(el('span', { class: 'build-chip' }, `${step.lines} lines`));
+  if (step.bytes) chips.push(el('span', { class: 'build-chip' }, `${Math.round(step.bytes / 1024)} KB`));
+  if (step.scenes) chips.push(el('span', { class: 'build-chip' }, `${step.scenes} scenes`));
+
   return el('div', { class: `build-line ${step.phase}${step.agent ? ' has-agent' : ''}` },
     el('span', { class: 'build-line-phase' }, (step.agent || step.phase) + attempt),
-    el('span', { class: 'build-line-detail' }, step.detail),
+    el('div', { class: 'build-line-body' },
+      el('span', { class: 'build-line-detail' }, step.detail),
+      chips.length ? el('span', { class: 'build-chips' }, chips) : null),
     el('span', { class: 'build-line-at mono' }, humanMs(step.at)));
+}
+
+/** "nvidia/nemotron-3-super-120b-a12b:free" is unreadable in a chip. */
+export function shortModel(id) {
+  return String(id).replace(/:free$/, '').split('/').pop().replace(/-\d+b-a\d+b$/, '');
+}
+
+/** The agents, in the order they run. The strip shows all of them from the
+ *  start, so what has not happened yet is as visible as what has. */
+const AGENTS = ['Designer', 'Coder', 'Tester', 'Reviewer', 'Improver'];
+
+/**
+ * Who did what, and for how long.
+ *
+ * A log answers "what just happened"; it does not answer "how far in are we"
+ * or "which part is slow", and those are the two questions a founder watching a
+ * two-minute build actually has. This reads the same steps and reports, per
+ * agent: whether it is waiting, working or finished, how long it has spent, and
+ * the one number that says what it produced - lines for the coder, mechanics
+ * for the designer, scenes for the tester.
+ */
+function agentStrip() {
+  const cells = new Map();
+  const node = el('div', { class: 'agent-strip' },
+    AGENTS.map((name) => {
+      const time = el('span', { class: 'agent-time mono' }, '');
+      const note = el('span', { class: 'agent-note' }, '');
+      const cell = el('div', { class: 'agent-cell', 'data-agent': name },
+        el('span', { class: 'agent-dot' }),
+        el('span', { class: 'agent-name' }, name),
+        note, time);
+      cells.set(name, { cell, time, note });
+      return cell;
+    }));
+
+  return {
+    node,
+    update(view) {
+      const steps = view.steps || [];
+      const totals = new Map();     // agent -> ms spent
+      const notes = new Map();      // agent -> the number worth showing
+      let previousAt = 0;
+      let previousAgent = null;
+
+      for (const step of steps) {
+        // A step reports when its agent FINISHED speaking, so the time belongs
+        // to whoever was working up to that point, not to whoever spoke.
+        if (previousAgent) {
+          totals.set(previousAgent, (totals.get(previousAgent) || 0) + (step.at - previousAt));
+        }
+        previousAgent = step.agent || previousAgent;
+        previousAt = step.at;
+
+        if (step.lines) notes.set(step.agent, `${step.lines} lines`);
+        else if (step.scenes) notes.set(step.agent, `${step.scenes} scenes`);
+        else if (step.mechanics) notes.set(step.agent, `${step.mechanics} mechanics`);
+      }
+      // The agent still working owns the time since its last line.
+      const now = view.elapsedMs || previousAt;
+      if (previousAgent && view.state === 'running') {
+        totals.set(previousAgent, (totals.get(previousAgent) || 0) + Math.max(0, now - previousAt));
+      }
+
+      const active = view.state === 'running' ? previousAgent : null;
+      const seen = new Set(steps.map((s) => s.agent).filter(Boolean));
+
+      for (const [name, { cell, time, note }] of cells) {
+        const spent = totals.get(name) || 0;
+        cell.classList.toggle('working', name === active);
+        cell.classList.toggle('done', seen.has(name) && name !== active);
+        time.textContent = spent > 400 ? humanMs(spent) : '';
+        note.textContent = notes.get(name) || '';
+      }
+    }
+  };
+}
+
+/**
+ * A build failure, said plainly.
+ *
+ * The server's errors are now several sentences and sometimes several
+ * paragraphs - "all six models were unavailable, here is what each one said,
+ * here are the two ways on" - and putting that through a single inline span
+ * collapses the newlines and buries the part the founder can act on. So the
+ * first line is the headline, the rest is kept as written, and anything that
+ * looks like a machine detail is set in mono where it cannot be mistaken for
+ * advice.
+ */
+export function errorNotice(message, { steps } = {}) {
+  const text = String(message || 'The build failed.').trim();
+  const [headline, ...rest] = text.split(/\n\n+/);
+
+  /* Where it got to before it stopped. An error on its own does not say
+     whether the designer ever answered, and that is the difference between
+     "nothing worked" and "it got as far as the code". */
+  const reached = (steps || []).filter((s) => s.agent).slice(-1)[0];
+
+  return el('div', { class: 'notice error-notice' },
+    icon('alert'),
+    el('div', { class: 'error-body' },
+      el('strong', {}, headline),
+      rest.map((para) => el('p', { class: /:\s*\d{3}\b|\(\w+\)/.test(para) ? 'mono small' : 'small' }, para)),
+      reached
+        ? el('p', { class: 'faint small' }, `It got as far as ${reached.agent}: ${reached.detail}`)
+        : null));
 }
 
 /**
@@ -117,14 +244,18 @@ export function buildPanel(buildId, { onStop } = {}) {
     }
   }, icon('x', 'sm'), 'Stop');
 
+  const strip = agentStrip();
+  const heading = el('h4', {}, 'Agents are building');
+
   const node = el('div', { class: 'build-card live build-live' },
     el('div', { class: 'build-head' },
       el('span', { class: 'ic' }, icon('sparkles', 'sm')),
       el('div', { style: { minWidth: 0, flex: '1' } },
-        el('h4', {}, 'Agents are building'),
+        heading,
         el('div', { class: 'sub' }, phase)),
       clock,
       stopBtn),
+    strip.node,
     log);
 
   // A clock that only moved on each poll would visibly stutter. This one runs
@@ -145,15 +276,21 @@ export function buildPanel(buildId, { onStop } = {}) {
       drawn = view.steps.length;
       const last = view.steps[view.steps.length - 1];
       if (last) phase.textContent = last.detail;
+      // The heading names who is working. "Agents are building" is true for two
+      // minutes and therefore says nothing.
+      if (last && last.agent) heading.textContent = `${last.agent} is working`;
+      strip.update(view);
       if (view.stopRequested) {
         stopBtn.disabled = true;
         stopBtn.textContent = 'Stopping…';
       }
     },
-    done() {
+    done(view) {
       clearInterval(ticker);
       stopBtn.remove();
       node.classList.remove('live');
+      heading.textContent = 'Agents finished';
+      if (view) strip.update(view);
     }
   };
 }

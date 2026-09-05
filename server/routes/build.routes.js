@@ -253,11 +253,13 @@ function shipSteps(build, spec) {
  */
 async function run(build, plan, user) {
   const attachments = uploads.resolve(plan.attachmentIds, user.id);
+  /* Everything the agents report goes through; builds.step decides what is
+     worth keeping. This used to name five fields, which meant that adding a
+     line count to the coder's progress silently changed nothing - the field was
+     dropped one layer below where it was written. */
   const onStep = (s) => {
     if (build.stopRequested) return;
-    builds.step(build, {
-      phase: s.phase, detail: s.detail, agent: s.agent, attempt: s.attempt, total: s.total
-    });
+    builds.step(build, s);
   };
 
   builds.step(build, { phase: 'analyse', detail: 'Reading the brief' });

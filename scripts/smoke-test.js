@@ -531,7 +531,7 @@ function request(pathname, { method = 'GET', body, token, raw = false } = {}) {
     // that ends stopped has shipped nothing and therefore charges nothing.
     const builds = require('../server/services/builds');
     const fake = builds.start('usr_probe', { kind: 'create', prompt: 'x', estimate: {} }).build;
-    builds.requestStop(fake.buildId, 'usr_probe');
+    await builds.requestStop(fake.buildId, 'usr_probe');
     assert.strictEqual(fake.stopRequested, true, 'requestStop did not set the flag');
     builds.fail(fake, 'stopped');
     assert.strictEqual(builds.view(fake).state, 'stopped');

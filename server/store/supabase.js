@@ -91,6 +91,21 @@ function createSupabaseStore(config) {
     return cache.get(collection) || [];
   }
 
+  /**
+   * Read one row straight from Postgres, ignoring the cache.
+   *
+   * The cache is filled once at boot and never refreshed, which is fine for
+   * data this instance itself wrote and useless for anything another instance
+   * wrote after this one started. On a serverless host that is most things: a
+   * build created while answering one request is invisible to the instance that
+   * answers the next, which is exactly what "Build not found" was - a running
+   * build, reported as though it had never existed.
+   *
+   * @param {string} collection
+   * @param {string} filter a PostgREST filter, e.g. `data->build->>buildId=eq.x`
+   * @returns {Promise<object|null>} the document, also merged into the cache
+   */
+
   /** Track the write so flush() can await it, and log rather than crash. */
   function write(operation, description) {
     const tracked = writeTail.then(operation)
