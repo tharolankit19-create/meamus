@@ -10,6 +10,7 @@
  */
 
 const vm = require('node:vm');
+const { detectEngine } = require('./engine');
 
 /**
  * A real Phaser game is thousands of characters. Less means the model returned
@@ -486,7 +487,8 @@ function normaliseSpec(input, { source = 'ai' } = {}) {
     javascript = detyped;
     issues.push('The model used smart quotes or dashes in the code; they were replaced with plain ASCII.');
   }
-  const reordered = hoistSceneClasses(javascript);
+  // Scene classes are a Phaser idea; a three.js file has none to hoist.
+  const reordered = detectEngine(javascript) === 'three' ? null : hoistSceneClasses(javascript);
   if (reordered) {
     javascript = reordered;
     issues.push('The scene classes were declared below the code that uses them, so the game '
@@ -512,10 +514,32 @@ function normaliseSpec(input, { source = 'ai' } = {}) {
   }
 
   const lineCount = javascript.split('\n').length;
-  if (!/new\s+Phaser\.Game/.test(javascript) && !/MEAMUS\.boot\s*\(/.test(javascript)) {
+
+  /* "Does it start?" is a different question in each engine, and asking the
+     Phaser one of a three.js game rejects every 3D game ever generated. The
+     engine is read off the code, so the right question follows automatically. */
+  const engine = detectEngine(javascript);
+
+  if (engine === 'three') {
+    if (!/new\s+THREE\.WebGLRenderer/.test(javascript)) {
+      throw new SpecError(
+        'The 3D game never creates a THREE.WebGLRenderer, so nothing would ever be drawn.',
+        ['gameCode.javascript']
+      );
+    }
+    if (!/requestAnimationFrame|setAnimationLoop/.test(javascript)) {
+      throw new SpecError(
+        'The 3D game never starts a render loop, so the first frame is the only frame.',
+        ['gameCode.javascript']
+      );
+    }
+  } else if (!/new\s+Phaser\.Game/.test(javascript) && !/MEAMUS\.boot\s*\(/.test(javascript)) {
     throw new SpecError('The generated code never starts a Phaser game.', ['gameCode.javascript']);
   }
-  if (!/GameScene/.test(javascript)) issues.push('no GameScene found in gameCode.javascript');
+
+  if (engine !== 'three' && !/GameScene/.test(javascript)) {
+    issues.push('no GameScene found in gameCode.javascript');
+  }
   if (lineCount > 2600) issues.push(`gameCode.javascript is ${lineCount} lines (guideline is <= 2000)`);
 
   const spec = {
@@ -563,12 +587,20 @@ function normaliseSpec(input, { source = 'ai' } = {}) {
   };
 
   /* Runtime metadata drives the bundler (templates opt into the shared kit)
-     and, now, which engine the page loads. Phaser unless the spec says three,
-     because every existing game and template is Phaser and a default that
-     changes under them would break all of it. */
+     and which engine the page loads.
+  
+     The engine is read from the CODE, not from what the spec claims. A
+     production build asked for 3D, handed the model the three.js instructions,
+     got Phaser back, and stamped engine:"three" on it because that was the
+     intent - so the page loaded three.js and served it to code that needed
+     Phaser. A blank screen, produced by a label. The code is the only thing
+     that knows which engine it needs; a claim that disagrees with it is worse
+     than no claim. Phaser when the code says neither, because every template
+     and every existing game is Phaser. */
   spec.runtime = {
     kit: input.runtime && input.runtime.kit === true,
-    engine: (input.runtime && input.runtime.engine) === 'three' ? 'three' : 'phaser',
+    engine: detectEngine(spec.gameCode.javascript)
+      || ((input.runtime && input.runtime.engine) === 'three' ? 'three' : 'phaser'),
     phaserVersion: str(input.runtime && input.runtime.phaserVersion, '3.60.0'),
     source
   };
