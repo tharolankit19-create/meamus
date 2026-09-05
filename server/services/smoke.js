@@ -589,8 +589,21 @@ let threeSource = null;
 function boot3d(code) {
   if (threeSource === null) threeSource = fs.readFileSync(THREE_PATH, 'utf8');
 
-  const world = { frames: 0, renderers: 0, rendered: 0, scenes: 0 };
+  /* `callbacks` because the shared window stub pushes deferred work onto it -
+     setTimeout, for one, which a 3D game uses for respawns and timers. Without
+     it the first setTimeout in a correct game threw "cannot read properties of
+     undefined", which is a rejection caused entirely by this file. */
+  const world = { frames: 0, renderers: 0, rendered: 0, scenes: 0, callbacks: [], timers: [] };
   const win = makeWindow(world);
+
+  /* performance.now() is how every render loop measures a frame - it is in the
+     three.js instructions this build hands the model, and it was not in the
+     sandbox. A watched build spent a whole attempt, seventy-eight seconds, on
+     "performance is not defined": correct code, rejected by a gap here. The
+     clock advances a frame at a time so a game that measures delta gets
+     plausible numbers rather than zero. */
+  let clock = 0;
+  win.performance = { now: () => (clock += 16) };
 
   const sandbox = vm.createContext(win);
   sandbox.globalThis = sandbox;

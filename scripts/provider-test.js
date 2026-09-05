@@ -1473,6 +1473,29 @@ async function check(name, fn) {
       'const r = new THREE.WebGLRenderer(); const v = new THREE.Vector3(); v.setz(1);'
     ), /setz/, 'a misspelled three.js method booted cleanly');
 
+    /* The browser globals a 3D game genuinely uses. Every one of these is a
+       rejection of correct code when it is missing, which is the opposite of
+       what a boot test is for - a watched build spent seventy-eight seconds on
+       "performance is not defined", and performance.now() is in the three.js
+       instructions this build hands the model. */
+    const shell = (body) => `${body}
+      const r = new THREE.WebGLRenderer();
+      const s = new THREE.Scene();
+      const c = new THREE.PerspectiveCamera();
+      function f() { r.render(s, c); requestAnimationFrame(f); }
+      requestAnimationFrame(f);`;
+    for (const [what, body] of Object.entries({
+      'performance.now': 'let t = performance.now(); t = performance.now() - t;',
+      'setTimeout': 'setTimeout(function () {}, 10);',
+      'devicePixelRatio': 'const d = Math.min(devicePixelRatio, 2);',
+      'resize handling': "addEventListener('resize', function () {}); const w = innerWidth, h = innerHeight;",
+      'touch detection': "matchMedia('(pointer: coarse)').matches;",
+      'pointer events': "document.addEventListener('pointerdown', function () {});",
+      'saved scores': "localStorage.setItem('best', '1'); localStorage.getItem('best');"
+    })) {
+      assert.strictEqual(smoke.boot3d(shell(body)).ok, true, `${what} is missing from the 3D sandbox`);
+    }
+
     // The two failures that mean "nothing will ever be drawn".
     assert.throws(() => smoke.boot3d('const s = new THREE.Scene();'),
       /never created a THREE.WebGLRenderer/, 'a game with no renderer passed');
