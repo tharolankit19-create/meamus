@@ -107,6 +107,55 @@ function strict(name, seed, allowed, hint) {
   });
 }
 
+/**
+ * A Web Audio context good enough to synthesise a sound cue against.
+ *
+ * Games draw their own sprites and synthesise their own audio - there is
+ * nothing to download - so this surface is used by nearly every generated game
+ * and is worth stubbing properly rather than inventing.
+ */
+function audioContext() {
+  const node = () => loose('AudioNode', {
+    connect: () => node(), disconnect: () => {}, start: () => {}, stop: () => {},
+    gain: param(), frequency: param(), detune: param(), Q: param(), type: 'sine'
+  });
+  const param = () => ({
+    value: 0,
+    setValueAtTime: () => {}, linearRampToValueAtTime: () => {},
+    exponentialRampToValueAtTime: () => {}, setTargetAtTime: () => {},
+    cancelScheduledValues: () => {}
+  });
+
+  return loose('AudioContext', {
+    state: 'running', currentTime: 0, sampleRate: 44100,
+    resume: () => Promise.resolve(), suspend: () => Promise.resolve(), close: () => Promise.resolve(),
+    destination: node(),
+    listener: loose('AudioListener'),
+    createBuffer: (channels = 1, length = 1024, rate = 44100) => loose('AudioBuffer', {
+      numberOfChannels: channels, length, sampleRate: rate,
+      duration: length / rate,
+      getChannelData: () => new Float32Array(Math.max(1, length)),
+      copyToChannel: () => {}, copyFromChannel: () => {}
+    }),
+    createBufferSource: () => node(),
+    createOscillator: () => node(),
+    createGain: () => node(),
+    createBiquadFilter: () => node(),
+    createDynamicsCompressor: () => node(),
+    createStereoPanner: () => node(),
+    createAnalyser: () => node(),
+    createDelay: () => node(),
+    createWaveShaper: () => node(),
+    createChannelMerger: () => node(),
+    createChannelSplitter: () => node(),
+    createConvolver: () => node(),
+    createPeriodicWave: () => loose('PeriodicWave'),
+    decodeAudioData: () => Promise.resolve(loose('AudioBuffer', {
+      getChannelData: () => new Float32Array(16)
+    }))
+  });
+}
+
 function loose(name, seed = {}) {
   const target = Object.assign(Object.create(null), seed);
 
@@ -119,14 +168,25 @@ function loose(name, seed = {}) {
       if (prop === 'valueOf') return () => 0;
       if (prop in obj) return obj[prop];
 
-      // Unknown member: a function that returns the proxy, so chains keep going.
-      const fn = (...args) => {
-        void args;
-        return proxy;
-      };
+      /* Unknown member: callable AND readable.
+         
+         It used to be a bare function, which made `x.unknown()` work and
+         `x.unknown.anything()` fail - so the stub was permissive one level deep
+         and strict two levels deep, which is not a rule anybody could rely on.
+         Production paid for it: a game asked Phaser for the Web Audio context
+         the documented way, `this.sound.context`, got a bare function back, and
+         `ctx.createBuffer is not a function` rejected two complete games -
+         477 lines and 536 lines - for a gap in this file rather than a mistake
+         in theirs. That is precisely the failure this stub is supposed not to
+         have.
+         
+         So an invented member is a proxy around a function: call it and it
+         returns another one, read a property off it and you get another one. */
+      const fn = (...args) => { void args; return loose(`${name}.${String(prop)}`); };
       fn.__loose = true;
-      obj[prop] = fn;
-      return fn;
+      const member = new Proxy(fn, handler);
+      obj[prop] = member;
+      return member;
     },
     set(obj, prop, value) { obj[prop] = value; return true; }
     // Deliberately no `has` trap. Claiming every key exists breaks
@@ -293,7 +353,16 @@ function sceneServices(scene, world) {
     remove: () => {}, get: () => loose('Texture'), addCanvas: () => loose('Texture')
   });
 
-  scene.sound = loose('sound', { add: () => loose('Sound'), play: () => {}, stopAll: () => {} });
+  /* Phaser exposes the Web Audio context as `sound.context`, and games that
+     synthesise their own sound reach for it by name. Seeded rather than
+     invented so it behaves like the real thing - createBuffer returns
+     something whose getChannelData is a Float32Array a game can write into. */
+  scene.sound = loose('sound', {
+    add: () => loose('Sound', { play: () => {}, stop: () => {}, setVolume: () => {} }),
+    play: () => {}, stopAll: () => {},
+    get context() { return world.audio; },
+    get audioContext() { return world.audio; }
+  });
   scene.anims = loose('anims', { create: () => loose('Anim'), generateFrameNumbers: () => [], exists: () => false });
   scene.load = loose('load', { image: () => {}, audio: () => {}, on: () => {}, spritesheet: () => {} });
   scene.children = loose('children', { list: [], each: () => {}, getAll: () => [] });
@@ -451,25 +520,8 @@ function makeWindow(world) {
     clearTimeout: () => {},
     setInterval: () => 1,
     clearInterval: () => {},
-    AudioContext: function AudioContext() {
-      return loose('AudioContext', {
-        state: 'running', currentTime: 0, sampleRate: 44100,
-        resume: () => {}, suspend: () => {}, close: () => {},
-        destination: loose('destination'),
-        createOscillator: () => loose('Oscillator', {
-          frequency: { setValueAtTime: () => {}, exponentialRampToValueAtTime: () => {} },
-          connect: () => loose('node', { connect: () => {} }), start: () => {}, stop: () => {}
-        }),
-        createGain: () => loose('Gain', {
-          gain: { setValueAtTime: () => {}, exponentialRampToValueAtTime: () => {} },
-          connect: () => loose('node', { connect: () => {} })
-        }),
-        createBuffer: () => loose('Buffer', { getChannelData: () => new Float32Array(16) }),
-        createBufferSource: () => loose('BufferSource', {
-          connect: () => loose('node', { connect: () => {} }), start: () => {}
-        })
-      });
-    },
+    AudioContext: function AudioContext() { return world.audio; },
+    webkitAudioContext: function webkitAudioContext() { return world.audio; },
     console: { log: () => {}, warn: () => {}, error: () => {}, info: () => {} }
   });
 
@@ -515,7 +567,11 @@ function boot(code, opts = {}) {
     timers: [],
     callbacks: [],
     started: [],
-    textures: new Set()
+    textures: new Set(),
+    /* One audio context for the run, so `this.sound.context` is the same object
+       every scene sees - which is what a browser does, and what a game that
+       caches it expects. */
+    audio: audioContext()
   };
 
   const win = makeWindow(world);
