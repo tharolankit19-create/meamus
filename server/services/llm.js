@@ -200,8 +200,27 @@ async function post(url, headers, payload) {
  * error (429): rate limit exceeded" tells them nothing they can act on, so this
  * names the tier they are on and the two ways out.
  */
+/** A daily cap does not clear by waiting, so it is worth telling apart. */
+function isDailyCap(detail) {
+  return /per-?day|daily limit|free-models-per-day/i.test(String(detail));
+}
+
 function rateLimitMessage(detail) {
   const free = /:free$/.test(config.llm.model);
+
+  /* A per-day cap and a per-minute one both arrive as 429, and the advice for
+     them is opposite. "Wait a minute and try again" is true of one and a lie
+     about the other - production hit the daily cap and was told to wait sixty
+     seconds for something that resets at midnight. */
+  if (isDailyCap(detail)) {
+    return `Today's free requests for ${config.llm.model} are used up - this is a daily cap, `
+      + 'not a short pause, so waiting will not clear it until it resets.\n\n'
+      + 'Two ways on: add $10 of credit at https://openrouter.ai/credits, which raises the '
+      + 'free tier from 50 requests a day to 1000 and still costs nothing per request; or set '
+      + `OPENROUTER_MODEL=${config.llm.model.replace(/:free$/, '')} to use the paid tier at `
+      + `about $0.09 per million input tokens. (${detail})`;
+  }
+
   if (!free) {
     return `The model is rate limited right now. Wait a minute and try again. (${detail})`;
   }
@@ -265,7 +284,12 @@ async function callOpenRouter({ messages, system, maxTokens, jsonSchema }) {
 
   if (!response.ok) {
     const detail = await readError(response);
-    if (response.status === 429) throw new LlmError(rateLimitMessage(detail), 429);
+    if (response.status === 429) {
+      // 429s are retried a layer up, which is right for a per-minute cap and
+      // pointless for a per-day one: it burns the founder's remaining time
+      // waiting for something that resets tomorrow. 402 marks it as final.
+      throw new LlmError(rateLimitMessage(detail), isDailyCap(detail) ? 402 : 429);
+    }
     const status = response.status === 401 || response.status === 403 ? 401
       : response.status >= 500 ? 502 : 400;
     throw new LlmError(`${config.llm.provider} error (${response.status}): ${detail}`, status);

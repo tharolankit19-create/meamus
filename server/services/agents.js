@@ -321,7 +321,10 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
          single call. Transport failures are already waited out a layer down,
          so reaching here means the provider stayed unhappy - which the time
          budget, not this line, decides how long to keep trying. */
-      const fatal = err && err.name === 'LlmError' && (err.status === 401 || err.status === 503);
+      // 402 is the daily free-tier cap: it does not clear before midnight, so
+      // spending the rest of the budget on it only delays the rescue.
+      const fatal = err && err.name === 'LlmError'
+        && (err.status === 401 || err.status === 402 || err.status === 503);
       if (fatal) throw err;
 
       // Quote what it actually wrote, so the next attempt is an edit rather

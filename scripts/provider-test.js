@@ -675,6 +675,33 @@ async function check(name, fn) {
     }
   });
 
+  await check('a daily cap is not waited out like a per-minute one', async () => {
+    // Both arrive as 429 and the advice for them is opposite. Production hit
+    // the daily cap and was told to wait sixty seconds for something that
+    // resets at midnight - and then burned four backoff retries on it.
+    const llmSrc = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'server', 'services', 'llm.js'), 'utf8'
+    );
+    const body = llmSrc.slice(llmSrc.indexOf('function isDailyCap'), llmSrc.indexOf('async function readError'));
+    // eslint-disable-next-line no-new-func
+    const built = new Function('config', `${body}; return { isDailyCap, rateLimitMessage };`)(
+      { llm: { model: 'nvidia/nemotron-3-super-120b-a12b:free' } }
+    );
+
+    const daily = 'Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day';
+    assert.ok(built.isDailyCap(daily), 'a daily cap was not recognised');
+    assert.ok(!built.isDailyCap('Rate limit exceeded: 20 requests per minute'), 'a per-minute cap was misread as daily');
+
+    const message = built.rateLimitMessage(daily);
+    assert.ok(/daily cap/i.test(message), 'the message does not say it is a daily cap');
+    assert.ok(!/wait a minute/i.test(message), 'the message still tells them to wait a minute');
+    assert.ok(/openrouter\.com\/credits|openrouter\.ai\/credits/.test(message), 'no way forward is offered');
+
+    // And the per-minute case keeps its own, correct advice.
+    assert.ok(/wait a minute/i.test(built.rateLimitMessage('Rate limit exceeded: 20 requests per minute')),
+      'the per-minute message lost its advice');
+  });
+
   await check('a rejected key is not waited out', async () => {
     // The opposite case: an error that will still be true in ten seconds must
     // end the build immediately rather than burning the founder's time.
