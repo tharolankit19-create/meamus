@@ -179,5 +179,24 @@ check('empty string settings are treated as unset, not as a value', () => {
   assert.strictEqual(config.showcaseTemplate, 'space-shooter');
 });
 
+check('a free model gets the crew, which is where every repair lives', () => {
+  /* The carve-out that cost a real production build: `:free` models took the
+     single-call path, which asks three times and gives up, while every repair
+     worth having - recognising a cut-off file, shrinking the target, the
+     loader correction, booting each scene - lives in the crew. Three attempts,
+     all cut off at line 129, each told to check its punctuation. */
+  const free = loadConfig({ OPENROUTER_API_KEY: 'k', OPENROUTER_MODEL: 'vendor/model:free' });
+  assert.strictEqual(free.build.crew, true, 'a free model was sent down the path with no repairs');
+
+  const paid = loadConfig({ OPENROUTER_API_KEY: 'k', OPENROUTER_MODEL: 'vendor/model' });
+  assert.strictEqual(paid.build.crew, true);
+
+  // And an operator can still turn it off.
+  assert.strictEqual(
+    loadConfig({ OPENROUTER_API_KEY: 'k', AGENT_CREW: 'false' }).build.crew, false,
+    'AGENT_CREW=false must still force the single-call path'
+  );
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed ? 1 : 0);
