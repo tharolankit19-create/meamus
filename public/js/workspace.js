@@ -4,7 +4,7 @@
 
 import { el, icon, toast, clear, playModal, relativeTime, escapeHtml, quotaLabel, creditChip } from './ui.js';
 import { state, projects, builds, playUrl, download } from './api.js';
-import { confirmBuild, buildPanel, buildLine, buildStage, artifactChips, errorNotice, humanMs } from './build.js';
+import { buildPanel, buildLine, buildStage, artifactChips, errorNotice, humanMs } from './build.js';
 import { attachToBuild } from './generate.js';
 import * as watcher from './watcher.js';
 import { createComposer } from './composer.js';
@@ -215,15 +215,18 @@ export async function renderWorkspace(root, projectId) {
           return;
         }
 
-        // A change is a build: quoted, approved, then watched. The pending
-        // card becomes the live panel so the clock and the stop button land
-        // where the founder is already looking.
+        /* A change inside a project just happens.
+        
+           The estimate dialog belongs to the decision to start a game - that is
+           the moment someone chooses to spend, and it deserves a price. Asking
+           again for every tweak after it turns a conversation into a checkout
+           queue: type "make the jump higher", press enter, and get a modal
+           about credits. Nobody reads the fifth one, and everyone resents it.
+        
+           The cost is still shown, before and after: the composer footer says
+           what a change costs, and the finished turn says what it actually
+           took. What is gone is the interruption, not the number. */
         const plan = await builds.plan({ prompt: text, attachmentIds, gameId: data.game.id });
-        if (!await confirmBuild(plan)) {
-          pending.remove();
-          scrollThread();
-          return;
-        }
 
         const { buildId } = await builds.start(plan.planId);
         const panel = buildPanel(buildId);

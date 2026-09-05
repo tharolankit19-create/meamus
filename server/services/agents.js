@@ -35,6 +35,7 @@ const smoke = require('./smoke');
 const { RESPONSE_FORMAT } = require('./schema');
 const { extractJson, normaliseSpec, SpecError } = require('./validator');
 const { lineDiff } = require('./diff');
+const { pickEngine } = require('./engine');
 
 /** Roles, in the order they run. Labels are what the founder sees. */
 const CREW = {
@@ -204,8 +205,10 @@ async function ask(role, userContent, { maxTokens, onModel, timeoutMs } = {}) {
 }
 
 /** A GameSpec-producing agent, schema-constrained where the model supports it. */
-async function askForSpec(messages, { onModel } = {}) {
-  const response = await llm.complete({ messages, jsonSchema: true, role: 'coder', onModel });
+async function askForSpec(messages, { onModel, engine } = {}) {
+  const response = await llm.complete({
+    messages, jsonSchema: true, role: 'coder', onModel, system: llm.systemFor(engine)
+  });
   const raw = extractJson(response.text);
   const { spec, issues } = normaliseSpec(raw, { source: 'ai' });
   return { spec, issues, response };
@@ -398,7 +401,115 @@ function shouldSwitch(failures, startedAt, until) {
   const spent = Date.now() - startedAt;
   return failures >= 2 && budget > 0 && spent / budget > IMPATIENT_AFTER;
 }
-async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline }) {
+/* How many models write the game at the same time on the first go.
+
+   Three, and the number is a trade rather than a preference. One model writing
+   alone is the slowest and worst version of this: a watched build spent
+   seventy-five seconds on an answer that arrived cut off, and the next model
+   was not asked until that had happened three times. Free models are slow and
+   unreliable in different ways from each other, so asking three at once and
+   keeping whichever finishes first is faster AND better - it is a best-of-three
+   on quality and a race on latency, for the price of two requests that get
+   thrown away.
+
+   Not more than three, because the free tier is a shared resource and a build
+   that fires eighteen requests to win one game is how a roster gets rate
+   limited for everybody, including its own later attempts. */
+const RACERS = 3;
+
+/**
+ * Several coders writing the same game at once. First one that RUNS wins.
+ *
+ * "Runs" is the whole point - not first to answer, not longest, not the one
+ * from the model with the best reputation. Each racer's answer is parsed,
+ * validated and booted here, and only a spec that survives all three counts as
+ * finishing. A model that returns instantly with an unfinished file has not won
+ * anything.
+ *
+ * The losers are not cancelled - there is nothing to cancel, the requests are
+ * already in flight and the tokens already spent - but their answers are kept:
+ * if nobody produces a running game, the one that got furthest becomes the
+ * draft the repair loop works from, which is a better starting point than
+ * asking a fourth model to begin again from nothing.
+ *
+ * @returns {{spec?:object, issues?:string[], response?:object, model?:string,
+ *            scenes?:number, best?:{error:Error, text:string, model:string}}}
+ */
+async function raceCoders({ messages, say, usage, skip = [], engine }) {
+  const roster = models.candidates('coder')
+    .filter((m) => !skip.includes(m.id))
+    .slice(0, RACERS);
+
+  if (roster.length < 2) return null;   // nothing to race against
+
+  say('coder', 'build', `${roster.length} models writing it at the same time — first one that runs wins`,
+    { artifact: 'game.js', artifactState: 'writing', modelCount: roster.length });
+
+  const attempts = roster.map(async (candidate) => {
+    const startedAt = Date.now();
+    let answer = '';
+    try {
+      const response = await llm.complete({
+        messages, jsonSchema: true, role: 'coder', only: candidate.id, system: llm.systemFor(engine)
+      });
+      usage.add(response.usage);
+      answer = response.text;
+
+      const raw = extractJson(response.text);
+      const { spec, issues } = normaliseSpec(raw, { source: 'ai' });
+      const booted = smoke.bootSpec(spec);
+
+      return {
+        spec, issues, response, scenes: booted.scenes.length,
+        model: candidate.id, tookMs: Date.now() - startedAt
+      };
+    } catch (err) {
+      /* Carry the answer on the failure. A racer that wrote four hundred lines
+         and stopped has produced something worth repairing, and without this
+         the only thing that survives the rejection is the error message. */
+      err.answerText = answer;
+      throw err;
+    }
+  });
+
+  /* Promise.any resolves on the first success and only rejects if every one of
+     them fails - which is exactly the semantics wanted here, and the reason the
+     failures have to be collected separately: an AggregateError does not say
+     which model produced which failure, and the repair loop needs the text. */
+  const failures = [];
+  const watched = attempts.map((p, i) => p.catch((err) => {
+    failures.push({ error: err, model: roster[i].id, text: err.answerText || '' });
+    say('improver', 'repair', `${roster[i].id.split('/').pop()} did not get there: ${String(err.message).slice(0, 90)}`,
+      { model: roster[i].id });
+    throw err;
+  }));
+
+  try {
+    const winner = await Promise.any(watched);
+    say('coder', 'build',
+      `${winner.spec.gameCode.javascript.split('\n').length} lines, `
+      + `${Math.round(winner.spec.gameCode.javascript.length / 1024)} KB`,
+      {
+        artifact: 'game.js', artifactState: 'done',
+        lines: winner.spec.gameCode.javascript.split('\n').length,
+        bytes: winner.spec.gameCode.javascript.length,
+        added: winner.spec.gameCode.javascript.split('\n').length,
+        removed: 0, exactDiff: true,
+        model: winner.response.model, tookMs: winner.tookMs
+      });
+    return winner;
+  } catch {
+    /* Everybody failed. Hand back whoever wrote the most, because a long
+       answer that stopped short is a better draft to repair than a short one
+       that never started. */
+    const best = failures
+      .filter((f) => f.text)
+      .sort((a, b) => b.text.length - a.text.length)[0];
+    return { best: best || failures[0] || null, failures };
+  }
+}
+
+async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline, engine }) {
   const startedAt = Date.now();
   const until = deadline || (startedAt + config.build.budgetMs);
   const issues = [];
@@ -413,6 +524,39 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
   const givenUp = [];
   // The last code that got far enough to be worth diffing the next one against.
   let lastCode = '';
+
+  /* First move: several models at once, and keep whichever runs.
+  
+     This is where a build is won or lost. Every watched production failure had
+     the same shape - one model, one slow answer, one unusable result, repeat
+     until the clock ran out - and the fix is not a better model, it is not
+     betting the whole build on one. */
+  const raced = await raceCoders({ messages: [coderMessage.message], say, usage, skip: givenUp, engine });
+  if (raced && raced.spec) {
+    lastCode = raced.spec.gameCode.javascript;
+    say('tester', 'test', `Run 1 passed — ${raced.scenes} scenes booted`,
+      { scenes: raced.scenes, model: raced.response.model });
+    return {
+      spec: raced.spec,
+      issues: raced.issues,
+      response: raced.response,
+      repairs: 0,
+      scenes: raced.scenes
+    };
+  }
+
+  /* Nobody won. The longest answer becomes the draft to repair, because a game
+     that stopped short is a better starting point than a blank page - and the
+     model that wrote it is the one being corrected, so the loop below carries
+     on the conversation rather than starting a new one. */
+  if (raced && raced.best) {
+    last = { error: raced.best.error, text: String(raced.best.text || '').slice(0, MAX_ECHO_CHARS) };
+    currentModel = raced.best.model;
+    if (/Unexpected end of input|unterminated|ran out of room|cut off|stub rather than/i.test(raced.best.error.message)) {
+      cutoffs += 1;
+    }
+    attemptNo = 1;   // the race was the first attempt
+  }
 
   while (attemptNo < config.build.maxAttempts) {
     attemptNo += 1;
@@ -440,7 +584,7 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
         ];
 
       const response = await llm.complete({
-        messages, jsonSchema: true, role: 'coder', skip: givenUp,
+        messages, jsonSchema: true, role: 'coder', skip: givenUp, system: llm.systemFor(engine),
         onModel: (info) => say('coder', 'build',
           info.index === 1
             ? `Asking ${info.model}`
@@ -480,7 +624,7 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
         });
 
       say('tester', 'test', `${WORKING_COPY.tester} (run 1 of 2)`);
-      const booted = smoke.boot(spec.gameCode.javascript);
+      const booted = smoke.bootSpec(spec);
 
       issues.push(...specIssues);
       return {
@@ -569,7 +713,7 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
 /** The deterministic gate. Not a model, on purpose. */
 function runTest(spec, round) {
   try {
-    const result = smoke.boot(spec.gameCode.javascript);
+    const result = smoke.bootSpec(spec);
     return { ok: true, round, scenes: result.scenes.length };
   } catch (err) {
     const where = err.detail ? ` (game.js line ${err.detail.line})` : '';
@@ -647,6 +791,10 @@ function reviewPrompt(brief, spec) {
  */
 async function buildWithCrew(prompt, opts = {}) {
   const started = Date.now();
+  /* 2D or 3D, decided once and before anything is written. It changes the
+     engine, the system prompt, the boot test and the page the game ships in,
+     so deciding it late would mean deciding it twice. */
+  const dimension = pickEngine(prompt);
   const onStep = opts.onStep || (() => {});
   const usage = tally();
   const transcript = [];
@@ -683,6 +831,9 @@ async function buildWithCrew(prompt, opts = {}) {
   };
 
   /* --- 1. Designer -------------------------------------------------------- */
+  if (dimension.engine === 'three') {
+    say('designer', 'design', `Building this one in 3D — ${dimension.why}`);
+  }
   say('designer', 'design', WORKING_COPY.designer,
     { artifact: 'brief.json', artifactState: 'writing' });
   let design;
@@ -756,7 +907,7 @@ async function buildWithCrew(prompt, opts = {}) {
      spec, compile the code, boot every scene - and whichever of those fails,
      the exact failure goes back to the model and it tries again. */
   const attempt = await writeUntilItRuns({
-    coderMessage, coderText, say, usage, deadline: opts.deadline
+    coderMessage, coderText, say, usage, deadline: opts.deadline, engine: dimension.engine
   });
   let spec = attempt.spec;
   issues.push(...attempt.issues);
@@ -801,7 +952,7 @@ async function buildWithCrew(prompt, opts = {}) {
             ).join('\n')
             + '\n\nReturn the complete corrected GameSpec JSON.'
         }
-      ], { onModel: watchModels('improver', 'improve') });
+      ], { onModel: watchModels('improver', 'improve'), engine: dimension.engine });
       usage.add(improved.response.usage);
       {
         const before = spec.gameCode.javascript;
@@ -845,11 +996,18 @@ async function buildWithCrew(prompt, opts = {}) {
     say('tester', 'test', `Run 2 passed — ready to ship`);
   }
 
+  /* The spec carries the engine, because the bundler reads it there and a 3D
+     game shipped in a Phaser page is a blank screen. The model is asked to set
+     it; this makes sure, because "the model was told to" is not a guarantee. */
+  spec.runtime = { ...(spec.runtime || {}), engine: dimension.engine };
+
   return {
     spec,
     meta: {
       mode: 'ai',
       crew: true,
+      engine: dimension.engine,
+      dimension: dimension.dimension,
       provider: response.provider,
       model: response.model,
       structuredOutput: response.structuredOutput,
@@ -932,5 +1090,6 @@ function summarise(meta) {
 }
 
 module.exports = {
-  buildWithCrew, summarise, correctionFor, CREW, WORKING_COPY, FAILURES_BEFORE_SWITCHING
+  buildWithCrew, summarise, correctionFor, CREW, WORKING_COPY,
+  FAILURES_BEFORE_SWITCHING, RACERS
 };

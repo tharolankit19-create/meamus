@@ -32,6 +32,17 @@ const { RESPONSE_FORMAT } = require('./schema');
 
 const SYSTEM_PROMPT = fs.readFileSync(path.join(__dirname, '..', 'prompts', 'system.md'), 'utf8');
 
+/* The 3D instructions, appended to the shared prompt when a build is 3D rather
+   than replacing it: the spec shape, the JSON discipline, the finish-the-file
+   rule and the art direction are the same in both dimensions. Only the engine
+   and everything that follows from it differ. */
+const THREE_PROMPT = fs.readFileSync(path.join(__dirname, '..', 'prompts', 'three.md'), 'utf8');
+
+/** The system prompt for a build, in the dimension it is being built in. */
+function systemFor(engine) {
+  return engine === 'three' ? `${SYSTEM_PROMPT}\n\n${THREE_PROMPT}` : SYSTEM_PROMPT;
+}
+
 class LlmError extends Error {
   constructor(message, status, details) {
     super(message);
@@ -472,6 +483,10 @@ function benchReasonFor(err) {
  * @param {number} [opts.timeoutMs] a ceiling for this call alone. The build
  *        budget still applies; this is for a step that must not be allowed to
  *        eat it - a brief taking a hundred seconds leaves no time for the game.
+ * @param {string} [opts.only] ask exactly this model and no other. For a caller
+ *        running several models against each other at once, where the point is
+ *        that each request goes somewhere different - falling through a shared
+ *        roster would have them all land on the same model.
  * @param {string[]} [opts.skip] models the caller has given up on. Transport
  *        failures are this layer's business; a model that keeps answering with
  *        an unfinished file is the caller's, and only the caller can tell.
@@ -480,7 +495,7 @@ function benchReasonFor(err) {
  */
 async function complete({
   messages, system = SYSTEM_PROMPT, maxTokens, jsonSchema = false, role = 'coder',
-  skip = [], timeoutMs, onModel
+  skip = [], only, timeoutMs, onModel
 } = {}) {
   if (!config.llm.enabled) {
     throw new LlmError(
@@ -531,9 +546,12 @@ async function complete({
        off would leave nothing, in which case the last one is still better than
        refusing to try. */
     const all = models.candidates(role);
-    const roster = all.filter((m) => !skip.includes(m.id)).length
-      ? all.filter((m) => !skip.includes(m.id))
-      : all;
+    const named = only && all.find((m) => m.id === only);
+    const roster = only
+      ? [named || { id: only, schema: true, out: 0, why: 'named by the caller' }]
+      : (all.filter((m) => !skip.includes(m.id)).length
+        ? all.filter((m) => !skip.includes(m.id))
+        : all);
     let worthWaitingFor = false;
 
     for (let i = 0; i < roster.length; i += 1) {
@@ -668,5 +686,5 @@ function resetCapabilities() {
 
 module.exports = {
   complete, withBudget, buildUserMessage, capabilities, resetCapabilities,
-  benchReasonFor, SYSTEM_PROMPT, LlmError, KNOWN
+  benchReasonFor, SYSTEM_PROMPT, THREE_PROMPT, systemFor, LlmError, KNOWN
 };

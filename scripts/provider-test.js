@@ -92,6 +92,16 @@ let rateLimitFirst = 0;
 // Per-model refusals, for the routing tests: model id -> { status, message }.
 // A model in here answers with that status instead of a spec, every time.
 const refuse = new Map();
+/* Per-model CONTENT, for the race: model id -> the text it replies with. A race
+   is only observable if the models can answer differently from each other. */
+const perModel = new Map();
+/* Per-model DELAY, and how many requests were ever in flight at once. Asking
+   three models one after another also reaches three models - what makes it a
+   race is that all three are outstanding at the same time, and that is only
+   measurable if the answers take a moment to arrive. */
+const slowFor = new Map();
+let inFlight = 0;
+let peakInFlight = 0;
 
 const server = http.createServer((req, res) => {
   let body = '';
@@ -143,6 +153,23 @@ const server = http.createServer((req, res) => {
     // A scripted reply, when a test is driving the coder through failures.
     const sys = ((parsed.messages || []).find((m) => m.role === 'system') || {}).content || '';
     const isCoder = !/you produce the brief|You review Phaser 3/i.test(sys);
+
+    const scripted = isCoder && perModel.get(parsed.model);
+    const delay = isCoder ? (slowFor.get(parsed.model) || 0) : 0;
+
+    if (scripted || delay) {
+      inFlight += 1;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      const body = JSON.stringify({
+        id: 'gen-test', model: parsed.model,
+        choices: [{
+          finish_reason: 'stop',
+          message: { role: 'assistant', content: scripted || JSON.stringify(FAKE_SPEC) }
+        }],
+        usage: { prompt_tokens: 900, completion_tokens: 40 }
+      });
+      return setTimeout(() => { inFlight -= 1; res.end(body); }, delay);
+    }
 
     if (isCoder && rateLimitFirst > 0) {
       rateLimitFirst -= 1;
@@ -640,9 +667,16 @@ async function check(name, fn) {
       { content: withCode(good.gameCode.javascript) }                   // finally good
     ];
 
-    const { spec, meta } = await generator.generate('a space shooter', { allowFallback: false });
+    const before = captured.length;
+    const { spec } = await generator.generate('a space shooter', { allowFallback: false });
     assert.ok(spec.gameCode.javascript.length > 1000, 'no game came back');
-    assert.strictEqual(meta.attempts, 5, `expected 5 coder attempts, got ${meta.attempts}`);
+
+    /* Five bad answers, five requests, and a game at the end. The count is
+       requests rather than sequential attempts, because the first three now go
+       out at the same time - what has to hold is that no failure class ends the
+       build, not the shape of the loop that survives them. */
+    assert.ok(captured.length - before >= 5,
+      `only ${captured.length - before} requests for five distinct failures`);
     replies = null;
     config.build.crew = previousCrew;
   });
@@ -1315,9 +1349,154 @@ async function check(name, fn) {
       })
       .map((c) => c.body.model);
 
-    assert.ok(coderModels.length >= 3, `only ${coderModels.length} coder attempts were made`);
-    assert.strictEqual(new Set(coderModels).size, 1,
-      `a model that kept writing complete games was swapped out anyway: ${[...new Set(coderModels)].join(', ')}`);
+    /* The opening race deliberately asks several models at once, so the first
+       few requests prove nothing here. What this test is about is the settled
+       state after it: once a model is being corrected and keeps returning
+       complete games, it must keep being the one corrected. Reading the tail
+       rather than slicing off a fixed prefix, because how many requests the
+       race makes is the race's business. */
+    assert.ok(coderModels.length >= 6, `only ${coderModels.length} coder attempts were made`);
+    const tail = coderModels.slice(-4);
+    assert.strictEqual(new Set(tail).size, 1,
+      `a model that kept writing complete games was swapped out mid-repair: ${[...new Set(tail)].join(', ')}`);
+
+    config.build.crew = crewDefault;
+    router.reset();
+  });
+
+  await check('a game that only exists in 3D is built in 3D', async () => {
+    /* "Like Minecraft" is a request for blocks in a world you walk around.
+       Answering it with a 2D platformer answers a different question - so the
+       dimension is decided from the prompt, before anything is written,
+       because it changes the engine, the system prompt, the boot test and the
+       page the game ships in. */
+    const { pickEngine } = require('../server/services/engine');
+
+    for (const [prompt, dimension] of Object.entries({
+      'a game like minecraft where I mine and place blocks': '3d',
+      'pubg style battle royale on a small island': '3d',
+      'free fire clone': '3d',
+      'a first person shooter in a warehouse': '3d',
+      'a 3d racing game': '3d',
+      // ...and the bias back the other way, which is the important half: most
+      // requests never mention dimension, and a 3D game a founder did not ask
+      // for is the surest way to spend a whole build getting nothing.
+      'a space shooter where I dodge asteroids': '2d',
+      'match 3 puzzle with cascading combos': '2d',
+      'an endless runner with a paper plane': '2d',
+      // Said outright beats a named game.
+      'a 2d minecraft-style side scroller': '2d'
+    })) {
+      const got = pickEngine(prompt);
+      assert.strictEqual(got.dimension, dimension,
+        `"${prompt}" was routed to ${got.dimension} (${got.why})`);
+      assert.ok(got.why, 'the routing decision does not say why');
+    }
+  });
+
+  await check('a 3D game gets three.js, its own instructions and its own boot test', async () => {
+    const llm3 = require('../server/services/llm');
+    const smoke = require('../server/services/smoke');
+    const { bundle } = require('../server/services/bundler');
+
+    // The prompt is the shared one PLUS the 3D section - the spec shape, the
+    // JSON discipline and the art direction are the same in both dimensions.
+    assert.ok(llm3.systemFor('three').includes('WRITING A 3D GAME'), '3D builds get no 3D instructions');
+    assert.ok(llm3.systemFor('three').includes('Rule zero'), '3D builds lost the shared rules');
+    assert.ok(!llm3.systemFor('phaser').includes('WRITING A 3D GAME'), '2D builds are told about three.js');
+
+    /* The boot test runs the REAL three.js, not a stub. Most of a 3D game IS
+       the library, and a permissive stub would accept every misspelled method
+       and hand the player a black screen. */
+    const good = `
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(70, 1.5, 0.1, 500);
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(800, 600);
+      document.getElementById('game-container').appendChild(renderer.domElement);
+      scene.add(new THREE.DirectionalLight(0xffffff, 1), new THREE.HemisphereLight(0xffffff, 0x808080, 0.6));
+      const cube = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0xf1600d }));
+      scene.add(cube);
+      function frame(now) { cube.rotation.y += 0.01; renderer.render(scene, camera); requestAnimationFrame(frame); }
+      requestAnimationFrame(frame);`;
+    const booted = smoke.boot3d(good);
+    assert.strictEqual(booted.ok, true, 'a correct 3D game was rejected');
+    assert.ok(booted.frames > 1, 'the render loop was never ticked');
+
+    // A method that does not exist is caught here rather than in the browser.
+    assert.throws(() => smoke.boot3d(
+      'const r = new THREE.WebGLRenderer(); const v = new THREE.Vector3(); v.setz(1);'
+    ), /setz/, 'a misspelled three.js method booted cleanly');
+
+    // The two failures that mean "nothing will ever be drawn".
+    assert.throws(() => smoke.boot3d('const s = new THREE.Scene();'),
+      /never created a THREE.WebGLRenderer/, 'a game with no renderer passed');
+    assert.throws(() => smoke.boot3d(
+      'const r = new THREE.WebGLRenderer(); r.render({}, {});'
+    ), /never started a render loop/, 'a game with no render loop passed');
+
+    /* And the page it ships in loads three.js from our own origin, on the same
+       terms as Phaser - a blocked CDN must not be able to produce a dead page. */
+    const spec = require('../server/services/templates').get('space-shooter').spec;
+    const page = bundle({ ...spec, runtime: { ...(spec.runtime || {}), engine: 'three' } });
+    assert.ok(page.includes('/vendor/three.min.js'), 'a 3D game does not load three.js');
+    assert.ok(!page.includes('phaser.min.js'), 'a 3D game still loads Phaser');
+    assert.ok(page.includes("typeof THREE === 'undefined'"), 'nothing checks that three.js arrived');
+
+    // ...and a 2D game is untouched by any of it.
+    const flat = bundle(spec);
+    assert.ok(flat.includes('/vendor/phaser.min.js') && !flat.includes('three.min.js'),
+      'a 2D game was changed by the 3D support');
+  });
+
+  await check('three models write the game at once, and the one that runs wins', async () => {
+    /* Every watched production failure had the same shape: one model, one slow
+       answer, one unusable result, repeat until the clock ran out. Free models
+       are slow and unreliable in different ways from each other, so asking
+       three at once and keeping whichever finishes is both a best-of-three on
+       quality and a race on latency. */
+    const router = require('../server/services/models');
+    const good = require('../server/services/templates').get('space-shooter').spec;
+    config.build.crew = true;
+    router.reset();
+    refuse.clear();
+    captured.length = 0;
+
+    /* The first two roster models answer with something unusable; the third
+       writes a real game. A sequential build would reach it third; a race
+       reaches it in the time the slowest of the three takes. */
+    const [first, second, third] = router.CODER;
+    perModel.set(first.id, 'Sure! Here is your game.');
+    perModel.set(second.id, '{"gameConfig":{"title":"Half');
+    // Slow enough that overlap is unambiguous if it happens, short enough that
+    // the test does not become a wait.
+    for (const m of [first, second, third]) slowFor.set(m.id, 120);
+    peakInFlight = 0;
+
+    const { spec, meta } = await generator.generate('a space shooter', { allowFallback: false });
+    perModel.clear();
+    slowFor.clear();
+
+    assert.ok(spec.gameCode.javascript.length > 1000, 'no game came back from the race');
+    assert.notStrictEqual(meta.model, first.id, 'a model that answered with prose was treated as the winner');
+    assert.notStrictEqual(meta.model, second.id, 'a model that was cut off was treated as the winner');
+
+    // All three were asked, and asked at the same time - a sequential fallback
+    // would have stopped at the first success and never sent the third.
+    const coderCalls = captured.filter((c) => {
+      const sys = (c.body.messages.find((m) => m.role === 'system') || {}).content || '';
+      return !/you produce the brief|You review Phaser 3/i.test(sys);
+    });
+    const asked = new Set(coderCalls.map((c) => c.body.model));
+    assert.ok(asked.size >= 3, `only ${asked.size} models were asked`);
+    assert.ok(asked.has(first.id) && asked.has(second.id),
+      'the losing models were never asked, so nothing was raced');
+
+    /* The part that makes it a race rather than a fast retry loop: three
+       requests outstanding at the same moment. Asking three models one after
+       another also reaches three models, and is exactly what this replaced. */
+    assert.ok(peakInFlight >= 3,
+      `at most ${peakInFlight} request(s) were in flight at once - the models were asked in sequence, not raced`);
 
     config.build.crew = crewDefault;
     router.reset();
