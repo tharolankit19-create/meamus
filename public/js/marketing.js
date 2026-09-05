@@ -4,7 +4,7 @@
  * never lands on a page that quietly falls back to the homepage.
  * ========================================================================== */
 
-import { el, icon, toast, playModal, add } from './ui.js';
+import { el, icon, toast, playModal, add, logoMark } from './ui.js';
 import { state, templatesApi, templatePlayUrl } from './api.js';
 import { openAuth } from './auth-dialog.js';
 
@@ -34,7 +34,7 @@ export function siteNav(active) {
   }, label);
 
   return el('nav', { class: 'site-nav' },
-    el('a', { class: 'brand', href: '#/' }, el('span', { class: 'brand-mark' }, icon('gamepad')), 'meamus'),
+    el('a', { class: 'brand', href: '#/' }, el('span', { class: 'brand-mark' }, logoMark()), 'meamus'),
     el('div', { class: 'links' },
       link('Templates', '#/templates', 'templates'),
       link('Pricing', '#/pricing', 'pricing'),

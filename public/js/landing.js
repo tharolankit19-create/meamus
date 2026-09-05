@@ -2,7 +2,7 @@
  * Marketing landing page - the signed-out home screen.
  * ========================================================================== */
 
-import { el, icon, toast, playModal } from './ui.js';
+import { el, icon, toast, playModal, revealOnScroll, skeletonCard } from './ui.js';
 import { state, templatesApi, templatePlayUrl } from './api.js';
 import { createComposer } from './composer.js';
 import { openAuth } from './auth-dialog.js';
@@ -134,15 +134,15 @@ export function renderLanding(root) {
 
     demoSection(),
 
-    el('section', { class: 'section' },
+    el('section', { class: 'section', 'data-reveal': '' },
       el('div', { class: 'section-inner' },
         el('div', { class: 'grid c3' },
-          FEATURES.map((feature) => el('article', { class: 'card' },
+          FEATURES.map((feature) => el('article', { class: 'card hover' },
             el('div', { class: 'feature-icon' }, icon(feature.icon, 'lg')),
             el('h3', {}, feature.title),
             el('p', { class: 'muted small', style: { margin: 0 } }, feature.body)))))),
 
-    el('section', { class: 'section warm' },
+    el('section', { class: 'section warm', 'data-reveal': '' },
       el('div', { class: 'section-inner' },
         el('div', { class: 'spread', style: { marginBottom: '26px' } },
           el('div', { class: 'section-head', style: { margin: 0 } },
@@ -150,9 +150,11 @@ export function renderLanding(root) {
             el('p', { class: 'muted', style: { margin: 0 } },
               'Four complete games ship as templates. Remix any of them with a prompt.')),
           el('a', { class: 'btn', href: '#/templates' }, 'All templates', icon('arrowRight', 'sm'))),
+        /* The shape of the four template cards, so the row does not jump when
+           they land. A bare grey box was the same height and told you nothing
+           about what was coming. */
         el('div', { class: 'grid c4', id: 'landing-templates' },
-          Array.from({ length: 4 }, () => el('div', { class: 'card' },
-            el('div', { class: 'skeleton', style: { height: '92px' } })))))),
+          Array.from({ length: 4 }, () => skeletonCard({ block: 84 }))))),
 
     siteFooter()
   );
@@ -161,6 +163,7 @@ export function renderLanding(root) {
   const field = composer.node.querySelector('textarea');
   if (field) typewriter(field, EXAMPLES);
 
+  revealOnScroll(root);
   loadTemplateStrip();
 }
 

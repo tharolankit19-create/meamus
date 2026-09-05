@@ -127,6 +127,33 @@ export function icon(name, cls = '') {
   return svg;
 }
 
+/**
+ * The wordmark's badge.
+ *
+ * It was a stock gamepad glyph in a rounded square, which is the most generic
+ * mark a software product can have - swap the colour and it belongs to any of
+ * ten thousand companies. This one says what meamus does: three lines of a
+ * written prompt on the left, a play triangle on the right. Words in, game out,
+ * in one shape.
+ *
+ * Drawn to survive 26px: two weights of stroke, no detail under 2px, and the
+ * triangle filled rather than outlined so it still reads when the whole mark is
+ * the size of a full stop.
+ */
+export function logoMark(cls = '') {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', `logo-mark ${cls}`.trim());
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = [
+    '<g stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none">',
+    '<path d="M4.2 7h6.2"/><path d="M4.2 12h4"/><path d="M4.2 17h6.2"/>',
+    '</g>',
+    '<path d="M13.6 5.6 21.2 12l-7.6 6.4z" fill="currentColor" stroke="none"/>'
+  ].join('');
+  return svg;
+}
+
 /* --- toasts -------------------------------------------------------------- */
 export function toast(message, kind = 'ok', ms = 4200) {
   const host = $('#toasts');
@@ -246,4 +273,99 @@ export function relativeTime(iso) {
   const days = Math.round(hours / 24);
   if (days < 30) return `${days}d ago`;
   return new Date(iso).toLocaleDateString();
+}
+
+/* --- arriving on scroll -----------------------------------------------------
+ *
+ * Sections that fade up as they come into view, once each.
+ *
+ * The armed state is added HERE rather than in the stylesheet, and that is the
+ * whole reason this is a function instead of two CSS rules. If the hidden state
+ * lived in CSS, a browser without IntersectionObserver - or with scripting off,
+ * or any failure between load and observe - would show a page of invisible
+ * sections waiting for an event that never arrives. Hiding something is only
+ * safe once you have proof you can unhide it.
+ */
+export function revealOnScroll(root) {
+  const targets = [...root.querySelectorAll('[data-reveal]')];
+  if (!targets.length) return () => {};
+
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduced || typeof IntersectionObserver !== 'function') {
+    for (const node of targets) node.classList.add('reveal-in');
+    return () => {};
+  }
+
+  for (const node of targets) node.classList.add('reveal-armed');
+
+  const show = (node, delay = 0) => {
+    node.classList.remove('reveal-armed');
+    node.style.transitionDelay = delay ? `${delay}ms` : '';
+    node.classList.add('reveal-in');
+  };
+
+  /* Proof the observer is alive.
+  
+     Arming an element hides it, and it stays hidden until something says
+     otherwise. If that something never runs - an observer that fails to
+     construct, a browser quirk, a page rendered somewhere that never scrolls -
+     the result is not a missing animation, it is missing content. So the first
+     callback of any kind is treated as proof the mechanism works, and if none
+     arrives shortly after arming, everything is shown unconditionally.
+  
+     It watches for a callback rather than for a reveal: a working observer
+     reports non-intersecting elements immediately, so silence means broken,
+     not "nobody has scrolled yet". */
+  let observerSpoke = false;
+
+  const observer = new IntersectionObserver((entries) => {
+    observerSpoke = true;
+    // Several sections crossing at once are staggered a little, so a screenful
+    // arrives as a sequence rather than a single flash.
+    let step = 0;
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      show(entry.target, Math.min(step * 70, 210));
+      step += 1;
+      observer.unobserve(entry.target);
+    }
+  }, { rootMargin: '0px 0px -12% 0px', threshold: 0.06 });
+
+  setTimeout(() => {
+    if (observerSpoke) return;
+    for (const node of targets) show(node);
+    observer.disconnect();
+  }, 1200);
+
+  for (const node of targets) {
+    // Anything already on screen at load has not been scrolled to and should
+    // simply be there - animating the first screenful is a page that performs
+    // before the visitor has done anything.
+    const box = node.getBoundingClientRect();
+    if (box.top < window.innerHeight * 0.9) show(node);
+    else observer.observe(node);
+  }
+
+  return () => observer.disconnect();
+}
+
+/* --- skeletons --------------------------------------------------------------
+ * The shape of what is coming, so the layout does not jump when it lands.
+ */
+export function skeletonLine(cls = '') {
+  return el('div', { class: `skeleton skeleton-text ${cls}` });
+}
+
+/** A card-shaped placeholder: title, two lines, and an optional block. */
+export function skeletonCard({ block = 0 } = {}) {
+  return el('article', { class: 'card is-skeleton' },
+    block ? el('div', { class: 'skeleton skeleton-block', style: { height: `${block}px`, marginBottom: '14px' } }) : null,
+    el('div', { class: 'skeleton skeleton-title' }),
+    skeletonLine(),
+    skeletonLine('short'));
+}
+
+/** `count` of them, for a grid that is still loading. */
+export function skeletonCards(count, options) {
+  return Array.from({ length: count }, () => skeletonCard(options));
 }
