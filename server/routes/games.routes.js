@@ -187,6 +187,7 @@ router.post('/generate', requireAuth, costs('create'), enforceQuota, asyncRoute(
 
   const { spec, meta } = await generator.generate(prompt, {
     forceTemplate: req.body.forceTemplate === true,
+    allowFallback: false,
     attachments
   });
 

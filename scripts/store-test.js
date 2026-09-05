@@ -11,7 +11,7 @@
 const assert = require('assert');
 const http = require('http');
 
-const tables = { meamus_users: [], meamus_games: [], meamus_uploads: [] };
+const tables = { meamus_users: [], meamus_games: [], meamus_uploads: [], meamus_build_plans: [] };
 const seen = [];
 
 const server = http.createServer((req, res) => {
@@ -29,26 +29,32 @@ const server = http.createServer((req, res) => {
 
     const idFilter = url.searchParams.get('id');
     const id = idFilter ? idFilter.replace('eq.', '') : null;
+    const matches = (row) => (!id || row.id === id) && [...url.searchParams].every(([key, value]) => {
+      const fields = { user_id: row.user_id, 'data->build->>buildId': row.data?.build?.buildId, 'data->>userId': row.data?.userId, 'data->build->>claimed': row.data?.build?.claimed, 'data->build->>state': row.data?.build?.state };
+      return !(key in fields) || String(fields[key]) === value.slice(3);
+    });
     res.setHeader('content-type', 'application/json');
 
     if (req.method === 'GET') {
-      const rows = id ? tables[table].filter((r) => r.id === id) : tables[table];
-      return res.end(JSON.stringify(rows.map((r) => ({ id: r.id, data: r.data }))));
+      const rows = tables[table].filter(matches);
+      return res.end(JSON.stringify(rows.map((r) => ({ id: r.id, data: r.data, stop_requested: r.stop_requested }))));
     }
     if (req.method === 'POST') {
-      tables[table].push({ id: JSON.parse(body).id, data: JSON.parse(body).data });
+      tables[table].push(JSON.parse(body));
       res.statusCode = 201;
       return res.end('');
     }
     if (req.method === 'PATCH') {
-      const row = tables[table].find((r) => r.id === id);
-      if (row) row.data = JSON.parse(body).data;
+      const row = tables[table].find(matches);
+      if (row) Object.assign(row, JSON.parse(body));
+      if (req.headers.prefer === 'return=representation') return res.end(JSON.stringify(row ? [row] : []));
       res.statusCode = 204;
       return res.end('');
     }
     if (req.method === 'DELETE') {
-      const index = tables[table].findIndex((r) => r.id === id);
-      if (index > -1) tables[table].splice(index, 1);
+      const index = tables[table].findIndex(matches);
+      const removed = index > -1 ? tables[table].splice(index, 1) : [];
+      if (req.headers.prefer === 'return=representation') return res.end(JSON.stringify(removed));
       res.statusCode = 204;
       return res.end('');
     }
@@ -181,7 +187,39 @@ const check = async (name, fn) => {
       'the row came back after a reload');
   });
 
-  await check('a failed write is logged and flush still resolves', async () => {
+  await check('a plan is consumed once across two store instances', async () => {
+    const other = createSupabaseStore(config);
+    await other.init();
+    const plan = { planId: 'plan-1', userId: 'owner', createdAt: Date.now(), prompt: 'runner' };
+    await store.saveBuildPlan(plan);
+    assert.strictEqual(await other.takeBuildPlan('plan-1', 'stranger'), null);
+    const results = await Promise.all([store.takeBuildPlan('plan-1', 'owner'), other.takeBuildPlan('plan-1', 'owner')]);
+    assert.strictEqual(results.filter(Boolean).length, 1);
+    assert.strictEqual(results.find(Boolean).prompt, 'runner');
+    await store.saveBuildPlan({ ...plan, planId: 'expired', createdAt: 0 });
+    assert.strictEqual(await other.takeBuildPlan('expired', 'owner'), null);
+  });
+
+  await check('a build has one owner across instances and fresh progress reads', async () => {
+    const other = createSupabaseStore(config);
+    await other.init();
+    const game = { id: 'game-build', userId: 'owner', build: { buildId: 'build-1', state: 'running', claimed: false } };
+    store.insert('games', game);
+    store.update('games', game.id, { title: 'Latest title' });
+    await store.flush();
+    const fresh = await other.gameForBuild('build-1', 'owner');
+    assert.strictEqual(fresh.title, 'Latest title', 'insert/update order must be preserved');
+    assert.strictEqual(await other.gameForBuild('build-1', 'stranger'), null);
+    const claims = await Promise.all([store.claimBuild(fresh), other.claimBuild(fresh)]);
+    assert.strictEqual(claims.filter(Boolean).length, 1);
+    assert.strictEqual((await other.gameForBuild('build-1', 'owner')).build.claimed, true);
+    await other.stopBuild('build-1', 'owner');
+    store.update('games', game.id, { title: 'Progress after stop' });
+    await store.flush();
+    assert.strictEqual((await store.gameForBuild('build-1', 'owner')).build.stopRequested, true, 'progress must not erase cancellation');
+  });
+
+  await check('a failed write is reported before a successful response can be sent', async () => {
     // A dead database must not reject inside a request handler, but it must
     // also never fail silently or leave a write pending forever.
     const flaky = createSupabaseStore(config);
@@ -194,7 +232,7 @@ const check = async (name, fn) => {
     global.fetch = () => Promise.reject(new Error('network is down'));
     try {
       flaky.insert('users', { id: flaky.id('usr'), email: 'doomed@b.test' });
-      await flaky.flush();                 // must resolve, not reject
+      await assert.rejects(flaky.flush(), /network is down/);
     } finally {
       global.fetch = originalFetch;
       console.error = originalError;

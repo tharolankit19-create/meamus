@@ -86,9 +86,17 @@ const MINUTE_MS = 60 * 1000;
  *
  * @param {string} id
  * @param {'daily'|'rate'|'error'} reason
+ * @param {number} [forMs] the provider's own Retry-After, when it sent one.
+ *        Believe it over the default: a provider saying "come back in 12
+ *        seconds" knows something this table is only guessing at. It is capped
+ *        at an hour so a bad header cannot bench a model for a week, and it
+ *        does not override a daily cap, which is measured in hours whatever
+ *        the header says.
  */
-function bench(id, reason) {
-  const until = Date.now() + (reason === 'daily' ? DAY_MS : reason === 'rate' ? 5 * MINUTE_MS : MINUTE_MS);
+function bench(id, reason, forMs) {
+  const fallback = reason === 'daily' ? DAY_MS : reason === 'rate' ? 5 * MINUTE_MS : MINUTE_MS;
+  const wait = reason !== 'daily' && forMs > 0 ? Math.min(forMs, 60 * MINUTE_MS) : fallback;
+  const until = Date.now() + wait;
   const existing = benched.get(id) || 0;
   if (until > existing) benched.set(id, until);
 }

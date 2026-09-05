@@ -46,6 +46,8 @@ function createSupabaseStore(config) {
    * - a script, or a serverless host freezing after the response - loses it.
    */
   const inFlight = new Set();
+  let writeTail = Promise.resolve();
+  let writeFailure = null;
 
   async function request(path, options = {}) {
     const controller = new AbortController();
@@ -103,35 +105,13 @@ function createSupabaseStore(config) {
    * @param {string} filter a PostgREST filter, e.g. `data->build->>buildId=eq.x`
    * @returns {Promise<object|null>} the document, also merged into the cache
    */
-  async function findFresh(collection, filter) {
-    const table = TABLES[collection];
-    if (!table) return null;
-
-    let found;
-    try {
-      const result = await request(`/${table}?${filter}&select=id,data&limit=1`);
-      found = (result || [])[0];
-    } catch (err) {
-      console.error(`[store] fresh read of ${collection} failed: ${err.message}`);
-      return null;
-    }
-    if (!found) return null;
-
-    // Keep the cache honest about what was just read.
-    const list = cache.get(collection) || [];
-    const index = list.findIndex((row) => row.id === found.data.id);
-    if (index === -1) list.push(found.data);
-    else list[index] = found.data;
-    cache.set(collection, list);
-
-    return found.data;
-  }
 
   /** Track the write so flush() can await it, and log rather than crash. */
-  function write(promise, description) {
-    const tracked = promise
-      .catch((err) => { console.error(`[store] ${description} failed: ${err.message}`); })
+  function write(operation, description) {
+    const tracked = writeTail.then(operation)
+      .catch((err) => { writeFailure = err; console.error(`[store] ${description} failed: ${err.message}`); })
       .finally(() => inFlight.delete(tracked));
+    writeTail = tracked;
     inFlight.add(tracked);
     return tracked;
   }
@@ -150,13 +130,12 @@ function createSupabaseStore(config) {
     },
 
     all(collection) { return rows(collection).slice(); },
-    findFresh,
     find(collection, predicate) { return rows(collection).find(predicate) || null; },
     filter(collection, predicate) { return rows(collection).filter(predicate); },
 
     insert(collection, doc) {
       rows(collection).push(doc);
-      write(request(`/${TABLES[collection]}`, {
+      write(() => request(`/${TABLES[collection]}`, {
         method: 'POST',
         headers: { prefer: 'return=minimal' },
         body: JSON.stringify({ id: doc.id, data: doc })
@@ -170,7 +149,7 @@ function createSupabaseStore(config) {
       if (index === -1) return null;
       const next = { ...list[index], ...patch, updatedAt: new Date().toISOString() };
       list[index] = next;
-      write(request(`/${TABLES[collection]}?id=eq.${encodeURIComponent(id)}`, {
+      write(() => request(`/${TABLES[collection]}?id=eq.${encodeURIComponent(id)}`, {
         method: 'PATCH',
         headers: { prefer: 'return=minimal' },
         body: JSON.stringify({ data: next })
@@ -183,7 +162,7 @@ function createSupabaseStore(config) {
       const index = list.findIndex((row) => row.id === id);
       if (index === -1) return false;
       list.splice(index, 1);
-      write(request(`/${TABLES[collection]}?id=eq.${encodeURIComponent(id)}`, {
+      write(() => request(`/${TABLES[collection]}?id=eq.${encodeURIComponent(id)}`, {
         method: 'DELETE',
         headers: { prefer: 'return=minimal' }
       }), `delete ${collection}/${id}`);
@@ -193,10 +172,51 @@ function createSupabaseStore(config) {
     /** Wait for every outstanding write. Call before exiting the process. */
     async flush() {
       while (inFlight.size) await Promise.all([...inFlight]);
+      if (writeFailure) { const err = writeFailure; writeFailure = null; throw err; }
     },
 
     /** Number of writes still in the air - used by the tests. */
     get pendingWrites() { return inFlight.size; },
+
+
+    // Build plans must survive a different serverless instance handling /start.
+    async saveBuildPlan(plan) {
+      await request('/meamus_build_plans', {
+        method: 'POST', headers: { prefer: 'return=minimal' },
+        body: JSON.stringify({ id: plan.planId, user_id: plan.userId,
+          expires_at: new Date(plan.createdAt + config.build.planTtlMs).toISOString(), data: plan })
+      });
+    },
+    async takeBuildPlan(planId, userId) {
+      // DELETE RETURNING consumes the approval atomically, including across instances.
+      const found = await request(`/meamus_build_plans?id=eq.${encodeURIComponent(planId)}&user_id=eq.${encodeURIComponent(userId)}`, {
+        method: 'DELETE', headers: { prefer: 'return=representation' }
+      });
+      const row = (found || [])[0];
+      return row && Date.parse(row.expires_at) > Date.now() ? row.data : null;
+    },
+    async gameForBuild(buildId, userId) {
+      const found = await request(`/meamus_games?data->build->>buildId=eq.${encodeURIComponent(buildId)}&data->>userId=eq.${encodeURIComponent(userId)}&select=id,data,stop_requested`);
+      const game = found && found[0] && found[0].data;
+      if (!game) return null;
+      game.build.stopRequested = game.build.stopRequested || found[0].stop_requested === true;
+      const list = rows('games');
+      const index = list.findIndex((g) => g.id === game.id);
+      if (index < 0) list.push(game); else list[index] = game;
+      return game;
+    },
+    async stopBuild(buildId, userId) {
+      await request(`/meamus_games?data->build->>buildId=eq.${encodeURIComponent(buildId)}&data->>userId=eq.${encodeURIComponent(userId)}&data->build->>state=eq.running`, {
+        method: 'PATCH', headers: { prefer: 'return=minimal' }, body: JSON.stringify({ stop_requested: true })
+      });
+    },
+    async claimBuild(game) {
+      const next = { ...game, build: { ...game.build, claimed: true } };
+      const found = await request(`/meamus_games?id=eq.${encodeURIComponent(game.id)}&data->build->>claimed=eq.false&data->build->>state=eq.running`, {
+        method: 'PATCH', headers: { prefer: 'return=representation' }, body: JSON.stringify({ data: next, stop_requested: false })
+      });
+      return Boolean(found && found.length);
+    },
 
     /** Connectivity probe used by `npm run db:check`. */
     async ping() {

@@ -18,6 +18,16 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 const models = require('./models');
+const { AsyncLocalStorage } = require('node:async_hooks');
+const budgets = new AsyncLocalStorage();
+
+function remainingMs() {
+  return budgets.getStore() ? budgets.getStore() - Date.now() : config.llm.timeoutMs;
+}
+
+function withBudget(work) {
+  return budgets.run(Date.now() + config.build.budgetMs, work);
+}
 const { RESPONSE_FORMAT } = require('./schema');
 
 const SYSTEM_PROMPT = fs.readFileSync(path.join(__dirname, '..', 'prompts', 'system.md'), 'utf8');
@@ -212,14 +222,25 @@ function buildUserMessage(text, attachments = [], caps = { images: false }) {
 
 async function post(url, headers, payload) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.llm.timeoutMs);
+  const remaining = remainingMs();
+  if (remaining <= 0) {
+    /* Not this model's fault, and not fixable by asking a different one - the
+       whole build is out of time. Marked so the roster walk stops here instead
+       of spending what is left discovering the same thing five more times. */
+    throw new LlmError('The build time limit was reached. Try a simpler game prompt.', 504,
+      { budgetExhausted: true });
+  }
+  const timer = setTimeout(() => controller.abort(), Math.min(config.llm.timeoutMs, remaining));
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       method: 'POST',
       signal: controller.signal,
       headers: { 'content-type': 'application/json', ...headers },
       body: JSON.stringify(payload)
     });
+    // Keep the abort timer alive through OpenRouter's delayed response body.
+    const body = await response.text();
+    return new Response(body, { status: response.status, headers: response.headers });
   } catch (err) {
     if (err.name === 'AbortError') throw new LlmError('The model took too long to answer', 504);
     throw new LlmError(`Could not reach ${config.llm.provider}: ${err.message}`, 502);
@@ -242,29 +263,28 @@ function isDailyCap(detail) {
   return /per-?day|daily limit|free-models-per-day/i.test(String(detail));
 }
 
+/* With a roster, one model refusing is no longer the end of the build - the
+   next one is asked - so this text only reaches the founder when every model
+   said the same thing. It names which model refused (the attempt list names
+   them all) and keeps the one instruction that changes the outcome: on a daily
+   cap, credit raises the free tier from 50 requests a day to 1000. */
 function rateLimitMessage(detail, model = config.llm.model) {
-  const free = /:free$/.test(model);
-
-  /* A per-day cap and a per-minute one both arrive as 429, and the advice for
-     them is opposite. "Wait a minute and try again" is true of one and a lie
-     about the other - production hit the daily cap and was told to wait sixty
-     seconds for something that resets at midnight. */
   if (isDailyCap(detail)) {
-    return `Today's free requests for ${model} are used up - this is a daily cap, `
-      + 'not a short pause, so waiting will not clear it until it resets.\n\n'
-      + 'Two ways on: add $10 of credit at https://openrouter.ai/credits, which raises the '
-      + 'free tier from 50 requests a day to 1000 and still costs nothing per request; or set '
-      + `OPENROUTER_MODEL=${model.replace(/:free$/, '')} to use the paid tier at `
-      + `about $0.09 per million input tokens. (${detail})`;
+    return `${model} has used up today's free requests - a daily cap, not a short pause, `
+      + 'so waiting will not clear it until it resets. $10 of credit at '
+      + 'https://openrouter.ai/credits raises the free tier from 50 requests a day to 1000 '
+      + `and still costs nothing per request. (${detail})`;
   }
+  return `${model} is rate limited right now - please try again shortly. (${detail})`;
+}
 
-  if (!free) {
-    return `${model} is rate limited right now. Wait a minute and try again. (${detail})`;
-  }
-  return `The free tier for ${model} is rate limited, and this build asked for `
-    + 'more than it allows right now. Wait a minute and try again, or switch OPENROUTER_MODEL to '
-    + model.replace(/:free$/, '') + ' — the same model on the paid tier, at about '
-    + `$0.09 per million input tokens. (${detail})`;
+/** Some providers say when to come back. Believe them over a fixed guess. */
+function retryAfterMs(response) {
+  const value = response.headers.get('retry-after');
+  if (!value) return 0;
+  const seconds = Number(value);
+  return Number.isFinite(seconds) ? Math.max(0, seconds * 1000)
+    : Math.max(0, Date.parse(value) - Date.now()) || 0;
 }
 
 async function readError(response) {
@@ -325,16 +345,23 @@ async function callOpenRouter({ messages, system, maxTokens, jsonSchema, model =
       // 429s are retried a layer up, which is right for a per-minute cap and
       // pointless for a per-day one: it burns the founder's remaining time
       // waiting for something that resets tomorrow. 402 marks it as final.
-      throw new LlmError(rateLimitMessage(detail, model), isDailyCap(detail) ? 402 : 429);
+      throw new LlmError(rateLimitMessage(detail, model), isDailyCap(detail) ? 402 : 429,
+        { retryAfterMs: retryAfterMs(response) });
     }
-    const status = response.status === 401 || response.status === 403 ? 401
+    const status = response.status === 402 ? 402 : response.status === 401 || response.status === 403 ? 401
       : response.status >= 500 ? 502 : 400;
     throw new LlmError(`${model} returned ${response.status}: ${detail}`, status);
   }
 
   const payloadBody = await response.json();
+  if (payloadBody.error) {
+    const code = Number(payloadBody.error.code) || 502;
+    const detail = String(payloadBody.error.message || 'Provider failed');
+    throw new LlmError(code === 429 ? rateLimitMessage(detail, model) : `${model}: ${detail}`,
+      code === 429 && isDailyCap(detail) ? 402 : code >= 500 ? 502 : code);
+  }
   const choice = (payloadBody.choices || [])[0];
-  if (!choice) throw new LlmError('The model returned no choices', 502);
+  if (!choice || !choice.message) throw new LlmError('The model returned no choices', 502);
 
   const text = typeof choice.message.content === 'string'
     ? choice.message.content
@@ -367,6 +394,9 @@ async function callOpenRouter({ messages, system, maxTokens, jsonSchema, model =
     text,
     usage: payloadBody.usage || null,
     model: payloadBody.model || model,
+    // What was actually sent, not what was asked for: the schema is dropped on
+    // a 400 retry above, and reporting it as used would be a lie.
+    structuredOutput: Boolean(payload.response_format),
     stopReason: choice.finish_reason || null
   };
 }
@@ -414,6 +444,7 @@ async function callAnthropic({ messages, system, maxTokens }) {
  */
 function benchReasonFor(err) {
   if (!(err instanceof LlmError)) return 'error';
+  if (err.details && err.details.budgetExhausted) return null;   // the build is out of time
   if (err.status === 401) return null;        // the key is wrong everywhere
   if (err.status === 422) return null;        // truncated: shorten, do not reshuffle
   if (err.status === 402) return 'daily';     // free quota gone until midnight
@@ -474,6 +505,9 @@ async function complete({
      budget of five minutes for a failure that has already repeated twelve
      times. One retry catches a blip. More is just a slower way to fail. */
   const ROUNDS = Math.min(config.llm.retries, 1);
+  /* The floor for "is there time to ask anybody else". Below this a call can
+     only time out. */
+  const MIN_CALL_MS = 1000;
   const attempts = [];
   let lastError = null;
   let wait = config.llm.retryBaseMs;
@@ -502,6 +536,13 @@ async function complete({
       const want = maxTokens || config.llm.maxTokens;
       const room = ceiling ? Math.min(want, ceiling) : want;
 
+      /* A call needs seconds. Once one attempt has been made, starting another
+         with a fraction of a second left does not produce an answer, it
+         produces a second identical timeout - so the walk stops while there is
+         still time to ship the rescue template. The first attempt always runs:
+         post() aborts it if the deadline really has passed. */
+      if (attempts.length && remainingMs() < MIN_CALL_MS) throw lastError;
+
       if (onModel) {
         onModel({ model: candidate.id, index: i + 1, of: roster.length, round: round + 1, why: candidate.why || '' });
       }
@@ -513,7 +554,7 @@ async function complete({
         attempts.push({ model: candidate.id, ok: true });
         return {
           ...result,
-          structuredOutput: useSchema,
+          structuredOutput: result.structuredOutput ?? useSchema,
           provider: 'openrouter',
           attempts,
           // Worth surfacing: "the model you configured did not answer, this one
@@ -533,7 +574,8 @@ async function complete({
         // A daily cap will still be a daily cap in four seconds; the rest might not.
         if (reason !== 'daily') worthWaitingFor = true;
 
-        models.bench(candidate.id, reason);
+        models.bench(candidate.id, reason,
+          err.details && err.details.retryAfterMs);
         console.error(`[llm] ${candidate.id} out (${reason}): ${String(err.message).slice(0, 160)}`);
       }
     }
@@ -552,6 +594,10 @@ async function complete({
       return `${id}: ${last.status || 'failed'} (${last.reason})`;
     })
     .join('; ');
+
+  // One model tried is not "the roster is exhausted" - it is that model's
+  // error, and dressing it up as a roster failure hides what went wrong.
+  if (tried.length < 2 && lastError) throw lastError;
 
   const error = new LlmError(
     `All ${tried.length} models were unavailable. ${summary}\n\n${lastError ? lastError.message : ''}`,
@@ -591,7 +637,8 @@ async function withTransportRetries(call) {
       if (!transient || attempt > config.llm.retries) throw err;
 
       // Jittered, so a burst of builds does not come back in lockstep.
-      const pause = wait + Math.floor(Math.random() * 400);
+      const pause = Math.max(wait + Math.floor(Math.random() * 400), (err.details && err.details.retryAfterMs) || 0);
+      if (remainingMs() <= pause + 1000) throw err;
       console.error(`[llm] ${err.status} on attempt ${attempt}, retrying in ${pause}ms`);
       await new Promise((r) => setTimeout(r, pause));
       wait = Math.min(wait * 2, config.llm.retryMaxMs);
@@ -607,6 +654,6 @@ function resetCapabilities() {
 }
 
 module.exports = {
-  complete, buildUserMessage, capabilities, resetCapabilities,
+  complete, withBudget, buildUserMessage, capabilities, resetCapabilities,
   benchReasonFor, SYSTEM_PROMPT, LlmError, KNOWN
 };

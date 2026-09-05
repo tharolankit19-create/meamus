@@ -74,7 +74,7 @@ npm start            # http://localhost:3000
 ```bash
 # .env
 OPENROUTER_API_KEY=sk-or-v1-...
-OPENROUTER_MODEL=nvidia/nemotron-3.5-lightning   # already the default
+OPENROUTER_MODEL=nvidia/nemotron-3-super-120b-a12b:free
 ```
 
 Then verify it before touching the UI:
@@ -88,7 +88,7 @@ whole game through the live pipeline. If the key or the model name is wrong it
 fails there instead of halfway through a prompt.
 
 Restart and the header badge flips from `TEMPLATE MODE` to
-`AI · nvidia/nemotron-3.5-lightning`.
+`AI · nvidia/nemotron-3-super-120b-a12b:free`.
 
 ### Free account, unlimited games
 
@@ -127,31 +127,24 @@ Setting `SUPABASE_URL` turns signup back on.
 
 ### The model
 
-Default is **`nvidia/nemotron-3.5-lightning`** via OpenRouter:
+The default is `nvidia/nemotron-3-super-120b-a12b:free` through OpenRouter.
+Model availability and capabilities are detected from its catalogue. Set
+`OPENROUTER_MODEL` to the exact ID available in your account, and run
+`npm run llm:check` with your deployment settings before launch.
 
-| | |
-|---|---|
-| Context | 262,144 tokens |
-| Max output | 131,072 tokens |
-| Price | ~$0.08/M in · $0.20/M out |
-| Images | **No** — text input only |
-| Structured outputs | **Yes** |
+Free models default to one generation call with up to two corrective attempts.
+`AGENT_CREW=true` explicitly enables the longer designer/reviewer pipeline;
+`AGENT_CREW=false` disables it for any model. All model calls and transport
+retries share `BUILD_BUDGET_MS` (210 seconds by default), including response-body
+reading. Output is capped to the model's advertised maximum. A truncated answer
+is sent back with instructions to write a smaller complete game.
 
-Structured outputs matter here: it is a 3B-active MoE model, and pushing the
-GameSpec JSON Schema into `response_format` is what keeps it emitting a spec
-that parses on the first try instead of drifting. meamus detects this from
-OpenRouter's catalogue at runtime and downgrades to prompt-only instructions
-for models that do not support it.
+Image support is detected, and unsupported image attachments are reported.
+Rate limits never silently switch to a paid model. Failed AI builds in the
+workspace stay failed and are not charged or replaced by unrelated templates.
 
-Because the model is text-only, **image attachments cannot be read by it**.
-meamus does not pretend otherwise: the filenames go into the prompt and the
-response carries an explicit note saying the images informed the prompt only.
-Point `OPENROUTER_MODEL` at a vision model and native image parts turn on
-automatically. `nvidia/nemotron-3.5-lightning:free` also works (1M context,
-64k output, no structured outputs, rate limited).
-
-An `ANTHROPIC_API_KEY` still works if that is the key you have — whichever key
-is present wins, OpenRouter first.
+An `ANTHROPIC_API_KEY` is also supported; OpenRouter takes precedence when both
+keys are present unless `LLM_PROVIDER` explicitly selects Anthropic.
 
 ### Template mode (no key)
 
@@ -175,6 +168,10 @@ between invocations. meamus moves its writable paths to `/tmp` automatically,
 but **you must set `SUPABASE_URL` there or signup will silently fail** — the
 account is written and then thrown away. `GET /api/status` warns when it detects
 that combination.
+
+Before deploying this update, run `supabase/migrations/20260905_build_coordination.sql` to add the private
+`meamus_build_plans` table. Build approvals are consumed atomically across
+serverless instances; progress is read from storage and writes are awaited.
 
 Full walkthrough, including the exact environment variables:
 [docs/DEPLOY.md](docs/DEPLOY.md).
@@ -306,7 +303,7 @@ Everything lives in `.env` (see `.env.example`). The values worth knowing:
 | Variable | Default | Notes |
 |---|---|---|
 | `OPENROUTER_API_KEY` | *(empty)* | The one thing you add. Empty = template mode. |
-| `OPENROUTER_MODEL` | `nvidia/nemotron-3.5-lightning` | Any OpenRouter model id. |
+| `OPENROUTER_MODEL` | `nvidia/nemotron-3-super-120b-a12b:free` | Any OpenRouter model id. |
 | `LLM_MAX_TOKENS` | `32000` | Raise it if generations come back truncated. |
 | `LLM_TEMPERATURE` | `0.6` | |
 | `TEST_MODE` | `true` outside production | Generation without signup. |

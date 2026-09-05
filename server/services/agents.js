@@ -557,36 +557,43 @@ async function buildWithCrew(prompt, opts = {}) {
   /* --- 5. Improver -------------------------------------------------------- */
   if (actionable.length) {
     say('improver', 'improve', WORKING_COPY.improver);
-    const improved = await askForSpec([
-      { role: 'user', content: coderText },
-      { role: 'assistant', content: JSON.stringify(spec) },
-      {
-        role: 'user',
-        content: 'A reviewer found these problems. Fix all of them and change nothing else.\n\n'
-          + actionable.map((f, i) =>
-            `${i + 1}. [${f.severity}] ${f.what}${f.where ? ` (in ${f.where})` : ''}\n   Suggested fix: ${f.fix || 'use your judgement'}`
-          ).join('\n')
-          + '\n\nReturn the complete corrected GameSpec JSON.'
-      }
-    ], { onModel: watchModels('improver', 'improve') });
-    usage.add(improved.response.usage);
-    {
-      const lines = improved.spec.gameCode.javascript.split('\n').length;
-      say('improver', 'improve', `Rewrote game.js — ${lines} lines`,
-        { file: 'game.js', lines, model: improved.response.model });
-    }
+    try {
+      const improved = await askForSpec([
+        { role: 'user', content: coderText },
+        { role: 'assistant', content: JSON.stringify(spec) },
+        {
+          role: 'user',
+          content: 'A reviewer found these problems. Fix all of them and change nothing else.\n\n'
+            + actionable.map((f, i) =>
+              `${i + 1}. [${f.severity}] ${f.what}${f.where ? ` (in ${f.where})` : ''}\n   Suggested fix: ${f.fix || 'use your judgement'}`
+            ).join('\n')
+            + '\n\nReturn the complete corrected GameSpec JSON.'
+        }
+      ], { onModel: watchModels('improver', 'improve') });
+      usage.add(improved.response.usage);
+      say('improver', 'improve',
+        `Rewrote game.js — ${improved.spec.gameCode.javascript.split('\n').length} lines`,
+        {
+          file: 'game.js',
+          lines: improved.spec.gameCode.javascript.split('\n').length,
+          model: improved.response.model
+        });
 
-    // The improver's work only counts if it still boots. If the fix broke the
-    // game, the version that passed is the one that ships.
-    say('tester', 'test', `${WORKING_COPY.tester} (run 2 of 2)`);
-    const after = runTest(improved.spec, 2);
-    if (after.ok) {
-      spec = improved.spec;
-      issues.push(...improved.issues);
-      say('improver', 'improve', `Applied ${actionable.length} fix${actionable.length > 1 ? 'es' : ''}, still boots`);
-    } else {
-      issues.push(`The review fixes broke the build (${after.reason}), so the version that passed was shipped instead.`);
-      say('improver', 'improve', 'Fixes broke the build — kept the version that passed');
+      // The improver's work only counts if it still boots. If the fix broke the
+      // game, the version that passed is the one that ships.
+      say('tester', 'test', `${WORKING_COPY.tester} (run 2 of 2)`);
+      const after = runTest(improved.spec, 2);
+      if (after.ok) {
+        spec = improved.spec;
+        issues.push(...improved.issues);
+        say('improver', 'improve', `Applied ${actionable.length} fix${actionable.length > 1 ? 'es' : ''}, still boots`);
+      } else {
+        issues.push(`The review fixes broke the build (${after.reason}), so the version that passed was shipped instead.`);
+        say('improver', 'improve', 'Fixes broke the build — kept the version that passed');
+      }
+    } catch (err) {
+      issues.push(`Review fixes could not be completed (${err.message}); kept the tested version.`);
+      say('improver', 'improve', 'Kept the tested version; review fixes could not be completed');
     }
   } else {
     /* --- 6. Tester, second run ------------------------------------------- */

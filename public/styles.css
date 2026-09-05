@@ -1014,3 +1014,15 @@ dialog::backdrop { background: rgba(28, 24, 18, .38); backdrop-filter: blur(2px)
   .ready-card { animation: none; }
   .ready-card.out { transition: none; }
 }
+
+/* Prompt feedback follows the existing white/orange palette. */
+.composer-hint { display: block; padding: 0 16px 12px; color: var(--muted); font-size: 12px; text-align: left; }
+.composer-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.composer-feedback { margin: 0 12px 12px; padding: 10px 12px; border-radius: 10px; background: var(--orange-soft); color: var(--text); font-size: 14px; }
+.composer.is-busy { border-color: var(--orange); background: linear-gradient(120deg, var(--bg), var(--orange-soft)); }
+.composer .send-btn { min-width: 44px; min-height: 44px; transition: transform .16s ease, background .16s ease, box-shadow .16s ease; }
+.composer .send-btn:not(:disabled):hover { transform: translateY(-2px); box-shadow: 0 4px 12px var(--orange-ring); }
+.composer .send-btn:not(:disabled):active { transform: scale(.96); }
+.composer button:focus-visible { outline: 2px solid var(--orange); outline-offset: 3px; }
+@media (max-width: 600px) { .composer.compact textarea { font-size: 16px; } }
+@media (prefers-reduced-motion: reduce) { .composer .send-btn { transition: none; transform: none !important; } }
