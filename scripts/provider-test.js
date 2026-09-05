@@ -949,6 +949,44 @@ async function check(name, fn) {
       'a cut-off file was blamed on punctuation, which is what wasted four attempts');
   });
 
+  await check('a Phaser method that does not exist fails the boot test', async () => {
+    /* The game that shipped from production called
+       `this.input.keyboard.createArrowKeys()`. There is no such method - it is
+       createCursorKeys - and the stub invented it, so the game booted, passed,
+       and shipped. In a real browser create() throws on that line, the scene
+       never starts, and the player gets the black screen this test exists to
+       prevent. */
+    const smoke = require('../server/services/smoke');
+    const agents = require('../server/services/agents');
+    const scene = (call) => `class GameScene extends Phaser.Scene {
+      constructor() { super({ key: 'GameScene' }); }
+      create() { this.cursors = ${call}; }
+      update() {}
+    }
+    new Phaser.Game({ type: Phaser.AUTO, width: 320, height: 480, scene: [GameScene] });`;
+
+    let thrown = null;
+    try { smoke.boot(scene('this.input.keyboard.createArrowKeys()')); }
+    catch (err) { thrown = err; }
+
+    assert.ok(thrown, 'an invented Phaser method booted cleanly, which is how it reached a player');
+    assert.match(thrown.message, /createCursorKeys/,
+      'the failure should name the method that does exist');
+
+    // The correction has to carry that through, not bury it in generic advice.
+    const fix = agents.correctionFor(thrown, 0);
+    assert.match(fix, /createCursorKeys\(\)/, `the model was not shown the real API:\n${fix}`);
+
+    // And the real API still passes - a boot test that rejects working games is
+    // worse than one that misses a broken one.
+    const ok = smoke.boot(scene('this.input.keyboard.createCursorKeys()'));
+    assert.strictEqual(ok.ok, true, `a correct game was rejected: ${ok.reason}`);
+
+    for (const real of ["this.input.keyboard.addKey('SPACE')", "this.input.keyboard.addKeys('W,A,S,D')"]) {
+      assert.strictEqual(smoke.boot(scene(real)).ok, true, `${real} should be allowed`);
+    }
+  });
+
   await check('a game built above its scene classes is reordered, not sent back', async () => {
     /* A watched production build: dots-3 wrote a complete, correct, 726-line
        game and it would not start, because `new Phaser.Game({ scene:
