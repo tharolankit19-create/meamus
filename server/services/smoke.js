@@ -21,6 +21,7 @@
  * require, no process and no timers that outlive the run.
  */
 
+const fs = require('node:fs');
 const vm = require('node:vm');
 const templates = require('./templates');
 
@@ -182,7 +183,11 @@ function loose(name, seed = {}) {
          
          So an invented member is a proxy around a function: call it and it
          returns another one, read a property off it and you get another one. */
-      const fn = (...args) => { void args; return loose(`${name}.${String(prop)}`); };
+      /* A regular function, not an arrow, because an arrow cannot be
+         constructed - and `new THREE.Vector3()` is how half of a 3D game is
+         written. A constructor that returns an object hands back that object,
+         so `new` and a plain call both end up at the same stub. */
+      const fn = function invented(...args) { void args; return loose(`${name}.${String(prop)}`); };
       fn.__loose = true;
       const member = new Proxy(fn, handler);
       obj[prop] = member;
@@ -560,6 +565,127 @@ function makeWindow(world) {
  * @returns {{ok:true, scenes:string[], textures:number}}
  * @throws {SmokeError} with the failure and the phase it happened in
  */
+
+/* --- 3D ------------------------------------------------------------------ */
+
+const THREE_PATH = require('node:path').join(__dirname, '..', '..', 'public', 'vendor', 'three.min.js');
+let threeSource = null;
+
+/**
+ * Boot a Three.js game.
+ *
+ * The real library, not a stub. Phaser is stubbed here because a stub is
+ * enough to catch the mistakes a game makes; three.js is different, because
+ * most of a 3D game IS the library - vectors, geometries, materials, the scene
+ * graph - and a permissive stub would accept `new THREE.Vector3(1, 2)` and
+ * `mesh.postion.set(...)` and every other thing that goes wrong. Running the
+ * real thing means a typo in a class name is an error here rather than a black
+ * screen for the player.
+ *
+ * What is faked is the GPU and the clock: WebGLRenderer needs a context that
+ * does not exist in Node, and requestAnimationFrame has to be a finite number
+ * of frames rather than forever. Everything else is real.
+ */
+function boot3d(code) {
+  if (threeSource === null) threeSource = fs.readFileSync(THREE_PATH, 'utf8');
+
+  const world = { frames: 0, renderers: 0, rendered: 0, scenes: 0 };
+  const win = makeWindow(world);
+
+  const sandbox = vm.createContext(win);
+  sandbox.globalThis = sandbox;
+  sandbox.window = sandbox;
+  sandbox.self = sandbox;
+
+  /* A canvas that answers the questions three.js asks on construction without
+     pretending to be a GPU. */
+  const canvas = () => loose('canvas', {
+    width: 800, height: 600, style: {},
+    getContext: () => null,
+    addEventListener: () => {}, removeEventListener: () => {},
+    getBoundingClientRect: () => ({ x: 0, y: 0, width: 800, height: 600, top: 0, left: 0 }),
+    setAttribute: () => {}, appendChild: () => {},
+    requestPointerLock: () => {}, focus: () => {}
+  });
+  sandbox.document.createElement = (tag) => (String(tag).toLowerCase() === 'canvas'
+    ? canvas()
+    : loose(`element:${tag}`, { style: {}, classList: { add() {}, remove() {}, contains: () => false },
+      appendChild: () => {}, append: () => {}, addEventListener: () => {}, setAttribute: () => {},
+      getBoundingClientRect: () => ({ x: 0, y: 0, width: 800, height: 600 }) }));
+
+  /* A frame budget rather than a loop that never ends. Each callback is run
+     once, and anything it schedules is run too, up to the cap - which is what
+     ticks a game's update through several frames the way UPDATE_TICKS does for
+     Phaser. */
+  const pending = [];
+  sandbox.requestAnimationFrame = (fn) => { pending.push(fn); return pending.length; };
+  sandbox.cancelAnimationFrame = () => {};
+
+  const run = (source, label) => {
+    try {
+      new vm.Script(source, { filename: `${label}.js` }).runInContext(sandbox, { timeout: TIMEOUT_MS });
+    } catch (err) {
+      throw new SmokeError(`${label} threw while loading: ${err.message}`, firstGameFrame(err));
+    }
+  };
+
+  run(threeSource, 'three');
+  if (!sandbox.THREE) throw new SmokeError('Three.js did not load in the sandbox');
+
+  /* The one class that cannot be real. Everything it is asked for afterwards -
+     domElement, setSize, shadowMap, render - is what a game actually calls. */
+  const THREE = sandbox.THREE;
+  THREE.WebGLRenderer = function WebGLRenderer(options = {}) {
+    world.renderers += 1;
+    return loose('WebGLRenderer', {
+      domElement: options.canvas || canvas(),
+      shadowMap: { enabled: false, type: 0 },
+      outputColorSpace: '', toneMapping: 0, toneMappingExposure: 1,
+      setSize: () => {}, setPixelRatio: () => {}, setClearColor: () => {},
+      setAnimationLoop: (fn) => { if (fn) pending.push(fn); },
+      render: () => { world.rendered += 1; },
+      dispose: () => {}, getContext: () => null
+    });
+  };
+
+  run(code, 'game');
+
+  /* A 3D game with no renderer is a page that will never draw anything - the
+     same failure as a Phaser game that never calls new Phaser.Game(). */
+  if (!world.renderers) {
+    throw new SmokeError(
+      'The game never created a THREE.WebGLRenderer, so nothing would ever be drawn.'
+    );
+  }
+
+  // Run the frames the game asked for, and the ones those ask for in turn.
+  const MAX_FRAMES = 8;
+  let time = 0;
+  while (pending.length && world.frames < MAX_FRAMES) {
+    const fn = pending.shift();
+    time += 16;
+    world.frames += 1;
+    try {
+      fn(time);
+    } catch (err) {
+      throw new SmokeError(`The render loop threw on frame ${world.frames}: ${err.message}`,
+        firstGameFrame(err));
+    }
+  }
+
+  if (!world.frames) {
+    throw new SmokeError(
+      'The game never started a render loop (requestAnimationFrame or '
+      + 'renderer.setAnimationLoop), so the first frame is the only frame.'
+    );
+  }
+  if (!world.rendered) {
+    throw new SmokeError('The render loop never called renderer.render(), so the canvas stays empty.');
+  }
+
+  return { ok: true, scenes: ['3d'], textures: 0, frames: world.frames };
+}
+
 function boot(code, opts = {}) {
   const world = {
     config: null,
@@ -682,4 +808,18 @@ function firstGameFrame(err) {
   return match ? { line: Number(match[1]), column: Number(match[2]) } : null;
 }
 
-module.exports = { boot, SmokeError, TIMEOUT_MS };
+/**
+ * Boot whichever engine the spec is written against.
+ *
+ * The call sites should not each have to remember this - a 3D game handed to
+ * the Phaser boot fails with "never called new Phaser.Game()", which is true
+ * and completely misleading.
+ */
+function bootSpec(spec, opts) {
+  const engine = (spec.runtime && spec.runtime.engine) === 'three' ? 'three' : 'phaser';
+  return engine === 'three'
+    ? boot3d(spec.gameCode.javascript)
+    : boot(spec.gameCode.javascript, opts);
+}
+
+module.exports = { boot, boot3d, bootSpec, SmokeError, TIMEOUT_MS };

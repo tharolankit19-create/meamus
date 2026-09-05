@@ -32,6 +32,17 @@ const { RESPONSE_FORMAT } = require('./schema');
 
 const SYSTEM_PROMPT = fs.readFileSync(path.join(__dirname, '..', 'prompts', 'system.md'), 'utf8');
 
+/* The 3D instructions, appended to the shared prompt when a build is 3D rather
+   than replacing it: the spec shape, the JSON discipline, the finish-the-file
+   rule and the art direction are the same in both dimensions. Only the engine
+   and everything that follows from it differ. */
+const THREE_PROMPT = fs.readFileSync(path.join(__dirname, '..', 'prompts', 'three.md'), 'utf8');
+
+/** The system prompt for a build, in the dimension it is being built in. */
+function systemFor(engine) {
+  return engine === 'three' ? `${SYSTEM_PROMPT}\n\n${THREE_PROMPT}` : SYSTEM_PROMPT;
+}
+
 class LlmError extends Error {
   constructor(message, status, details) {
     super(message);
@@ -675,5 +686,5 @@ function resetCapabilities() {
 
 module.exports = {
   complete, withBudget, buildUserMessage, capabilities, resetCapabilities,
-  benchReasonFor, SYSTEM_PROMPT, LlmError, KNOWN
+  benchReasonFor, SYSTEM_PROMPT, THREE_PROMPT, systemFor, LlmError, KNOWN
 };

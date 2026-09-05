@@ -562,9 +562,13 @@ function normaliseSpec(input, { source = 'ai' } = {}) {
     apkReady: input.apkReady === true
   };
 
-  // Runtime metadata drives the bundler (templates opt into the shared kit).
+  /* Runtime metadata drives the bundler (templates opt into the shared kit)
+     and, now, which engine the page loads. Phaser unless the spec says three,
+     because every existing game and template is Phaser and a default that
+     changes under them would break all of it. */
   spec.runtime = {
     kit: input.runtime && input.runtime.kit === true,
+    engine: (input.runtime && input.runtime.engine) === 'three' ? 'three' : 'phaser',
     phaserVersion: str(input.runtime && input.runtime.phaserVersion, '3.60.0'),
     source
   };

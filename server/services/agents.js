@@ -35,6 +35,7 @@ const smoke = require('./smoke');
 const { RESPONSE_FORMAT } = require('./schema');
 const { extractJson, normaliseSpec, SpecError } = require('./validator');
 const { lineDiff } = require('./diff');
+const { pickEngine } = require('./engine');
 
 /** Roles, in the order they run. Labels are what the founder sees. */
 const CREW = {
@@ -204,8 +205,10 @@ async function ask(role, userContent, { maxTokens, onModel, timeoutMs } = {}) {
 }
 
 /** A GameSpec-producing agent, schema-constrained where the model supports it. */
-async function askForSpec(messages, { onModel } = {}) {
-  const response = await llm.complete({ messages, jsonSchema: true, role: 'coder', onModel });
+async function askForSpec(messages, { onModel, engine } = {}) {
+  const response = await llm.complete({
+    messages, jsonSchema: true, role: 'coder', onModel, system: llm.systemFor(engine)
+  });
   const raw = extractJson(response.text);
   const { spec, issues } = normaliseSpec(raw, { source: 'ai' });
   return { spec, issues, response };
@@ -432,7 +435,7 @@ const RACERS = 3;
  * @returns {{spec?:object, issues?:string[], response?:object, model?:string,
  *            scenes?:number, best?:{error:Error, text:string, model:string}}}
  */
-async function raceCoders({ messages, say, usage, skip = [] }) {
+async function raceCoders({ messages, say, usage, skip = [], engine }) {
   const roster = models.candidates('coder')
     .filter((m) => !skip.includes(m.id))
     .slice(0, RACERS);
@@ -447,14 +450,14 @@ async function raceCoders({ messages, say, usage, skip = [] }) {
     let answer = '';
     try {
       const response = await llm.complete({
-        messages, jsonSchema: true, role: 'coder', only: candidate.id
+        messages, jsonSchema: true, role: 'coder', only: candidate.id, system: llm.systemFor(engine)
       });
       usage.add(response.usage);
       answer = response.text;
 
       const raw = extractJson(response.text);
       const { spec, issues } = normaliseSpec(raw, { source: 'ai' });
-      const booted = smoke.boot(spec.gameCode.javascript);
+      const booted = smoke.bootSpec(spec);
 
       return {
         spec, issues, response, scenes: booted.scenes.length,
@@ -506,7 +509,7 @@ async function raceCoders({ messages, say, usage, skip = [] }) {
   }
 }
 
-async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline }) {
+async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline, engine }) {
   const startedAt = Date.now();
   const until = deadline || (startedAt + config.build.budgetMs);
   const issues = [];
@@ -528,7 +531,7 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
      the same shape - one model, one slow answer, one unusable result, repeat
      until the clock ran out - and the fix is not a better model, it is not
      betting the whole build on one. */
-  const raced = await raceCoders({ messages: [coderMessage.message], say, usage, skip: givenUp });
+  const raced = await raceCoders({ messages: [coderMessage.message], say, usage, skip: givenUp, engine });
   if (raced && raced.spec) {
     lastCode = raced.spec.gameCode.javascript;
     say('tester', 'test', `Run 1 passed — ${raced.scenes} scenes booted`,
@@ -581,7 +584,7 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
         ];
 
       const response = await llm.complete({
-        messages, jsonSchema: true, role: 'coder', skip: givenUp,
+        messages, jsonSchema: true, role: 'coder', skip: givenUp, system: llm.systemFor(engine),
         onModel: (info) => say('coder', 'build',
           info.index === 1
             ? `Asking ${info.model}`
@@ -621,7 +624,7 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
         });
 
       say('tester', 'test', `${WORKING_COPY.tester} (run 1 of 2)`);
-      const booted = smoke.boot(spec.gameCode.javascript);
+      const booted = smoke.bootSpec(spec);
 
       issues.push(...specIssues);
       return {
@@ -710,7 +713,7 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
 /** The deterministic gate. Not a model, on purpose. */
 function runTest(spec, round) {
   try {
-    const result = smoke.boot(spec.gameCode.javascript);
+    const result = smoke.bootSpec(spec);
     return { ok: true, round, scenes: result.scenes.length };
   } catch (err) {
     const where = err.detail ? ` (game.js line ${err.detail.line})` : '';
@@ -788,6 +791,10 @@ function reviewPrompt(brief, spec) {
  */
 async function buildWithCrew(prompt, opts = {}) {
   const started = Date.now();
+  /* 2D or 3D, decided once and before anything is written. It changes the
+     engine, the system prompt, the boot test and the page the game ships in,
+     so deciding it late would mean deciding it twice. */
+  const dimension = pickEngine(prompt);
   const onStep = opts.onStep || (() => {});
   const usage = tally();
   const transcript = [];
@@ -824,6 +831,9 @@ async function buildWithCrew(prompt, opts = {}) {
   };
 
   /* --- 1. Designer -------------------------------------------------------- */
+  if (dimension.engine === 'three') {
+    say('designer', 'design', `Building this one in 3D — ${dimension.why}`);
+  }
   say('designer', 'design', WORKING_COPY.designer,
     { artifact: 'brief.json', artifactState: 'writing' });
   let design;
@@ -897,7 +907,7 @@ async function buildWithCrew(prompt, opts = {}) {
      spec, compile the code, boot every scene - and whichever of those fails,
      the exact failure goes back to the model and it tries again. */
   const attempt = await writeUntilItRuns({
-    coderMessage, coderText, say, usage, deadline: opts.deadline
+    coderMessage, coderText, say, usage, deadline: opts.deadline, engine: dimension.engine
   });
   let spec = attempt.spec;
   issues.push(...attempt.issues);
@@ -942,7 +952,7 @@ async function buildWithCrew(prompt, opts = {}) {
             ).join('\n')
             + '\n\nReturn the complete corrected GameSpec JSON.'
         }
-      ], { onModel: watchModels('improver', 'improve') });
+      ], { onModel: watchModels('improver', 'improve'), engine: dimension.engine });
       usage.add(improved.response.usage);
       {
         const before = spec.gameCode.javascript;
@@ -986,11 +996,18 @@ async function buildWithCrew(prompt, opts = {}) {
     say('tester', 'test', `Run 2 passed — ready to ship`);
   }
 
+  /* The spec carries the engine, because the bundler reads it there and a 3D
+     game shipped in a Phaser page is a blank screen. The model is asked to set
+     it; this makes sure, because "the model was told to" is not a guarantee. */
+  spec.runtime = { ...(spec.runtime || {}), engine: dimension.engine };
+
   return {
     spec,
     meta: {
       mode: 'ai',
       crew: true,
+      engine: dimension.engine,
+      dimension: dimension.dimension,
       provider: response.provider,
       model: response.model,
       structuredOutput: response.structuredOutput,

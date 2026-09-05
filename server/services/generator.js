@@ -209,7 +209,7 @@ async function aiGenerate(messages, extraIssues = [], onStep) {
       // scene is constructed and run here before the build is allowed out.
       if (onStep) onStep({ attempt, total: MAX_BUILD_ATTEMPTS, phase: 'test', detail: 'Booting every scene' });
       try {
-        const result = smoke.boot(spec.gameCode.javascript);
+        const result = smoke.bootSpec(spec);
         issues.push(`Booted ${result.scenes.length} scenes without throwing.`);
       } catch (err) {
         const where = err.detail ? ` (game.js line ${err.detail.line})` : '';
