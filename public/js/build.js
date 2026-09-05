@@ -107,7 +107,7 @@ export function buildLine(step) {
       shortModel(step.model),
       step.modelIndex > 1 ? el('em', {}, ` ${step.modelIndex}/${step.modelCount}`) : null));
   }
-  if (step.file) chips.push(el('span', { class: 'build-chip file mono' }, step.file));
+  if (step.artifact) chips.push(el('span', { class: 'build-chip file mono' }, step.artifact));
   if (step.lines) chips.push(el('span', { class: 'build-chip' }, `${step.lines} lines`));
   if (step.bytes) chips.push(el('span', { class: 'build-chip' }, `${Math.round(step.bytes / 1024)} KB`));
   if (step.scenes) chips.push(el('span', { class: 'build-chip' }, `${step.scenes} scenes`));
@@ -229,10 +229,89 @@ export function errorNotice(message, { steps } = {}) {
  * The live panel: a clock, the phase lines as they arrive, and a stop button.
  * Returns the node plus an update() the poller drives.
  */
+/**
+ * One file, as a card.
+ *
+ * The panel used to be a scrolling log of sentences, which is what a terminal
+ * looks like and not what a person reading a chat wants. A build produces a
+ * small number of real things - a brief, the game code, the page it ships in -
+ * and each of those is worth a card that says what it is, how long it took, and
+ * what changed in it. Prose stays prose, in the chat, around the cards.
+ *
+ * The files are the ones that actually exist. Sprites and sound live inside
+ * game.js - they are drawn and synthesised, not downloaded - so they are named
+ * in that card's line rather than invented as files of their own.
+ */
+function artifactCard(name) {
+  const KIND = {
+    'brief.json': { icon: 'layers', what: 'the design brief' },
+    'game.js': { icon: 'code', what: 'the game' },
+    'index.html': { icon: 'rocket', what: 'the page it ships in' }
+  }[name] || { icon: 'file', what: '' };
+
+  const timer = el('span', { class: 'artifact-time mono' }, '0.0s');
+  const detail = el('div', { class: 'artifact-detail' }, KIND.what);
+  const stats = el('div', { class: 'artifact-stats' });
+  const state = el('span', { class: 'artifact-state' }, 'writing');
+
+  const node = el('article', { class: 'artifact-card is-writing' },
+    el('span', { class: 'artifact-icon' }, icon(KIND.icon, 'sm')),
+    el('div', { class: 'artifact-body' },
+      el('div', { class: 'artifact-head' },
+        el('span', { class: 'artifact-name mono' }, name),
+        state,
+        el('span', { class: 'grow' }),
+        timer),
+      detail,
+      stats));
+
+  /* The timer runs locally rather than moving on each poll. A counter that
+     jumps three seconds every three seconds is not a counter, it is a clock
+     being read out - and the whole point of showing it is that something is
+     happening between the polls too. */
+  let startedAt = Date.now();
+  let ticking = null;
+  const tick = () => { timer.textContent = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`; };
+
+  const start = (at) => {
+    startedAt = Date.now() - (at || 0);
+    node.classList.add('is-writing');
+    node.classList.remove('is-done');
+    state.textContent = 'writing';
+    if (!ticking) ticking = setInterval(tick, 100);
+    tick();
+  };
+
+  const finish = (step) => {
+    if (ticking) { clearInterval(ticking); ticking = null; }
+    node.classList.remove('is-writing');
+    node.classList.add('is-done');
+    state.textContent = 'built';
+    if (step.detail) detail.textContent = step.detail;
+
+    clear(stats);
+    if (step.added || step.removed) {
+      stats.append(
+        el('span', { class: 'diff-add' }, `+${step.added || 0}`),
+        el('span', { class: 'diff-del' }, `−${step.removed || 0}`),
+        step.exactDiff === false
+          ? el('span', { class: 'faint small' }, 'approx.')
+          : null);
+    }
+    if (step.model) stats.append(el('span', { class: 'artifact-model' }, shortModel(step.model)));
+  };
+
+  return { node, name, start, finish, stop: () => { if (ticking) clearInterval(ticking); } };
+}
+
+/**
+ * The live panel: what the crew is doing, as chat plus file cards.
+ *
+ * Returns the node plus an update() the poller drives.
+ */
 export function buildPanel(buildId, { onStop } = {}) {
   const clock = el('span', { class: 'build-clock mono' }, '0s');
-  const phase = el('span', { class: 'build-phase' }, 'Starting…');
-  const log = el('div', { class: 'build-log' });
+  const phase = el('span', { class: 'build-phase' }, 'Reading what you asked for…');
 
   const stopBtn = el('button', {
     class: 'btn sm danger', type: 'button',
@@ -244,57 +323,101 @@ export function buildPanel(buildId, { onStop } = {}) {
     }
   }, icon('x', 'sm'), 'Stop');
 
+  const files = el('div', { class: 'artifact-list' });
+  const log = el('div', { class: 'build-log' });
   const strip = agentStrip();
-  const heading = el('h4', {}, 'Agents are building');
 
-  const node = el('div', { class: 'build-card live build-live' },
-    el('div', { class: 'build-head' },
-      el('span', { class: 'ic' }, icon('sparkles', 'sm')),
-      el('div', { style: { minWidth: 0, flex: '1' } },
-        heading,
-        el('div', { class: 'sub' }, phase)),
+  /* The opening line. It is prose, in the chat, not another box - a founder
+     starting a build wants to be told the work has begun in a sentence, and
+     then shown the pieces as they land. */
+  const opening = el('p', { class: 'build-say' },
+    'I have read your prompt and everything you attached. Building it now — '
+    + 'each file appears below as it is written.');
+
+  const node = el('div', { class: 'build-activity live' },
+    opening,
+    el('div', { class: 'build-status' },
+      el('span', { class: 'build-pulse' }),
+      el('span', { class: 'build-phase-wrap' }, phase),
       clock,
       stopBtn),
+    files,
     strip.node,
-    log);
+    el('details', { class: 'build-log-wrap' },
+      el('summary', {}, 'Every step'),
+      log));
 
-  // A clock that only moved on each poll would visibly stutter. This one runs
-  // locally and the poll corrects it.
   let base = 0;
   let baseAt = Date.now();
   const ticker = setInterval(() => {
     clock.textContent = humanMs(base + (Date.now() - baseAt));
   }, 250);
 
+  const cards = new Map();
   let drawn = 0;
+
+  const applyArtifact = (step) => {
+    let card = cards.get(step.artifact);
+    if (!card) {
+      card = artifactCard(step.artifact);
+      cards.set(step.artifact, card);
+      files.append(card.node);
+    }
+    if (step.artifactState === 'writing') card.start();
+    else card.finish(step);
+  };
+
   return {
     node,
     update(view) {
       base = view.elapsedMs;
       baseAt = Date.now();
-      for (const step of view.steps.slice(drawn)) log.append(buildLine(step));
+
+      for (const step of view.steps.slice(drawn)) {
+        if (step.artifact) applyArtifact(step);
+        log.append(buildLine(step));
+      }
       drawn = view.steps.length;
+
       const last = view.steps[view.steps.length - 1];
-      if (last) phase.textContent = last.detail;
-      // The heading names who is working. "Agents are building" is true for two
-      // minutes and therefore says nothing.
-      if (last && last.agent) heading.textContent = `${last.agent} is working`;
+      if (last) phase.textContent = last.agent ? `${last.agent} · ${last.detail}` : last.detail;
       strip.update(view);
+
       if (view.stopRequested) {
         stopBtn.disabled = true;
         stopBtn.textContent = 'Stopping…';
       }
     },
+
+    /**
+     * The closing line: what happened, in a sentence, and what to do next.
+     *
+     * Prose again, not a box. The boxes are the files; this is the part that
+     * tells a founder the thing is finished and playable, which is the only
+     * sentence they were waiting for.
+     */
     done(view) {
       clearInterval(ticker);
+      for (const card of cards.values()) card.stop();
       stopBtn.remove();
       node.classList.remove('live');
-      heading.textContent = 'Agents finished';
       if (view) strip.update(view);
+
+      const built = [...cards.values()].filter((c) => c.node.classList.contains('is-done'));
+      if (!view || view.state !== 'done') return;
+
+      const scenes = (view.steps || []).reduce((n, s) => Math.max(n, s.scenes || 0), 0);
+      const ran = scenes
+        ? `Every scene was constructed and ticked — ${scenes} of them — before it shipped.`
+        : 'It was booted and ticked before it shipped.';
+
+      node.append(el('p', { class: 'build-say build-say-done' },
+        `Done. ${built.length} file${built.length === 1 ? '' : 's'} written in `
+        + `${humanMs(view.elapsedMs)}. ${ran} `,
+        el('strong', {}, 'You can play it now — it is running on the right.')));
     }
   };
 }
-
 
 /* --------------------------------------------------------------------------
  * The stage while a build runs.

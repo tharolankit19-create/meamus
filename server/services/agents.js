@@ -34,6 +34,7 @@ const models = require('./models');
 const smoke = require('./smoke');
 const { RESPONSE_FORMAT } = require('./schema');
 const { extractJson, normaliseSpec, SpecError } = require('./validator');
+const { lineDiff } = require('./diff');
 
 /** Roles, in the order they run. Labels are what the founder sees. */
 const CREW = {
@@ -400,6 +401,8 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
   let currentModel = null;
   let failuresInARow = 0;
   const givenUp = [];
+  // The last code that got far enough to be worth diffing the next one against.
+  let lastCode = '';
 
   while (attemptNo < config.build.maxAttempts) {
     attemptNo += 1;
@@ -413,7 +416,8 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
 
     say('coder', 'build', attemptNo === 1
       ? WORKING_COPY.coder
-      : `Rewriting it (attempt ${attemptNo})`, { attempt: attemptNo });
+      : `Rewriting it (attempt ${attemptNo})`,
+    { attempt: attemptNo, artifact: 'game.js', artifactState: 'writing' });
 
     let answer = null;
     try {
@@ -442,10 +446,28 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
       // Each of these can throw, and each throw is a retry with the reason.
       const raw = extractJson(response.text);
       const { spec, issues: specIssues } = normaliseSpec(raw, { source: 'ai' });
-      const lines = spec.gameCode.javascript.split('\n').length;
-      const chars = spec.gameCode.javascript.length;
-      say('coder', 'build', `Wrote game.js — ${lines} lines, ${Math.round(chars / 1024)} KB`,
-        { file: 'game.js', lines, bytes: chars, model: response.model, attempt: attemptNo });
+      const code = spec.gameCode.javascript;
+      const lines = code.split('\n').length;
+
+      /* What actually changed since the last attempt. On the first attempt
+         everything is new; on a rewrite this is a real line diff, because a
+         number on screen that was not measured is decoration. */
+      const change = lineDiff(lastCode, code);
+      lastCode = code;
+
+      say('coder', 'build',
+        `${lines} lines, ${Math.round(code.length / 1024)} KB`,
+        {
+          artifact: 'game.js',
+          artifactState: 'done',
+          lines,
+          bytes: code.length,
+          added: change.added,
+          removed: change.removed,
+          exactDiff: change.exact,
+          model: response.model,
+          attempt: attemptNo
+        });
 
       say('tester', 'test', `${WORKING_COPY.tester} (run 1 of 2)`);
       const booted = smoke.boot(spec.gameCode.javascript);
@@ -651,7 +673,8 @@ async function buildWithCrew(prompt, opts = {}) {
   };
 
   /* --- 1. Designer -------------------------------------------------------- */
-  say('designer', 'design', WORKING_COPY.designer);
+  say('designer', 'design', WORKING_COPY.designer,
+    { artifact: 'brief.json', artifactState: 'writing' });
   let design;
   try {
     design = await ask('designer', `Request: ${prompt}`, {
@@ -670,8 +693,18 @@ async function buildWithCrew(prompt, opts = {}) {
   usage.add(design.usage);
   const brief = design.parsed || briefFromPrompt(prompt);
   if (design.parsed) {
-    say('designer', 'design', `Brief ready: ${brief.title} — ${brief.pitch}`,
-      { model: design.model, mechanics: (brief.mechanics || []).length });
+    const doc = JSON.stringify(brief, null, 2);
+    say('designer', 'design', `${brief.title} — ${brief.pitch}`, {
+      artifact: 'brief.json',
+      artifactState: 'done',
+      lines: doc.split('\n').length,
+      bytes: doc.length,
+      added: doc.split('\n').length,
+      removed: 0,
+      exactDiff: true,
+      model: design.model,
+      mechanics: (brief.mechanics || []).length
+    });
   }
 
   /* --- 2. Coder ----------------------------------------------------------- */
@@ -744,7 +777,8 @@ async function buildWithCrew(prompt, opts = {}) {
 
   /* --- 5. Improver -------------------------------------------------------- */
   if (actionable.length) {
-    say('improver', 'improve', WORKING_COPY.improver);
+    say('improver', 'improve', WORKING_COPY.improver,
+      { artifact: 'game.js', artifactState: 'writing' });
     try {
       const improved = await askForSpec([
         { role: 'user', content: coderText },
@@ -759,13 +793,23 @@ async function buildWithCrew(prompt, opts = {}) {
         }
       ], { onModel: watchModels('improver', 'improve') });
       usage.add(improved.response.usage);
-      say('improver', 'improve',
-        `Rewrote game.js — ${improved.spec.gameCode.javascript.split('\n').length} lines`,
-        {
-          file: 'game.js',
-          lines: improved.spec.gameCode.javascript.split('\n').length,
-          model: improved.response.model
-        });
+      {
+        const before = spec.gameCode.javascript;
+        const afterCode = improved.spec.gameCode.javascript;
+        const change = lineDiff(before, afterCode);
+        say('improver', 'improve',
+          `${afterCode.split('\n').length} lines after the review`,
+          {
+            artifact: 'game.js',
+            artifactState: 'done',
+              lines: afterCode.split('\n').length,
+            bytes: afterCode.length,
+            added: change.added,
+            removed: change.removed,
+            exactDiff: change.exact,
+            model: improved.response.model
+          });
+      }
 
       // The improver's work only counts if it still boots. If the fix broke the
       // game, the version that passed is the one that ships.
@@ -865,6 +909,14 @@ function summarise(meta) {
      image or shipped the second-best version should say so here rather than
      leave the founder to notice on their own. */
   for (const issue of (meta.issues || []).slice(0, 3)) lines.push(issue);
+
+  /* And the sentence they were actually waiting for.
+  
+     Everything above is a report on work that is already finished; none of it
+     says the one thing a founder wants to know, which is whether they can
+     press play. It lives here rather than only in the live panel because the
+     panel is gone after a reload and this is not. */
+  lines.push('It is running on the right — play it, then tell me what to change.');
 
   return lines.join('\n');
 }
