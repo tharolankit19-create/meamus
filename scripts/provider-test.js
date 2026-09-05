@@ -1364,6 +1364,51 @@ async function check(name, fn) {
     router.reset();
   });
 
+  await check('the engine is read from the code, never from what it claims', async () => {
+    /* A production build asked for 3D, handed the model the three.js
+       instructions, got a Phaser game back, and stamped engine:"three" on it
+       because that was the intent. The page then loaded three.js and served it
+       to code that needed Phaser - a blank screen, manufactured by a label.
+       The code is the only thing that knows which engine it needs. */
+    const { detectEngine } = require('../server/services/engine');
+    const { normaliseSpec } = require('../server/services/validator');
+    const { bundle } = require('../server/services/bundler');
+    const good = require('../server/services/templates').get('space-shooter').spec;
+
+    assert.strictEqual(detectEngine('class S extends Phaser.Scene {}\nnew Phaser.Game({});'), 'phaser');
+    assert.strictEqual(detectEngine('const s = new THREE.Scene(); THREE.Mesh;'), 'three');
+    // Both or neither is its own bug; refusing to guess keeps the label honest.
+    assert.strictEqual(detectEngine('Phaser.Game; THREE.Scene;'), null);
+    assert.strictEqual(detectEngine('const x = 1;'), null);
+
+    // The exact shape of the production failure: Phaser code, claiming 3D.
+    const lying = normaliseSpec({
+      ...good,
+      runtime: { ...good.runtime, engine: 'three' },
+      gameCode: { ...good.gameCode, javascript: good.gameCode.javascript }
+    }, { source: 'ai' });
+    assert.strictEqual(lying.spec.runtime.engine, 'phaser',
+      'a Phaser game was allowed to describe itself as 3D, and would ship in a three.js page');
+
+    // ...and it therefore bundles with the engine it actually needs.
+    const page = bundle(lying.spec);
+    assert.ok(page.includes('phaser.min.js'), 'the page does not load the engine the code needs');
+    assert.ok(!page.includes('three.min.js'), 'the page loads an engine the code never uses');
+
+    // The other direction: three.js code is recognised even when nothing claims it.
+    const threeCode = [
+      'const scene = new THREE.Scene();',
+      'const camera = new THREE.PerspectiveCamera(70, 1, 0.1, 500);',
+      'const renderer = new THREE.WebGLRenderer();',
+      'function frame(){ renderer.render(scene, camera); requestAnimationFrame(frame); }',
+      'requestAnimationFrame(frame);'
+    ].join('\n') + '\n' + '// pad past the stub gate\n'.repeat(40);
+    const detected = normaliseSpec({ ...good, runtime: {}, gameCode: { ...good.gameCode, javascript: threeCode } },
+      { source: 'ai' });
+    assert.strictEqual(detected.spec.runtime.engine, 'three',
+      'a three.js game was not recognised, so it would ship in a Phaser page');
+  });
+
   await check('a game that only exists in 3D is built in 3D', async () => {
     /* "Like Minecraft" is a request for blocks in a world you walk around.
        Answering it with a 2D platformer answers a different question - so the

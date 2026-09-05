@@ -58,4 +58,31 @@ function pickEngine(prompt) {
   return { engine: 'phaser', dimension: '2d', why: 'no dimension asked for, and 2D is the safer default' };
 }
 
-module.exports = { pickEngine, EXPLICIT_2D, EXPLICIT_3D, GAMES_THAT_ARE_3D };
+/**
+ * Which engine a piece of code is actually written against.
+ *
+ * Read from the code, never from what the spec claims or what the build asked
+ * for. A production build asked for 3D, gave the model the three.js
+ * instructions, got a Phaser game back, and then stamped `engine: "three"` on
+ * it because that was the intent - so the page loaded three.js and served it to
+ * code that needed Phaser. A blank screen, produced by a label.
+ *
+ * The code is the only thing that knows. Everything else is a hope.
+ *
+ * @param {string} code
+ * @returns {'three'|'phaser'|null} null when it is neither, which is its own bug
+ */
+function detectEngine(code) {
+  const text = String(code || '');
+  const three = /\bTHREE\s*\./.test(text) || /\bnew\s+THREE\b/.test(text);
+  const phaser = /\bPhaser\s*\./.test(text) || /\bnew\s+Phaser\.Game\b/.test(text);
+
+  if (three && !phaser) return 'three';
+  if (phaser && !three) return 'phaser';
+  /* Both, or neither. Both is a game that will not run under either engine;
+     neither is not a game at all. Refusing to guess is what keeps the label
+     honest - the caller decides what to do about it. */
+  return null;
+}
+
+module.exports = { pickEngine, detectEngine, EXPLICIT_2D, EXPLICIT_3D, GAMES_THAT_ARE_3D };

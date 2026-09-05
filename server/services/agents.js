@@ -35,7 +35,7 @@ const smoke = require('./smoke');
 const { RESPONSE_FORMAT } = require('./schema');
 const { extractJson, normaliseSpec, SpecError } = require('./validator');
 const { lineDiff } = require('./diff');
-const { pickEngine } = require('./engine');
+const { pickEngine, detectEngine } = require('./engine');
 
 /** Roles, in the order they run. Labels are what the founder sees. */
 const CREW = {
@@ -601,6 +601,21 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline,
       const raw = extractJson(response.text);
       const { spec, issues: specIssues } = normaliseSpec(raw, { source: 'ai' });
       const code = spec.gameCode.javascript;
+
+      /* Wrong dimension is a failure like any other, and one worth feeding back
+         immediately: a Phaser game cannot be rescued into a three.js one by
+         editing, and shipping it in the wrong page is a blank screen. */
+      if (engine && detectEngine(code) && detectEngine(code) !== engine) {
+        throw new SpecError(
+          `That is a ${detectEngine(code) === 'three' ? 'three.js' : 'Phaser'} game, but this build `
+          + `is ${engine === 'three' ? 'three.js' : 'Phaser'}. `
+          + (engine === 'three'
+            ? 'There is no Phaser here. Write a classic script against the global THREE: a Scene, '
+              + 'a PerspectiveCamera, a WebGLRenderer, and a requestAnimationFrame loop.'
+            : 'Write a Phaser 3 game: scenes extending Phaser.Scene and a new Phaser.Game(...) call.')
+        );
+      }
+
       const lines = code.split('\n').length;
 
       /* What actually changed since the last attempt. On the first attempt
@@ -996,10 +1011,19 @@ async function buildWithCrew(prompt, opts = {}) {
     say('tester', 'test', `Run 2 passed — ready to ship`);
   }
 
-  /* The spec carries the engine, because the bundler reads it there and a 3D
-     game shipped in a Phaser page is a blank screen. The model is asked to set
-     it; this makes sure, because "the model was told to" is not a guarantee. */
-  spec.runtime = { ...(spec.runtime || {}), engine: dimension.engine };
+  /* No stamping the requested engine onto the spec. That is what produced a
+     Phaser game labelled engine:"three", shipped in a page that loads three.js
+     - a blank screen manufactured by a label. normaliseSpec reads the engine
+     off the code, which is the only thing that knows, and if the code came
+     back in the wrong dimension that is reported as an issue rather than
+     papered over. */
+  if (spec.runtime.engine !== dimension.engine) {
+    issues.push(
+      `This was built as a ${spec.runtime.engine === 'three' ? '3D' : '2D'} game. `
+      + `A ${dimension.dimension.toUpperCase()} one was asked for, and the model wrote the other - `
+      + 'the game that runs is the one that shipped.'
+    );
+  }
 
   return {
     spec,
