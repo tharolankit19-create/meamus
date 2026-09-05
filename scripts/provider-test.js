@@ -949,6 +949,54 @@ async function check(name, fn) {
       'a cut-off file was blamed on punctuation, which is what wasted four attempts');
   });
 
+  await check('a game that synthesises its own sound is not rejected for it', async () => {
+    /* Two complete games - 477 lines and 536 - were thrown away in one
+       production build for "ctx.createBuffer is not a function". The games were
+       right: `this.sound.context` is how Phaser hands out the Web Audio
+       context. The stub was wrong. Every generated game synthesises its own
+       audio (there is nothing to download), so this surface is on the critical
+       path for all of them. */
+    const smoke = require('../server/services/smoke');
+    const scene = (body) => `class Boot extends Phaser.Scene {
+      constructor() { super({ key: 'Boot' }); }
+      preload() { ${body} }
+      create() {} update() {}
+    }
+    new Phaser.Game({ type: Phaser.AUTO, width: 320, height: 480, scene: [Boot] });`;
+
+    const ways = {
+      'a buffer written sample by sample': `
+        const ctx = this.sound.context;
+        const buf = ctx.createBuffer(1, 4410, ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < data.length; i += 1) data[i] = Math.sin(i * 0.1) * 0.3;
+        const src = ctx.createBufferSource();
+        src.buffer = buf; src.connect(ctx.destination); src.start();`,
+      'an oscillator through a gain ramp': `
+        const ctx = this.sound.context;
+        const osc = ctx.createOscillator(); const gain = ctx.createGain();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(440, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(); osc.stop(ctx.currentTime + 0.2);`,
+      'the context built directly': `
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        ctx.createBuffer(1, 128, 44100).getChannelData(0);`
+    };
+
+    for (const [what, body] of Object.entries(ways)) {
+      const result = smoke.boot(scene(body));
+      assert.strictEqual(result.ok, true, `${what} was rejected: ${result.reason}`);
+    }
+
+    // The underlying flaw: an invented member was callable but not readable, so
+    // the stub was permissive one level deep and strict two levels deep.
+    const twoDeep = smoke.boot(scene('this.sound.somethingUnheardOf.deeper.thing();'));
+    assert.strictEqual(twoDeep.ok, true,
+      'the stub still fails a game for reaching two levels into something it invented');
+  });
+
   await check('a Phaser method that does not exist fails the boot test', async () => {
     /* The game that shipped from production called
        `this.input.keyboard.createArrowKeys()`. There is no such method - it is
