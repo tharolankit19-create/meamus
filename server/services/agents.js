@@ -340,8 +340,23 @@ function correctionFor(err, cutoffs = 0) {
    unusable answers, spent 182 seconds and shipped nothing, while five other
    models sat untried. */
 const FAILURES_BEFORE_SWITCHING = 3;
+
+/* ...unless the failures are expensive. A later build spent 75, 65 and 50
+   seconds on three attempts from one model and ran out of time on the third -
+   it reached the switch and had nothing left to switch to. Three strikes is a
+   sensible rule when a strike costs twenty seconds and a bad one when it costs
+   seventy, so past this share of the budget two failures are enough. */
+const IMPATIENT_AFTER = 0.4;
+
+function shouldSwitch(failures, startedAt, until) {
+  if (failures >= FAILURES_BEFORE_SWITCHING) return true;
+  const budget = until - startedAt;
+  const spent = Date.now() - startedAt;
+  return failures >= 2 && budget > 0 && spent / budget > IMPATIENT_AFTER;
+}
 async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline }) {
-  const until = deadline || (Date.now() + config.build.budgetMs);
+  const startedAt = Date.now();
+  const until = deadline || (startedAt + config.build.budgetMs);
   const issues = [];
   let last = null;
   let attemptNo = 0;
@@ -432,7 +447,7 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
          conversation that is not converging. */
       if (currentModel && err.name !== 'LlmError') {
         failuresInARow += 1;
-        if (failuresInARow >= FAILURES_BEFORE_SWITCHING && givenUp.length < models.CODER.length - 1) {
+        if (shouldSwitch(failuresInARow, startedAt, until) && givenUp.length < models.CODER.length - 1) {
           givenUp.push(currentModel);
           say('coder', 'build',
             `${currentModel} has failed ${failuresInARow} times - trying a different model`,
