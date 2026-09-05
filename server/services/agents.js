@@ -30,6 +30,7 @@
 
 const config = require('./../config');
 const llm = require('./llm');
+const models = require('./models');
 const smoke = require('./smoke');
 const { RESPONSE_FORMAT } = require('./schema');
 const { extractJson, normaliseSpec, SpecError } = require('./validator');
@@ -196,8 +197,21 @@ function correctionFor(err, cutoffs = 0) {
      advice for one is useless for the other. Three production attempts in a row
      stopped at the same line - the model had run out of room - and each was
      told to check its quotation marks. */
-  const truncated = /Unexpected end of input|unterminated|ran out of room|cut off/i.test(err.message);
-  if (truncated) {
+  const named = /Unexpected end of input|unterminated|ran out of room|cut off/i.test(err.message);
+
+  /* A parse error at the end of the file is a cut-off file, whatever V8 chose
+     to call it. "Missing catch or finally after try" is a real mistake in the
+     middle of a program and an unfinished `try {` at the last line - and only
+     the position tells them apart. Production hit the second one four times
+     running and was told to check its punctuation every time, because the
+     message did not contain any of the words above.
+
+     Within three lines of the end, because the failure is often reported at the
+     closing brace rather than the last character written. */
+  const atTheEnd = err.detail && err.detail.totalLines && err.detail.line
+    && err.detail.totalLines - err.detail.line <= 3;
+
+  if (named || atTheEnd) {
     const lines = shrinkTarget(cutoffs);
     return 'Your last answer stopped before the game was finished - the file ends '
       + `mid-way${err.detail && err.detail.line ? ` (around line ${err.detail.line})` : ''}.\n\n`
@@ -269,7 +283,23 @@ function correctionFor(err, cutoffs = 0) {
  *
  * Every attempt ends in one of two places: a spec whose code parses AND boots
  * every scene, or a failure fed back to the model verbatim.
+ *
+ * And if one model keeps failing in the same way, it is replaced. A rate limit
+ * is a transport failure and llm.js handles it; a model that answers with a
+ * 143-character stub three times and then an unfinished file six more is not
+ * refusing to serve, it is serving badly, and no amount of rephrasing fixes
+ * that. Only this layer can see it, because only this layer knows whether the
+ * answer was any good.
  */
+
+/* How many failures from one model before trying a different one.
+   
+   Two is too eager - the first correction is often the one that lands, and
+   switching discards the conversation that was about to work. Beyond three the
+   evidence is in: production asked the same model nine times in a row, got nine
+   unusable answers, spent 182 seconds and shipped nothing, while five other
+   models sat untried. */
+const FAILURES_BEFORE_SWITCHING = 3;
 async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline }) {
   const until = deadline || (Date.now() + config.build.budgetMs);
   const issues = [];
@@ -277,6 +307,11 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
   let attemptNo = 0;
   // Each answer that stopped short makes the next request smaller.
   let cutoffs = 0;
+  /* Which model wrote the last answer, how many times running it has failed,
+     and who has been written off. */
+  let currentModel = null;
+  let failuresInARow = 0;
+  const givenUp = [];
 
   while (attemptNo < config.build.maxAttempts) {
     attemptNo += 1;
@@ -303,7 +338,7 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
         ];
 
       const response = await llm.complete({
-        messages, jsonSchema: true, role: 'coder',
+        messages, jsonSchema: true, role: 'coder', skip: givenUp,
         onModel: (info) => say('coder', 'build',
           info.index === 1
             ? `Asking ${info.model}`
@@ -312,6 +347,9 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
       });
       usage.add(response.usage);
       answer = response.text;
+
+      // A different model answered, so its failures start from zero.
+      if (response.model !== currentModel) { currentModel = response.model; failuresInARow = 0; }
 
       // Each of these can throw, and each throw is a retry with the reason.
       const raw = extractJson(response.text);
@@ -340,6 +378,26 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
       const fatal = err && err.name === 'LlmError'
         && (err.status === 401 || err.status === 402 || err.status === 503);
       if (fatal) throw err;
+
+      /* This answer was unusable. If the same model has now produced several
+         unusable answers in a row, stop rephrasing the question and change who
+         is being asked - the next attempt starts fresh with a different model
+         rather than carrying on a conversation that is not converging. */
+      if (currentModel && err.name !== 'LlmError') {
+        failuresInARow += 1;
+        if (failuresInARow >= FAILURES_BEFORE_SWITCHING && givenUp.length < models.CODER.length - 1) {
+          givenUp.push(currentModel);
+          say('coder', 'build',
+            `${currentModel} has failed ${failuresInARow} times - trying a different model`,
+            { model: currentModel, attempt: attemptNo });
+          currentModel = null;
+          failuresInARow = 0;
+          // A fresh model should not be handed the last one's broken draft.
+          last = null;
+          cutoffs = 0;
+          continue;
+        }
+      }
 
       // Quote what it actually wrote, so the next attempt is an edit rather
       // than a restart from nothing. Capped, because a rejected answer is
@@ -681,4 +739,6 @@ function summarise(meta) {
   return lines.join('\n');
 }
 
-module.exports = { buildWithCrew, summarise, CREW, WORKING_COPY };
+module.exports = {
+  buildWithCrew, summarise, correctionFor, CREW, WORKING_COPY, FAILURES_BEFORE_SWITCHING
+};

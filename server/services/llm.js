@@ -469,11 +469,15 @@ function benchReasonFor(err) {
  * @param {number} [opts.maxTokens]
  * @param {boolean} [opts.jsonSchema] request schema-constrained output
  * @param {'coder'|'brief'} [opts.role] which roster to walk
+ * @param {string[]} [opts.skip] models the caller has given up on. Transport
+ *        failures are this layer's business; a model that keeps answering with
+ *        an unfinished file is the caller's, and only the caller can tell.
  * @param {(info:{model:string, index:number, of:number, why:string}) => void} [opts.onModel]
  *        called before each attempt, so the build can say who is being asked
  */
 async function complete({
-  messages, system = SYSTEM_PROMPT, maxTokens, jsonSchema = false, role = 'coder', onModel
+  messages, system = SYSTEM_PROMPT, maxTokens, jsonSchema = false, role = 'coder',
+  skip = [], onModel
 } = {}) {
   if (!config.llm.enabled) {
     throw new LlmError(
@@ -520,7 +524,13 @@ async function complete({
       wait = Math.min(wait * 2, config.llm.retryMaxMs);
     }
 
-    const roster = models.candidates(role);
+    /* A model the caller has written off is skipped - unless writing them all
+       off would leave nothing, in which case the last one is still better than
+       refusing to try. */
+    const all = models.candidates(role);
+    const roster = all.filter((m) => !skip.includes(m.id)).length
+      ? all.filter((m) => !skip.includes(m.id))
+      : all;
     let worthWaitingFor = false;
 
     for (let i = 0; i < roster.length; i += 1) {

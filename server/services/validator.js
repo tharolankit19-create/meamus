@@ -188,10 +188,23 @@ function assertParses(code) {
       // attempt chasing something that was never wrong.
       const odd = oddCharacters(where.source || '');
       const named = odd.length ? `\n  non-ASCII characters near it: ${odd.join(', ')}` : '';
+      /* `totalLines` is what tells a cut-off file apart from a typo, and V8
+         will not say it in words. "Missing catch or finally after try" reads
+         like a mistake; the same error at the LAST line of the file is a `try {`
+         the model never got to close because it ran out of room. Production
+         gave that exact error four times in a row and the model was told to
+         check its punctuation each time. Where the error sits in the file is
+         the fact that separates the two, so it travels with the error. */
       throw new SpecError(
         `The generated code does not parse: ${err.message}${where.text}${named}`,
         ['gameCode.javascript'],
-        { line: where.line, column: where.column, source: where.source, odd }
+        {
+          line: where.line,
+          column: where.column,
+          source: where.source,
+          odd,
+          totalLines: code.split('\n').length
+        }
       );
     }
     throw err;
