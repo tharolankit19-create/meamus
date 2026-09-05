@@ -361,6 +361,67 @@ const arr = (v) => (Array.isArray(v) ? v : []);
 const strArray = (v) => arr(v).map((x) => str(x)).filter(Boolean);
 const oneOf = (v, allowed, fallback) => (allowed.includes(v) ? v : fallback);
 
+/**
+ * Move `new Phaser.Game(...)` below the classes it names.
+ *
+ * A watched production build: the model wrote a complete, correct, 726-line
+ * game - and it would not start, because the `new Phaser.Game({ scene:
+ * [BootScene, ...] })` call sat above `class BootScene`. Class declarations are
+ * not hoisted the way functions are, so the array is evaluated before the class
+ * exists and Phaser never boots: "Cannot access 'BootScene' before
+ * initialization".
+ *
+ * That is a statement in the wrong place, not a game that does not work, and
+ * the fix is to put it where every Phaser example puts it: last. Sending it
+ * back to the model instead costs a full round trip - a hundred and twelve
+ * seconds on the model that had just written the only complete game of the
+ * build - to be told something we can already see.
+ *
+ * Deliberately narrow. It moves ONE top-level statement, only when that
+ * statement constructs the game, only when a class it mentions is declared
+ * after it, and only when the file parses either way. Anything less certain is
+ * left alone and reported to the model as before.
+ *
+ * @returns {string|null} the reordered code, or null if there was nothing to do
+ */
+function hoistSceneClasses(code) {
+  const lines = code.split('\n');
+
+  // The statement that builds the game, and where it ends.
+  const startsAt = lines.findIndex((line) => /(^|[^.\w])new\s+Phaser\.Game\s*\(/.test(line));
+  if (startsAt === -1) return null;
+
+  let depth = 0;
+  let endsAt = -1;
+  for (let i = startsAt; i < lines.length; i += 1) {
+    for (const ch of lines[i]) {
+      if (ch === '(' || ch === '{' || ch === '[') depth += 1;
+      else if (ch === ')' || ch === '}' || ch === ']') depth -= 1;
+    }
+    if (depth <= 0) { endsAt = i; break; }
+  }
+  if (endsAt === -1) return null;   // unbalanced: a parse error, not this
+
+  const statement = lines.slice(startsAt, endsAt + 1);
+  const rest = [...lines.slice(0, startsAt), ...lines.slice(endsAt + 1)];
+
+  /* Only worth moving if a class it names is declared below it. Anything after
+     the call in the ORIGINAL file is what the temporal dead zone bites on. */
+  const named = new Set();
+  for (const m of statement.join('\n').matchAll(/\b([A-Z][A-Za-z0-9_]*)\b/g)) named.add(m[1]);
+
+  const declaredBelow = lines.slice(endsAt + 1).some((line) => {
+    const m = /^\s*class\s+([A-Za-z0-9_$]+)/.exec(line);
+    return m && named.has(m[1]);
+  });
+  if (!declaredBelow) return null;
+
+  // Trailing blank lines would put the call after the end of the file's text.
+  while (rest.length && !rest[rest.length - 1].trim()) rest.pop();
+
+  return [...rest, '', ...statement].join('\n');
+}
+
 function normaliseSpec(input, { source = 'ai' } = {}) {
   if (!input || typeof input !== 'object') throw new SpecError('Spec must be an object');
 
@@ -402,6 +463,12 @@ function normaliseSpec(input, { source = 'ai' } = {}) {
   if (detyped) {
     javascript = detyped;
     issues.push('The model used smart quotes or dashes in the code; they were replaced with plain ASCII.');
+  }
+  const reordered = hoistSceneClasses(javascript);
+  if (reordered) {
+    javascript = reordered;
+    issues.push('The game was constructed above the scene classes it uses, so it could never '
+      + 'start; the construction was moved to the end of the file.');
   }
   assertParses(javascript);
 
