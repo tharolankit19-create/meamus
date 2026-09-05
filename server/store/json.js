@@ -85,6 +85,23 @@ const store = {
     return load(collection).slice();
   },
 
+  /**
+   * The Supabase store re-reads one row from Postgres here, because its cache
+   * is filled once at boot and another instance's writes never reach it. There
+   * is one process here and the file is read on demand, so the ordinary lookup
+   * is already fresh - this exists so callers do not have to know which store
+   * they are talking to.
+   */
+  async findFresh(collection, filter) {
+    const byBuild = /data->build->>buildId=eq\.([^&]+)/.exec(filter);
+    if (byBuild) {
+      return load(collection).find((row) => row.build && row.build.buildId === byBuild[1]) || null;
+    }
+    const byId = /(?:^|&)id=eq\.([^&]+)/.exec(filter);
+    if (byId) return load(collection).find((row) => row.id === byId[1]) || null;
+    return null;
+  },
+
   find(collection, predicate) {
     return load(collection).find(predicate) || null;
   },

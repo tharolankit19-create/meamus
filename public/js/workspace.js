@@ -4,7 +4,7 @@
 
 import { el, icon, toast, clear, playModal, relativeTime, escapeHtml, quotaLabel, creditChip } from './ui.js';
 import { state, projects, builds, playUrl, download } from './api.js';
-import { confirmBuild, buildPanel, buildLine, buildStage, artifactChips, humanMs } from './build.js';
+import { confirmBuild, buildPanel, buildLine, buildStage, artifactChips, errorNotice, humanMs } from './build.js';
 import { attachToBuild } from './generate.js';
 import * as watcher from './watcher.js';
 import { createComposer } from './composer.js';
@@ -245,7 +245,7 @@ export async function renderWorkspace(root, projectId) {
             scrollThread();
           }
         });
-        panel.done();
+        panel.done(finished);
         stage.done();
         view.building = null;
 
@@ -259,7 +259,12 @@ export async function renderWorkspace(root, projectId) {
           scrollThread();
           return;
         }
-        if (finished.state === 'failed') throw new Error(finished.error || 'The build failed');
+        if (finished.state === 'failed') {
+          const failure = new Error(finished.error || 'The build failed');
+          // So the notice can say how far it got, not just that it stopped.
+          failure.steps = finished.steps;
+          throw failure;
+        }
 
         data = {
           game: finished.game,
@@ -297,11 +302,9 @@ export async function renderWorkspace(root, projectId) {
         scrollThread();
         toast('Task complete', 'ok');
       } catch (err) {
-        if (pending.isConnected) {
-          pending.replaceWith(el('div', { class: 'notice' }, icon('alert'), el('span', {}, err.message)));
-        } else {
-          thread.append(el('div', { class: 'notice' }, icon('alert'), el('span', {}, err.message)));
-        }
+        const notice = errorNotice(err.message, { steps: err.steps });
+        if (pending.isConnected) pending.replaceWith(notice);
+        else thread.append(notice);
         scrollThread();
       } finally {
         view.busy = false;
@@ -435,9 +438,10 @@ export async function renderWorkspace(root, projectId) {
       el('summary', {}, icon('layers', 'sm'),
         el('span', {}, `${transcript.length} steps · Designer → Coder → Tester → Reviewer`)),
       el('div', { class: 'build-log' },
-        transcript.map((entry) => buildLine({
-          phase: entry.phase, detail: entry.detail, agent: entry.agent, at: entry.at
-        }))));
+        // The saved transcript has the same shape as a live step, chips and
+        // all - so a reload shows what was on screen while it was building,
+        // not a thinner version of it.
+        transcript.map((entry) => buildLine(entry))));
     return details;
   }
 
@@ -548,7 +552,7 @@ export async function renderWorkspace(root, projectId) {
       onTick: (tick) => { panel.update(tick); stage.update(tick); scrollThread(); }
     }).catch((err) => ({ state: 'failed', error: err.message }));
 
-    panel.done();
+    panel.done(finished);
     stage.done();
     view.building = null;
     view.busy = false;
@@ -558,10 +562,10 @@ export async function renderWorkspace(root, projectId) {
     if (finished.state === 'released') return;
 
     if (finished.state !== 'done') {
-      thread.append(el('div', { class: 'notice' }, icon('alert'),
-        el('span', {}, finished.state === 'stopped'
-          ? 'Build stopped. Nothing was charged.'
-          : (finished.error || 'The build failed.'))));
+      thread.append(finished.state === 'stopped'
+        ? el('div', { class: 'notice' }, icon('alert'),
+          el('span', {}, 'Build stopped. Nothing was charged.'))
+        : errorNotice(finished.error, { steps: finished.steps }));
       paintStage();
       scrollThread();
       return;

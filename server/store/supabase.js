@@ -89,6 +89,44 @@ function createSupabaseStore(config) {
     return cache.get(collection) || [];
   }
 
+  /**
+   * Read one row straight from Postgres, ignoring the cache.
+   *
+   * The cache is filled once at boot and never refreshed, which is fine for
+   * data this instance itself wrote and useless for anything another instance
+   * wrote after this one started. On a serverless host that is most things: a
+   * build created while answering one request is invisible to the instance that
+   * answers the next, which is exactly what "Build not found" was - a running
+   * build, reported as though it had never existed.
+   *
+   * @param {string} collection
+   * @param {string} filter a PostgREST filter, e.g. `data->build->>buildId=eq.x`
+   * @returns {Promise<object|null>} the document, also merged into the cache
+   */
+  async function findFresh(collection, filter) {
+    const table = TABLES[collection];
+    if (!table) return null;
+
+    let found;
+    try {
+      const result = await request(`/${table}?${filter}&select=id,data&limit=1`);
+      found = (result || [])[0];
+    } catch (err) {
+      console.error(`[store] fresh read of ${collection} failed: ${err.message}`);
+      return null;
+    }
+    if (!found) return null;
+
+    // Keep the cache honest about what was just read.
+    const list = cache.get(collection) || [];
+    const index = list.findIndex((row) => row.id === found.data.id);
+    if (index === -1) list.push(found.data);
+    else list[index] = found.data;
+    cache.set(collection, list);
+
+    return found.data;
+  }
+
   /** Track the write so flush() can await it, and log rather than crash. */
   function write(promise, description) {
     const tracked = promise
@@ -112,6 +150,7 @@ function createSupabaseStore(config) {
     },
 
     all(collection) { return rows(collection).slice(); },
+    findFresh,
     find(collection, predicate) { return rows(collection).find(predicate) || null; },
     filter(collection, predicate) { return rows(collection).filter(predicate); },
 

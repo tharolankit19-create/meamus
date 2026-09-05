@@ -89,6 +89,9 @@ let replies = null;
 let replyAt = 0;
 // Number of coder calls to answer with a rate limit before behaving.
 let rateLimitFirst = 0;
+// Per-model refusals, for the routing tests: model id -> { status, message }.
+// A model in here answers with that status instead of a spec, every time.
+const refuse = new Map();
 
 const server = http.createServer((req, res) => {
   let body = '';
@@ -105,12 +108,32 @@ const server = http.createServer((req, res) => {
           architecture: { input_modalities: ['text'], output_modalities: ['text'] },
           supported_parameters: ['max_tokens', 'response_format', 'structured_outputs', 'temperature', 'seed'],
           top_provider: { max_completion_tokens: 235929 }
+        }, {
+          id: 'dots-studio/dots-3-note-preview:free',
+          context_length: 460800,
+          architecture: { input_modalities: ['text'], output_modalities: ['text'] },
+          supported_parameters: ['max_tokens', 'response_format', 'structured_outputs', 'temperature'],
+          top_provider: { max_completion_tokens: 460800 }
+        }, {
+          // Deliberately small, so the ceiling clamp has something to bite on.
+          id: 'liquid/lfm-2.5-2.6b:free',
+          context_length: 32768,
+          architecture: { input_modalities: ['text'], output_modalities: ['text'] },
+          supported_parameters: ['max_tokens', 'response_format', 'structured_outputs', 'temperature'],
+          top_provider: { max_completion_tokens: 8192 }
         }]
       }));
     }
 
     const parsed = JSON.parse(body || '{}');
     captured.push({ url: req.url, headers: req.headers, body: parsed });
+
+    // Routing tests: this model has been told to say no.
+    const refusal = refuse.get(parsed.model);
+    if (refusal) {
+      res.statusCode = refusal.status;
+      return res.end(JSON.stringify({ error: { message: refusal.message } }));
+    }
     // A scripted reply, when a test is driving the coder through failures.
     const sys = ((parsed.messages || []).find((m) => m.role === 'system') || {}).content || '';
     const isCoder = !/you produce the brief|You review Phaser 3/i.test(sys);
@@ -298,6 +321,47 @@ async function check(name, fn) {
     const coderPrompt = captured[1].body.messages[1].content;
     assert.ok(/do not\s*\n?substitute your own game/i.test(coderPrompt.replace(/\s+/g, ' ')),
       'the coder was not held to the brief');
+  });
+
+  await check('progress carries the numbers, not just a sentence', async () => {
+    config.build.crew = true;
+    captured.length = 0;
+    const steps = [];
+    await generator.generate('dodge falling blocks', {
+      allowFallback: false, onStep: (s) => steps.push(s)
+    });
+
+    // Which agent is working. "Building your game" for two minutes is what a
+    // hang looks like; a named agent is what work looks like.
+    const agents = new Set(steps.map((s) => s.agent).filter(Boolean));
+    for (const who of ['Designer', 'Coder', 'Tester']) {
+      assert.ok(agents.has(who), `${who} never reported in`);
+    }
+
+    // How much code, and into which file.
+    const wrote = steps.find((s) => s.lines);
+    assert.ok(wrote, 'no step reported how many lines were written');
+    assert.strictEqual(wrote.file, 'game.js', 'the file written was not named');
+    assert.ok(wrote.lines > 10, `${wrote.lines} lines is not a game`);
+    assert.ok(wrote.bytes > 0, 'the size was not reported');
+
+    // Which model answered, so a slow build can be told apart from a refused one.
+    const named = steps.filter((s) => s.model);
+    assert.ok(named.length >= 2, 'the model doing the work was never named');
+    assert.ok(named.every((s) => typeof s.model === 'string' && s.model.includes('/')),
+      'a model was reported without its provider');
+
+    // Every step is timed, so the panel can say how long each agent took.
+    assert.ok(steps.every((s) => typeof s.at === 'number'), 'a step arrived without a timestamp');
+  });
+
+  await check('a build records which model wrote it, all the way to the row', async () => {
+    config.build.crew = true;
+    captured.length = 0;
+    const { meta } = await generator.generate('dodge blocks', { allowFallback: false });
+    assert.ok(meta.model, 'the finished game does not say which model wrote it');
+    assert.ok(meta.transcript && meta.transcript.some((t) => t.lines),
+      'the saved transcript lost the line count, so a reload shows less than the build did');
   });
 
   await check('crew usage is summed across every agent, not just the coder', async () => {
@@ -721,6 +785,180 @@ async function check(name, fn) {
     }
     assert.ok(/API key/i.test(message), `unhelpful error: ${message}`);
     assert.ok(Date.now() - started < 3000, 'a hopeless call was retried anyway');
+  });
+
+  /* --- routing ----------------------------------------------------------- */
+
+  const modelRouter = require('../server/services/models');
+  const ask = (opts = {}) => llm.complete({
+    messages: [{ role: 'user', content: 'make a game' }], jsonSchema: true, ...opts
+  });
+
+  await check('a model that will not answer hands the job to the next one', async () => {
+    modelRouter.reset();
+    refuse.clear();
+    refuse.set('nvidia/nemotron-3-super-120b-a12b:free', { status: 429, message: 'rate limit exceeded' });
+
+    const result = await ask();
+    assert.strictEqual(result.model, 'dots-studio/dots-3-note-preview:free',
+      'the second model on the roster should have answered');
+    assert.strictEqual(result.attempts.length, 2, 'both attempts should be recorded');
+    assert.strictEqual(result.attempts[0].ok, false);
+    assert.strictEqual(result.attempts[0].reason, 'rate');
+    assert.strictEqual(result.attempts[1].ok, true);
+    refuse.clear();
+  });
+
+  await check('a rate-limited model is skipped, not re-asked, on the next call', async () => {
+    modelRouter.reset();
+    refuse.clear();
+    refuse.set('nvidia/nemotron-3-super-120b-a12b:free', { status: 429, message: 'rate limit exceeded' });
+    await ask();
+    refuse.clear();
+
+    // Second call: nemotron would now answer, but it is benched, so the router
+    // must not spend a request finding that out.
+    const before = captured.length;
+    const result = await ask();
+    assert.strictEqual(result.model, 'dots-studio/dots-3-note-preview:free');
+    assert.strictEqual(captured.length - before, 1, 'a benched model was asked again anyway');
+    const benched = modelRouter.benchedNow().map((b) => b.id);
+    assert.ok(benched.includes('nvidia/nemotron-3-super-120b-a12b:free'));
+  });
+
+  await check('a daily cap benches a model for the day, a rate limit for minutes', async () => {
+    modelRouter.reset();
+    refuse.clear();
+    refuse.set('nvidia/nemotron-3-super-120b-a12b:free',
+      { status: 429, message: 'Rate limit exceeded: free-models-per-day' });
+    refuse.set('dots-studio/dots-3-note-preview:free',
+      { status: 429, message: 'rate limit exceeded' });
+
+    await ask();
+    const held = Object.fromEntries(modelRouter.benchedNow().map((b) => [b.id, b.forMs]));
+    assert.ok(held['nvidia/nemotron-3-super-120b-a12b:free'] > 20 * 60 * 60 * 1000,
+      'a daily cap should be remembered for the rest of the day, not a few minutes');
+    assert.ok(held['dots-studio/dots-3-note-preview:free'] < 10 * 60 * 1000,
+      'a per-minute limit should clear on its own, not be held for a day');
+    refuse.clear();
+  });
+
+  await check('a rejected key stops at the first model instead of burning the roster', async () => {
+    modelRouter.reset();
+    refuse.clear();
+    for (const m of modelRouter.CODER) refuse.set(m.id, { status: 401, message: 'invalid api key' });
+
+    const before = captured.length;
+    let message = '';
+    try { await ask(); } catch (err) { message = err.message; }
+    assert.strictEqual(captured.length - before, 1,
+      'a wrong key is wrong on every model; asking six of them wastes the founder’s time');
+    assert.ok(/api key/i.test(message), `unhelpful error: ${message}`);
+    assert.strictEqual(modelRouter.benchedNow().length, 0, 'a key problem is not the model’s fault');
+    refuse.clear();
+  });
+
+  await check('a cut-off answer is shortened, not handed to another model', async () => {
+    modelRouter.reset();
+    refuse.clear();
+    truncateNext = true;
+    const before = captured.length;
+    let status = null;
+    try { await ask(); } catch (err) { status = err.status; }
+    truncateNext = false;
+    assert.strictEqual(status, 422, 'truncation is about the answer, not the provider');
+    assert.strictEqual(captured.length - before, 1,
+      'the same over-long request put to a second model gets the same over-long answer');
+  });
+
+  await check('every model refusing says so plainly, with what each one said', async () => {
+    modelRouter.reset();
+    refuse.clear();
+    for (const m of modelRouter.CODER) refuse.set(m.id, { status: 503, message: 'no instances available' });
+
+    let err = null;
+    try { await ask(); } catch (e) { err = e; }
+    assert.ok(err, 'it should have failed');
+    assert.ok(/All \d+ models were unavailable/.test(err.message),
+      `an exhausted roster should say so: ${err.message}`);
+    const tried = [...new Set(err.attempts.map((a) => a.model))];
+    assert.strictEqual(tried.length, modelRouter.CODER.length,
+      'every model tried should be listed');
+    for (const m of modelRouter.CODER) {
+      assert.ok(err.message.includes(m.id), `${m.id} is missing from the report`);
+    }
+    refuse.clear();
+  });
+
+  await check('a pinned OPENROUTER_MODEL is asked first, with the roster behind it', async () => {
+    modelRouter.reset();
+    refuse.clear();
+    const original = process.env.OPENROUTER_MODEL;
+    process.env.OPENROUTER_MODEL = 'dots-studio/dots-3-note-preview:free';
+
+    const first = await ask();
+    assert.strictEqual(first.model, 'dots-studio/dots-3-note-preview:free',
+      'an explicit setting is an instruction, not a suggestion');
+
+    // ...and being pinned does not mean being the only option.
+    refuse.set('dots-studio/dots-3-note-preview:free', { status: 502, message: 'upstream error' });
+    modelRouter.reset();
+    const second = await ask();
+    assert.notStrictEqual(second.model, 'dots-studio/dots-3-note-preview:free',
+      '"the model you chose is down" is not a reason to have no product');
+
+    refuse.clear();
+    if (original) process.env.OPENROUTER_MODEL = original; else delete process.env.OPENROUTER_MODEL;
+  });
+
+  await check('the brief roster is used for briefs, and the coder roster for code', async () => {
+    modelRouter.reset();
+    refuse.clear();
+    // Bench everything the two rosters share, so what is left tells them apart:
+    // a brief must fall to a brief-only model, not to a coder-only one.
+    const shared = modelRouter.BRIEF.filter((b) => modelRouter.CODER.some((c) => c.id === b.id));
+    assert.ok(shared.length, 'the rosters no longer overlap; this test needs rewriting');
+    for (const m of shared) modelRouter.bench(m.id, 'rate');
+
+    const before = captured.length;
+    await ask({ role: 'brief', maxTokens: 8000 });
+    const used = captured[before].body.model;
+    assert.ok(modelRouter.BRIEF.some((m) => m.id === used),
+      `a brief went to ${used}, which is not on the brief roster`);
+    assert.ok(!modelRouter.CODER.some((m) => m.id === used),
+      `a brief went to ${used}, which is a coder model - the roles are not actually separate`);
+    modelRouter.reset();
+  });
+
+  await check('a model is never asked for more room than it has', async () => {
+    modelRouter.reset();
+    refuse.clear();
+    const original = process.env.OPENROUTER_MODEL;
+    process.env.OPENROUTER_MODEL = 'liquid/lfm-2.5-2.6b:free';   // 8192 ceiling
+
+    const before = captured.length;
+    await ask({ maxTokens: 32000 });
+    const sent = captured[before].body.max_tokens;
+    assert.strictEqual(sent, 8192,
+      'asking a small model for 32k is a 400 from some providers and a silent cut-off from others');
+
+    if (original) process.env.OPENROUTER_MODEL = original; else delete process.env.OPENROUTER_MODEL;
+    modelRouter.reset();
+  });
+
+  await check('the build is told which model is being asked, before it answers', async () => {
+    modelRouter.reset();
+    refuse.clear();
+    refuse.set('nvidia/nemotron-3-super-120b-a12b:free', { status: 502, message: 'upstream error' });
+
+    const seen = [];
+    await ask({ onModel: (info) => seen.push(info) });
+    assert.strictEqual(seen.length, 2, 'both models tried should have been announced');
+    assert.strictEqual(seen[0].model, 'nvidia/nemotron-3-super-120b-a12b:free');
+    assert.strictEqual(seen[0].index, 1);
+    assert.ok(seen[0].of >= 2, 'the founder should be able to see how many are left to try');
+    refuse.clear();
+    modelRouter.reset();
   });
 
   await check('an unknown model falls back to safe assumptions', async () => {

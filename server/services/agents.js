@@ -138,12 +138,16 @@ const BRIEF_TOKENS = 8000;
 const MAX_ECHO_CHARS = 48000;
 
 /** A JSON-answering agent. Returns the parsed object plus its usage. */
-async function ask(role, userContent, { maxTokens } = {}) {
+async function ask(role, userContent, { maxTokens, onModel } = {}) {
   const agent = CREW[role];
   const response = await llm.complete({
     system: agent.system,
     messages: [{ role: 'user', content: userContent }],
-    maxTokens
+    maxTokens,
+    // A brief is a page of JSON; it does not need the model with the biggest
+    // output ceiling, it needs one that answers.
+    role: 'brief',
+    onModel
   });
   let parsed;
   try {
@@ -155,8 +159,8 @@ async function ask(role, userContent, { maxTokens } = {}) {
 }
 
 /** A GameSpec-producing agent, schema-constrained where the model supports it. */
-async function askForSpec(messages) {
-  const response = await llm.complete({ messages, jsonSchema: true });
+async function askForSpec(messages, { onModel } = {}) {
+  const response = await llm.complete({ messages, jsonSchema: true, role: 'coder', onModel });
   const raw = extractJson(response.text);
   const { spec, issues } = normaliseSpec(raw, { source: 'ai' });
   return { spec, issues, response };
@@ -286,7 +290,7 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
 
     say('coder', 'build', attemptNo === 1
       ? WORKING_COPY.coder
-      : `Rewriting it (attempt ${attemptNo})`);
+      : `Rewriting it (attempt ${attemptNo})`, { attempt: attemptNo });
 
     let answer = null;
     try {
@@ -298,14 +302,24 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
           { role: 'user', content: correctionFor(last.error, cutoffs) }
         ];
 
-      const response = await llm.complete({ messages, jsonSchema: true });
+      const response = await llm.complete({
+        messages, jsonSchema: true, role: 'coder',
+        onModel: (info) => say('coder', 'build',
+          info.index === 1
+            ? `Asking ${info.model}`
+            : `${info.model} instead (model ${info.index} of ${info.of})`,
+          { model: info.model, modelIndex: info.index, modelCount: info.of, attempt: attemptNo })
+      });
       usage.add(response.usage);
       answer = response.text;
 
       // Each of these can throw, and each throw is a retry with the reason.
       const raw = extractJson(response.text);
       const { spec, issues: specIssues } = normaliseSpec(raw, { source: 'ai' });
-      say('coder', 'build', `Wrote ${spec.gameCode.javascript.split('\n').length} lines`);
+      const lines = spec.gameCode.javascript.split('\n').length;
+      const chars = spec.gameCode.javascript.length;
+      say('coder', 'build', `Wrote game.js — ${lines} lines, ${Math.round(chars / 1024)} KB`,
+        { file: 'game.js', lines, bytes: chars, model: response.model, attempt: attemptNo });
 
       say('tester', 'test', `${WORKING_COPY.tester} (run 1 of 2)`);
       const booted = smoke.boot(spec.gameCode.javascript);
@@ -432,17 +446,45 @@ async function buildWithCrew(prompt, opts = {}) {
   const transcript = [];
   const issues = [];
 
-  const say = (agent, phase, detail) => {
-    transcript.push({ agent: CREW[agent] ? CREW[agent].label : 'Tester', phase, detail, at: Date.now() - started });
-    onStep({ phase, detail, agent: CREW[agent] ? CREW[agent].label : 'Tester' });
+  /* Progress is structured, not just a sentence.
+     
+     "Coder: writing the game" for ninety seconds looks identical to a hang.
+     What separates the two is the detail underneath it - which model is being
+     asked, which attempt this is, how many lines came back, which file they
+     went into - so every step carries those as fields the browser can render,
+     rather than folding them into prose it would have to parse back out. */
+  const say = (agent, phase, detail, meta = {}) => {
+    const entry = {
+      agent: CREW[agent] ? CREW[agent].label : 'Tester',
+      phase,
+      detail,
+      at: Date.now() - started,
+      ...meta
+    };
+    transcript.push(entry);
+    onStep(entry);
+  };
+
+  /* Which model each agent is being put to, as it happens. A founder watching
+     "Coder · glm-5.2 (2 of 6)" understands a slow build; "Coder: writing the
+     game" tells them nothing and looks broken. */
+  const watchModels = (agent, phase) => (info) => {
+    say(agent, phase,
+      info.index === 1
+        ? `Asking ${info.model}`
+        : `${info.model} instead (model ${info.index} of ${info.of})`,
+      { model: info.model, modelIndex: info.index, modelCount: info.of });
   };
 
   /* --- 1. Designer -------------------------------------------------------- */
   say('designer', 'design', WORKING_COPY.designer);
-  const design = await ask('designer', `Request: ${prompt}`, { maxTokens: BRIEF_TOKENS });
+  const design = await ask('designer', `Request: ${prompt}`, {
+    maxTokens: BRIEF_TOKENS, onModel: watchModels('designer', 'design')
+  });
   usage.add(design.usage);
   const brief = design.parsed;
-  say('designer', 'design', `Brief ready: ${brief.title} — ${brief.pitch}`);
+  say('designer', 'design', `Brief ready: ${brief.title} — ${brief.pitch}`,
+    { model: design.model, mechanics: (brief.mechanics || []).length });
 
   /* --- 2. Coder ----------------------------------------------------------- */
   //
@@ -489,13 +531,16 @@ async function buildWithCrew(prompt, opts = {}) {
   issues.push(...attempt.issues);
   const response = attempt.response;
   const repairs = attempt.repairs;
-  say('tester', 'test', `Run 1 passed — ${attempt.scenes} scenes booted`);
+  say('tester', 'test', `Run 1 passed — ${attempt.scenes} scenes booted`,
+    { scenes: attempt.scenes, attempts: attempt.repairs + 1 });
 
   /* --- 4. Reviewer -------------------------------------------------------- */
   let review = { verdict: 'ship', findings: [], summary: 'Not reviewed.' };
   try {
     say('reviewer', 'review', WORKING_COPY.reviewer);
-    const reviewed = await ask('reviewer', reviewPrompt(brief, spec), { maxTokens: BRIEF_TOKENS });
+    const reviewed = await ask('reviewer', reviewPrompt(brief, spec), {
+      maxTokens: BRIEF_TOKENS, onModel: watchModels('reviewer', 'review')
+    });
     usage.add(reviewed.usage);
     review = reviewed.parsed || review;
   } catch (err) {
@@ -523,8 +568,13 @@ async function buildWithCrew(prompt, opts = {}) {
           ).join('\n')
           + '\n\nReturn the complete corrected GameSpec JSON.'
       }
-    ]);
+    ], { onModel: watchModels('improver', 'improve') });
     usage.add(improved.response.usage);
+    {
+      const lines = improved.spec.gameCode.javascript.split('\n').length;
+      say('improver', 'improve', `Rewrote game.js — ${lines} lines`,
+        { file: 'game.js', lines, model: improved.response.model });
+    }
 
     // The improver's work only counts if it still boots. If the fix broke the
     // game, the version that passed is the one that ships.

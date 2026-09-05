@@ -204,7 +204,7 @@ router.post('/build/start', requireAuth, asyncRoute(async (req, res) => {
  * for progress, which reads the game row and so works on any instance.
  */
 router.post('/build/:id/run', requireAuth, asyncRoute(async (req, res) => {
-  const build = builds.get(req.params.id, req.user.id);
+  const build = await builds.get(req.params.id, req.user.id);
   if (!build) return res.status(404).json({ error: 'Build not found', code: 'not_found' });
 
   // Claim it, so two tabs cannot build the same game twice.
@@ -251,11 +251,13 @@ function shipSteps(build, spec) {
  */
 async function run(build, plan, user) {
   const attachments = uploads.resolve(plan.attachmentIds, user.id);
+  /* Everything the agents report goes through; builds.step decides what is
+     worth keeping. This used to name five fields, which meant that adding a
+     line count to the coder's progress silently changed nothing - the field was
+     dropped one layer below where it was written. */
   const onStep = (s) => {
     if (build.stopRequested) return;
-    builds.step(build, {
-      phase: s.phase, detail: s.detail, agent: s.agent, attempt: s.attempt, total: s.total
-    });
+    builds.step(build, s);
   };
 
   builds.step(build, { phase: 'analyse', detail: 'Reading the brief' });
@@ -334,16 +336,16 @@ async function run(build, plan, user) {
 
 /* --- poll + stop ---------------------------------------------------------- */
 
-router.get('/build/:id', requireAuth, (req, res) => {
-  const build = builds.get(req.params.id, req.user.id);
+router.get('/build/:id', requireAuth, asyncRoute(async (req, res) => {
+  const build = await builds.get(req.params.id, req.user.id);
   if (!build) return res.status(404).json({ error: 'Build not found', code: 'not_found' });
   res.json(builds.view(build));
-});
+}));
 
-router.post('/build/:id/stop', requireAuth, (req, res) => {
-  const build = builds.requestStop(req.params.id, req.user.id);
+router.post('/build/:id/stop', requireAuth, asyncRoute(async (req, res) => {
+  const build = await builds.requestStop(req.params.id, req.user.id);
   if (!build) return res.status(404).json({ error: 'Build not found', code: 'not_found' });
   res.json(builds.view(build));
-});
+}));
 
 module.exports = router;
