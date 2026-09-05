@@ -173,8 +173,32 @@ async function askForSpec(messages, { onModel } = {}) {
    is nothing at all. */
 const SHRINK_STEPS = [320, 220, 150, 110];
 
-function shrinkTarget(cutoffs) {
-  return SHRINK_STEPS[Math.min(cutoffs, SHRINK_STEPS.length - 1)];
+/* The floor. Below this there is no game left to cut down to, and asking for
+   40 lines gets an apology rather than something smaller. */
+const SHRINK_FLOOR = 90;
+
+/**
+ * How long a game to ask for next.
+ *
+ * The ladder alone starts at 320 lines, which is a guess about the model made
+ * before it had written anything. A watched production build showed what that
+ * guess costs: the model ran out of room at line 147, and the correction asked
+ * it for a 320-line game - more than twice what it had just failed to finish -
+ * so it ran out of room again at line 151, and again.
+ *
+ * The length it actually reached is the one real measurement available, and it
+ * beats any ladder. Ask for a third less than it managed, so there is room to
+ * finish rather than just room to stop in a different place. The ladder still
+ * applies as a ceiling, so repeated cut-offs keep pulling the target down even
+ * when the model reaches roughly the same length each time.
+ *
+ * @param {number} cutoffs how many answers have been cut off so far
+ * @param {number} [reached] lines the last cut-off answer got to
+ */
+function shrinkTarget(cutoffs, reached) {
+  const ladder = SHRINK_STEPS[Math.min(cutoffs, SHRINK_STEPS.length - 1)];
+  if (!reached) return ladder;
+  return Math.max(SHRINK_FLOOR, Math.min(ladder, Math.round(reached * 0.66)));
 }
 
 /**
@@ -212,10 +236,13 @@ function correctionFor(err, cutoffs = 0) {
     && err.detail.totalLines - err.detail.line <= 3;
 
   if (named || atTheEnd) {
-    const lines = shrinkTarget(cutoffs);
+    // How far it actually got, when the parse failure could say.
+    const reached = (err.detail && err.detail.totalLines) || null;
+    const lines = shrinkTarget(cutoffs, reached);
     return 'Your last answer stopped before the game was finished - the file ends '
       + `mid-way${err.detail && err.detail.line ? ` (around line ${err.detail.line})` : ''}.\n\n`
-      + `You do not have room for a game that size. Write one of about ${lines} lines `
+      + `You do not have room for a game that size.${reached ? ` You reached line ${reached} `
+        + 'and stopped.' : ''} Write one of about ${lines} lines `
       + 'and FINISH it. Cut scenes, cut mechanics, cut comments - keep one thing that '
       + 'plays well. The `new Phaser.Game(...)` call is the last thing in the file and '
       + 'you must reach it. Return the complete GameSpec JSON.';
@@ -379,10 +406,17 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
         && (err.status === 401 || err.status === 402 || err.status === 503);
       if (fatal) throw err;
 
-      /* This answer was unusable. If the same model has now produced several
-         unusable answers in a row, stop rephrasing the question and change who
-         is being asked - the next attempt starts fresh with a different model
-         rather than carrying on a conversation that is not converging. */
+      /* Say what went wrong first, then decide what to do about it. Reporting
+         only the switch loses the attempt that caused it - a watched build
+         showed "has failed 3 times" with no third failure above it, which is
+         the log telling a story with a page missing. */
+      const site = err.detail && err.detail.line ? ` (game.js line ${err.detail.line})` : '';
+      say('improver', 'repair', `Attempt ${attemptNo} failed: ${err.message.slice(0, 120)}${site}`);
+
+      /* If the same model has now produced several unusable answers in a row,
+         stop rephrasing the question and change who is being asked - the next
+         attempt starts fresh with a different model rather than carrying on a
+         conversation that is not converging. */
       if (currentModel && err.name !== 'LlmError') {
         failuresInARow += 1;
         if (failuresInARow >= FAILURES_BEFORE_SWITCHING && givenUp.length < models.CODER.length - 1) {
@@ -407,8 +441,6 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
         cutoffs += 1;
       }
       last = { error: err, text: (answer || '(your previous answer)').slice(0, MAX_ECHO_CHARS) };
-      const where = err.detail && err.detail.line ? ` (game.js line ${err.detail.line})` : '';
-      say('improver', 'repair', `Attempt ${attemptNo} failed: ${err.message.slice(0, 120)}${where}`);
     }
   }
 
