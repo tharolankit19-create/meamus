@@ -220,9 +220,9 @@ function buildUserMessage(text, attachments = [], caps = { images: false }) {
 /* Requests                                                                  */
 /* ------------------------------------------------------------------------ */
 
-async function post(url, headers, payload) {
+async function post(url, headers, payload, timeoutMs) {
   const controller = new AbortController();
-  const remaining = remainingMs();
+  const remaining = Math.min(remainingMs(), timeoutMs || Infinity);
   if (remaining <= 0) {
     /* Not this model's fault, and not fixable by asking a different one - the
        whole build is out of time. Marked so the roster walk stops here instead
@@ -297,7 +297,7 @@ async function readError(response) {
   return typeof detail === 'string' ? detail : JSON.stringify(detail);
 }
 
-async function callOpenRouter({ messages, system, maxTokens, jsonSchema, model = config.llm.model }) {
+async function callOpenRouter({ messages, system, maxTokens, jsonSchema, model = config.llm.model, timeoutMs }) {
   const payload = {
     model,
     max_tokens: maxTokens || config.llm.maxTokens,
@@ -326,7 +326,7 @@ async function callOpenRouter({ messages, system, maxTokens, jsonSchema, model =
     // OpenRouter uses these for attribution on its dashboard and leaderboards.
     'HTTP-Referer': config.llm.referer,
     'X-Title': config.llm.title
-  }, payload);
+  }, payload, timeoutMs);
 
   // Not every deployment of a model honours response_format. One retry without
   // it beats failing the generation outright.
@@ -336,7 +336,7 @@ async function callOpenRouter({ messages, system, maxTokens, jsonSchema, model =
       authorization: `Bearer ${config.llm.apiKey}`,
       'HTTP-Referer': config.llm.referer,
       'X-Title': config.llm.title
-    }, payload);
+    }, payload, timeoutMs);
   }
 
   if (!response.ok) {
@@ -469,6 +469,9 @@ function benchReasonFor(err) {
  * @param {number} [opts.maxTokens]
  * @param {boolean} [opts.jsonSchema] request schema-constrained output
  * @param {'coder'|'brief'} [opts.role] which roster to walk
+ * @param {number} [opts.timeoutMs] a ceiling for this call alone. The build
+ *        budget still applies; this is for a step that must not be allowed to
+ *        eat it - a brief taking a hundred seconds leaves no time for the game.
  * @param {string[]} [opts.skip] models the caller has given up on. Transport
  *        failures are this layer's business; a model that keeps answering with
  *        an unfinished file is the caller's, and only the caller can tell.
@@ -477,7 +480,7 @@ function benchReasonFor(err) {
  */
 async function complete({
   messages, system = SYSTEM_PROMPT, maxTokens, jsonSchema = false, role = 'coder',
-  skip = [], onModel
+  skip = [], timeoutMs, onModel
 } = {}) {
   if (!config.llm.enabled) {
     throw new LlmError(
@@ -559,7 +562,7 @@ async function complete({
 
       try {
         const result = await callOpenRouter({
-          messages, system, maxTokens: room, jsonSchema: useSchema, model: candidate.id
+          messages, system, maxTokens: room, jsonSchema: useSchema, model: candidate.id, timeoutMs
         });
         attempts.push({ model: candidate.id, ok: true });
         return {

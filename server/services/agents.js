@@ -133,18 +133,51 @@ function tally() {
    reason to sail close to it for a few hundred tokens. */
 const BRIEF_TOKENS = 8000;
 
+/* How long a brief may take before it is costing more than it is worth.
+
+   A page of JSON usually comes back in three to twenty seconds. One watched
+   build took a hundred and three - half the whole budget - and the game never
+   got written. The brief is worth having, but not at the price of the thing it
+   is a brief for, so the call is cut off and the build goes on with what the
+   founder actually typed. */
+const BRIEF_TIMEOUT_MS = 45 * 1000;
+
 /* How much of a rejected answer to quote back when asking for a fix. A whole
    game is 30-40k characters and re-sending all of it every round is what turns
    a repair loop into the most expensive part of a build. */
 const MAX_ECHO_CHARS = 48000;
 
+/**
+ * The brief to build from when the designer could not produce one.
+ *
+ * Not a substitute for a designed game - it is the founder's own sentence,
+ * shaped so the rest of the crew has the fields it reads. That is enough to
+ * build from, and it is what the single-call path has always worked from.
+ */
+function briefFromPrompt(prompt) {
+  const words = String(prompt).trim().split(/\s+/).filter(Boolean);
+  return {
+    title: words.slice(0, 3).map((w) => w.replace(/[^A-Za-z0-9]/g, '')).filter(Boolean).join(' ') || 'Your Game',
+    genre: 'arcade',
+    pitch: String(prompt).trim().slice(0, 200),
+    coreLoop: 'As described in the request.',
+    mechanics: [],
+    controls: { keyboard: [], touch: [], mouse: [] },
+    art: { palette: 'coherent and readable', style: 'minimalist', sprites: [] },
+    difficulty: 'medium',
+    progression: 'It gets harder the longer a run lasts.',
+    failState: 'As described in the request.'
+  };
+}
+
 /** A JSON-answering agent. Returns the parsed object plus its usage. */
-async function ask(role, userContent, { maxTokens, onModel } = {}) {
+async function ask(role, userContent, { maxTokens, onModel, timeoutMs } = {}) {
   const agent = CREW[role];
   const response = await llm.complete({
     system: agent.system,
     messages: [{ role: 'user', content: userContent }],
     maxTokens,
+    timeoutMs,
     // A brief is a page of JSON; it does not need the model with the biggest
     // output ceiling, it needs one that answers.
     role: 'brief',
@@ -434,6 +467,19 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
         && (err.status === 401 || err.status === 402 || err.status === 503);
       if (fatal) throw err;
 
+      /* Out of time is not a failure to feed back, it is the end.
+      
+         The llm layer's budget starts when the build does and this loop's
+         deadline starts later, so the layer below can know the time is gone
+         while this one still thinks there is some - and then every retry fails
+         instantly with the same sentence. A watched build did that nine times
+         in the same second, turning "out of time" into twelve attempts and an
+         error that blamed the prompt. */
+      if (err && err.details && err.details.budgetExhausted) {
+        say('coder', 'build', `Out of time after ${attemptNo} attempts`);
+        throw err;
+      }
+
       /* Say what went wrong first, then decide what to do about it. Reporting
          only the switch loses the attempt that caused it - a watched build
          showed "has failed 3 times" with no third failure above it, which is
@@ -441,11 +487,21 @@ async function writeUntilItRuns({ coderMessage, coderText, say, usage, deadline 
       const site = err.detail && err.detail.line ? ` (game.js line ${err.detail.line})` : '';
       say('improver', 'repair', `Attempt ${attemptNo} failed: ${err.message.slice(0, 120)}${site}`);
 
+      /* A model that wrote a complete, parseable game and tripped on one call
+         is not the problem - it is one correction away, and that correction is
+         a precise one. Switching there throws away the best candidate in the
+         build and starts over with a model that has written nothing. A watched
+         build did exactly that: dots-3 produced 523 lines and was dropped for
+         a single wrong method name. So a boot failure does not count towards
+         giving up on a model; only answers that never became a game do. */
+      const wroteAGame = err && err.name === 'SmokeError';
+      if (wroteAGame) failuresInARow = 0;
+
       /* If the same model has now produced several unusable answers in a row,
          stop rephrasing the question and change who is being asked - the next
          attempt starts fresh with a different model rather than carrying on a
          conversation that is not converging. */
-      if (currentModel && err.name !== 'LlmError') {
+      if (currentModel && err.name !== 'LlmError' && !wroteAGame) {
         failuresInARow += 1;
         if (shouldSwitch(failuresInARow, startedAt, until) && givenUp.length < models.CODER.length - 1) {
           givenUp.push(currentModel);
@@ -596,13 +652,27 @@ async function buildWithCrew(prompt, opts = {}) {
 
   /* --- 1. Designer -------------------------------------------------------- */
   say('designer', 'design', WORKING_COPY.designer);
-  const design = await ask('designer', `Request: ${prompt}`, {
-    maxTokens: BRIEF_TOKENS, onModel: watchModels('designer', 'design')
-  });
+  let design;
+  try {
+    design = await ask('designer', `Request: ${prompt}`, {
+      maxTokens: BRIEF_TOKENS, timeoutMs: BRIEF_TIMEOUT_MS,
+      onModel: watchModels('designer', 'design')
+    });
+  } catch (err) {
+    /* No brief is a worse build, not a failed one. The coder's own prompt
+       already describes the game; losing the designer costs polish, and
+       spending the budget waiting for it costs the game. */
+    issues.push(`The designer did not answer in time (${err.message}), so the game was built `
+      + 'straight from the prompt.');
+    say('designer', 'design', 'No brief in time — building straight from your prompt');
+    design = { parsed: null, usage: null, model: null };
+  }
   usage.add(design.usage);
-  const brief = design.parsed;
-  say('designer', 'design', `Brief ready: ${brief.title} — ${brief.pitch}`,
-    { model: design.model, mechanics: (brief.mechanics || []).length });
+  const brief = design.parsed || briefFromPrompt(prompt);
+  if (design.parsed) {
+    say('designer', 'design', `Brief ready: ${brief.title} — ${brief.pitch}`,
+      { model: design.model, mechanics: (brief.mechanics || []).length });
+  }
 
   /* --- 2. Coder ----------------------------------------------------------- */
   //
