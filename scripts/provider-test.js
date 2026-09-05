@@ -1320,6 +1320,54 @@ async function check(name, fn) {
     messages: [{ role: 'user', content: 'make a game' }], jsonSchema: true, ...opts
   });
 
+  await check('the roster is every free model, and only free models', async () => {
+    /* "Use all the free models" is the whole point of routing: when one is
+       capped for the day there are seventeen others, and a paid model on the
+       list would quietly start charging for what is meant to cost nothing. */
+    for (const [role, roster] of Object.entries({ coder: modelRouter.CODER, brief: modelRouter.BRIEF })) {
+      assert.ok(roster.length >= 15, `${role} roster has only ${roster.length} models`);
+
+      for (const entry of roster) {
+        assert.match(entry.id, /:free$/, `${role}: ${entry.id} is not free`);
+        assert.ok(entry.why, `${role}: ${entry.id} has no reason for its position`);
+        assert.ok(entry.out > 0, `${role}: ${entry.id} has no output ceiling`);
+      }
+
+      const ids = roster.map((m) => m.id);
+      assert.strictEqual(new Set(ids).size, ids.length,
+        `${role} lists the same model twice, so a failure benches it and it is asked again`);
+    }
+
+    // Both jobs can reach every model - they differ in order, not in coverage.
+    assert.deepStrictEqual(
+      [...new Set(modelRouter.CODER.map((m) => m.id))].sort(),
+      [...new Set(modelRouter.BRIEF.map((m) => m.id))].sort(),
+      'one roster can reach a model the other cannot, so a cap takes out a whole job'
+    );
+
+    // Order is the difference, and it is not an accident.
+    assert.notStrictEqual(modelRouter.CODER[0].id, modelRouter.BRIEF[0].id,
+      'both rosters lead with the same model, so the ordering is doing no work');
+  });
+
+  await check('a whole roster of refusals is walked, not given up on at three', async () => {
+    // The point of eighteen models is that seventeen caps still leave a build.
+    modelRouter.reset();
+    refuse.clear();
+    for (const m of modelRouter.CODER.slice(0, -1)) {
+      refuse.set(m.id, { status: 429, message: 'rate limit exceeded' });
+    }
+
+    const result = await ask();
+    assert.strictEqual(result.model, modelRouter.CODER[modelRouter.CODER.length - 1].id,
+      'the last model standing was never reached');
+    assert.strictEqual(result.attempts.length, modelRouter.CODER.length,
+      'the walk stopped before it ran out of models');
+
+    refuse.clear();
+    modelRouter.reset();
+  });
+
   await check('a model that will not answer hands the job to the next one', async () => {
     modelRouter.reset();
     refuse.clear();
@@ -1435,23 +1483,28 @@ async function check(name, fn) {
     if (original) process.env.OPENROUTER_MODEL = original; else delete process.env.OPENROUTER_MODEL;
   });
 
-  await check('the brief roster is used for briefs, and the coder roster for code', async () => {
+  await check('a brief and a game go to different models, in each role\'s own order', async () => {
+    /* The rosters cover the same models on purpose - a cap must not take out a
+       whole job - so what separates the roles is the ORDER. This test used to
+       bench the overlap and require a brief to land on a brief-only model,
+       which stopped meaning anything once the overlap became total. */
     modelRouter.reset();
     refuse.clear();
-    // Bench everything the two rosters share, so what is left tells them apart:
-    // a brief must fall to a brief-only model, not to a coder-only one.
-    const shared = modelRouter.BRIEF.filter((b) => modelRouter.CODER.some((c) => c.id === b.id));
-    assert.ok(shared.length, 'the rosters no longer overlap; this test needs rewriting');
-    for (const m of shared) modelRouter.bench(m.id, 'rate');
 
     const before = captured.length;
     await ask({ role: 'brief', maxTokens: 8000 });
-    const used = captured[before].body.model;
-    assert.ok(modelRouter.BRIEF.some((m) => m.id === used),
-      `a brief went to ${used}, which is not on the brief roster`);
-    assert.ok(!modelRouter.CODER.some((m) => m.id === used),
-      `a brief went to ${used}, which is a coder model - the roles are not actually separate`);
-    modelRouter.reset();
+    const forBrief = captured[before].body.model;
+
+    const beforeCode = captured.length;
+    await ask({ role: 'coder' });
+    const forCode = captured[beforeCode].body.model;
+
+    assert.strictEqual(forBrief, modelRouter.BRIEF[0].id,
+      `a brief went to ${forBrief} rather than the head of the brief roster`);
+    assert.strictEqual(forCode, modelRouter.CODER[0].id,
+      `a game went to ${forCode} rather than the head of the coder roster`);
+    assert.notStrictEqual(forBrief, forCode,
+      'both jobs went to the same model, so the roles are not actually separate');
   });
 
   await check('a model is never asked for more room than it has', async () => {

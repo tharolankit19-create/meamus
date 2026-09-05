@@ -23,7 +23,8 @@
     "db:persist-check": "node scripts/persist-check.js",
     "test:serverless": "node scripts/serverless-test.js",
     "test:config": "node scripts/config-test.js",
-    "test:research": "node scripts/research-test.js"
+    "test:research": "node scripts/research-test.js",
+    "models:check": "node scripts/models-check.js"
   },
   "dependencies": {
     "express": "^4.21.2"
