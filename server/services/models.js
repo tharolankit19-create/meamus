@@ -34,47 +34,94 @@ const config = require('./../config');
  */
 
 /**
- * Verified against the live OpenRouter catalogue. See scripts/models-check.js.
+ * Every free model OpenRouter carries, in the order they should be asked.
  *
- * Ordering, and the evidence behind it:
+ * Checked against the live catalogue by `npm run models:check`, which fails if
+ * a model has disappeared, changed its output ceiling or schema support, or if
+ * a new free model has shown up that is not listed here. The lists are static
+ * rather than fetched at boot on purpose: routing has to be the same on every
+ * instance and testable without a network, and a catalogue that changes under
+ * the product is how you get a build that behaves differently each time.
+ *
+ * Ordering, and what it is based on:
  *
  *  1. Schema support first. Without it the spec has to be scraped out of prose,
  *     which is where malformed games come from - a model that cannot be held to
  *     the schema is not cheaper, it just fails later.
- *  2. Among those, the one that has actually written finished games leads. That
- *     is measured, not assumed. Across six watched production builds:
+ *  2. Among those, measurement beats reputation. Across nine watched production
+ *     builds:
  *
  *       dots-3-note-preview   4 complete games (726, 536, 500, 477 lines)
  *       nemotron-3-super      0 complete games in ~18 attempts, cut off at
  *                             roughly line 150 every time
  *
- *     nemotron led this list until that evidence existed, on the grounds that
- *     it was what production had been using. Six builds later it had spent
- *     three attempts and most of the time budget on every one of them and never
- *     once finished a game, so it does not lead any more. It is fast and it
- *     honours a schema, which still makes it the right first ask for a brief -
- *     see BRIEF below - but a brief is a page of JSON and a game is not.
- *  3. Non-schema models last, largest output first. They need the JSON scraping
- *     back out, so they are a fallback, not a peer - but a game scraped out of
- *     prose beats no game.
+ *     so dots-3 leads and nemotron sits behind the other schema model. nemotron
+ *     still leads BRIEF, where the job is a page of JSON in a few seconds and
+ *     the thing it is bad at is never asked for.
+ *  3. Then the code-named models. `north-mini-code` and the `laguna` pair are
+ *     the ones whose vendor and name say they are built for code - that is a
+ *     weaker signal than a measurement and it is ranked as such, above general
+ *     models of similar size and below anything actually observed working.
+ *  4. Then general models by output ceiling, because running out of room is the
+ *     failure this pipeline sees most.
+ *  5. Small models last. 8k of output can still hold a short game, so they are
+ *     a real fallback rather than filler - but they are asked last.
+ *
+ *  One model is deliberately not here: `nvidia/nemotron-3.5-content-safety` is
+ *  a safety classifier, not a writer. Asking it for a Phaser game spends a
+ *  request to be told no. Every other free model is on one of these lists.
  */
 const CODER = [
-  { id: 'dots-studio/dots-3-note-preview:free', schema: true, out: 460800, why: 'schema, 461k output, the only model to finish a game' },
+  // Schema, and the only model measured finishing games.
+  { id: 'dots-studio/dots-3-note-preview:free', schema: true, out: 460800, why: 'schema, 461k output, four complete games' },
   { id: 'z-ai/glm-5.2:free', schema: true, out: 230400, why: 'schema + 230k output' },
-  { id: 'nvidia/nemotron-3-super-120b-a12b:free', schema: true, out: 235929, why: 'schema + 236k output' },
-  { id: 'minimax/minimax-m3:free', schema: false, out: 943718, why: 'no schema, very large output' },
-  { id: 'thinkingmachines/inkling:free', schema: false, out: 262144, why: 'no schema, 262k output' },
-  { id: 'minimax/minimax-m2.7:free', schema: false, out: 176947, why: 'no schema, 177k output' }
+  { id: 'nvidia/nemotron-3-super-120b-a12b:free', schema: true, out: 235929, why: 'schema, but has never finished a game' },
+
+  // Built for code, by name and vendor - a weaker signal than a measurement.
+  { id: 'cohere/north-mini-code:free', schema: false, out: 64000, why: 'a code model' },
+  { id: 'poolside/laguna-s-2.1:free', schema: false, out: 32768, why: 'a code model' },
+  { id: 'poolside/laguna-xs-2.1:free', schema: false, out: 32768, why: 'a code model, smaller' },
+
+  // General models, most output room first.
+  { id: 'minimax/minimax-m3:free', schema: false, out: 943718, why: '944k output' },
+  { id: 'thinkingmachines/inkling:free', schema: false, out: 262144, why: '262k output' },
+  { id: 'thinkingmachines/inkling-small:free', schema: false, out: 262144, why: '262k output, smaller' },
+  { id: 'minimax/minimax-m2.7:free', schema: false, out: 176947, why: '177k output' },
+  { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', schema: false, out: 65536, why: '1M context' },
+  { id: 'nvidia/nemotron-3.5-lightning:free', schema: false, out: 65536, why: '1M context, quick' },
+  { id: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', schema: false, out: 65536, why: 'reasoning' },
+  { id: 'google/gemma-4-31b-it:free', schema: false, out: 32768, why: 'general' },
+  { id: 'google/gemma-4-26b-a4b-it:free', schema: false, out: 32768, why: 'general, smaller' },
+  { id: 'inclusionai/ling-3.0-flash-fin:free', schema: false, out: 32768, why: 'general, finance-tuned' },
+  { id: 'inclusionai/ling-3.0-flash-sante:free', schema: false, out: 32768, why: 'general, health-tuned' },
+
+  // 8k of output is a short game, not no game.
+  { id: 'liquid/lfm-2.5-2.6b:free', schema: true, out: 8192, why: 'schema, but only 8k output' }
 ];
 
-/* A brief is a page of JSON, so output ceiling is irrelevant and turnaround is
-   everything - and nemotron answers one in three to twenty seconds. The thing
-   it is bad at is finishing a long file, which a brief never asks for. */
+/* A brief is a page of JSON. Output ceiling is irrelevant and turnaround is
+   everything, so this is ordered by how fast the answer comes back and whether
+   it can be held to a schema - the opposite priorities to CODER, which is why
+   it is a separate list rather than the same one reused. */
 const BRIEF = [
-  { id: 'nvidia/nemotron-3-super-120b-a12b:free', schema: true, out: 235929, why: 'schema, fast on short answers' },
+  { id: 'nvidia/nemotron-3-super-120b-a12b:free', schema: true, out: 235929, why: 'schema, answers a brief in seconds' },
   { id: 'z-ai/glm-5.2:free', schema: true, out: 230400, why: 'schema' },
-  { id: 'liquid/lfm-2.5-2.6b:free', schema: true, out: 8192, why: 'small and quick' },
-  { id: 'minimax/minimax-m2.7:free', schema: false, out: 176947, why: 'fallback' }
+  { id: 'liquid/lfm-2.5-2.6b:free', schema: true, out: 8192, why: 'schema, small and quick' },
+  { id: 'dots-studio/dots-3-note-preview:free', schema: true, out: 460800, why: 'schema, but slow' },
+  { id: 'nvidia/nemotron-3.5-lightning:free', schema: false, out: 65536, why: 'quick' },
+  { id: 'google/gemma-4-26b-a4b-it:free', schema: false, out: 32768, why: 'small' },
+  { id: 'google/gemma-4-31b-it:free', schema: false, out: 32768, why: 'small' },
+  { id: 'inclusionai/ling-3.0-flash-fin:free', schema: false, out: 32768, why: 'flash' },
+  { id: 'inclusionai/ling-3.0-flash-sante:free', schema: false, out: 32768, why: 'flash' },
+  { id: 'cohere/north-mini-code:free', schema: false, out: 64000, why: 'fallback' },
+  { id: 'poolside/laguna-xs-2.1:free', schema: false, out: 32768, why: 'fallback' },
+  { id: 'poolside/laguna-s-2.1:free', schema: false, out: 32768, why: 'fallback' },
+  { id: 'minimax/minimax-m2.7:free', schema: false, out: 176947, why: 'fallback' },
+  { id: 'thinkingmachines/inkling-small:free', schema: false, out: 262144, why: 'fallback' },
+  { id: 'thinkingmachines/inkling:free', schema: false, out: 262144, why: 'fallback' },
+  { id: 'minimax/minimax-m3:free', schema: false, out: 943718, why: 'fallback' },
+  { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', schema: false, out: 65536, why: 'fallback' },
+  { id: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', schema: false, out: 65536, why: 'fallback' }
 ];
 
 const ROSTER = { coder: CODER, brief: BRIEF };
