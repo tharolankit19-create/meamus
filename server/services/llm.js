@@ -472,6 +472,10 @@ function benchReasonFor(err) {
  * @param {number} [opts.timeoutMs] a ceiling for this call alone. The build
  *        budget still applies; this is for a step that must not be allowed to
  *        eat it - a brief taking a hundred seconds leaves no time for the game.
+ * @param {string} [opts.only] ask exactly this model and no other. For a caller
+ *        running several models against each other at once, where the point is
+ *        that each request goes somewhere different - falling through a shared
+ *        roster would have them all land on the same model.
  * @param {string[]} [opts.skip] models the caller has given up on. Transport
  *        failures are this layer's business; a model that keeps answering with
  *        an unfinished file is the caller's, and only the caller can tell.
@@ -480,7 +484,7 @@ function benchReasonFor(err) {
  */
 async function complete({
   messages, system = SYSTEM_PROMPT, maxTokens, jsonSchema = false, role = 'coder',
-  skip = [], timeoutMs, onModel
+  skip = [], only, timeoutMs, onModel
 } = {}) {
   if (!config.llm.enabled) {
     throw new LlmError(
@@ -531,9 +535,12 @@ async function complete({
        off would leave nothing, in which case the last one is still better than
        refusing to try. */
     const all = models.candidates(role);
-    const roster = all.filter((m) => !skip.includes(m.id)).length
-      ? all.filter((m) => !skip.includes(m.id))
-      : all;
+    const named = only && all.find((m) => m.id === only);
+    const roster = only
+      ? [named || { id: only, schema: true, out: 0, why: 'named by the caller' }]
+      : (all.filter((m) => !skip.includes(m.id)).length
+        ? all.filter((m) => !skip.includes(m.id))
+        : all);
     let worthWaitingFor = false;
 
     for (let i = 0; i < roster.length; i += 1) {
