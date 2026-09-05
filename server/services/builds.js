@@ -42,14 +42,20 @@ const id = (prefix) => `${prefix}_${crypto.randomBytes(9).toString('hex')}`;
 async function savePlan(userId, plan) {
   const planId = id('pln');
   const record = { ...plan, planId, userId, createdAt: Date.now() };
-  if (db.saveBuildPlan) await db.saveBuildPlan(record);
-  else plans.set(planId, record);
+  /* undefined means the store cannot hold plans - an older schema - which is a
+     reason to keep the plan in memory, not a reason to refuse the build. */
+  const stored = db.saveBuildPlan ? await db.saveBuildPlan(record) : undefined;
+  if (stored === undefined) plans.set(planId, record);
   sweep();
   return planId;
 }
 
 async function takePlan(planId, userId) {
-  if (db.takeBuildPlan) return db.takeBuildPlan(planId, userId);
+  if (db.takeBuildPlan) {
+    // null is "no such plan"; undefined is "this database cannot say".
+    const durable = await db.takeBuildPlan(planId, userId);
+    if (durable !== undefined) return durable;
+  }
   const plan = plans.get(planId);
   if (!plan) return null;
   if (plan.userId !== userId) return null;
@@ -160,8 +166,8 @@ function get(buildId, userId) {
 }
 
 async function refresh(buildId, userId) {
-  if (!db.gameForBuild) return get(buildId, userId);
-  const game = await db.gameForBuild(buildId, userId);
+  const game = db.gameForBuild ? await db.gameForBuild(buildId, userId) : undefined;
+  if (game === undefined) return get(buildId, userId);   // no durable path here
   if (!game) return null;
   const local = builds.get(buildId);
   if (local) {
@@ -176,8 +182,15 @@ async function refresh(buildId, userId) {
 async function claimDurable(build) {
   if (!db.claimBuild) return claim(build);
   if (!build || build.claimed || build.state !== 'running') return false;
+
   const game = await db.gameForBuild(build.buildId, build.userId);
-  if (!game || !await db.claimBuild(game)) return false;
+  if (game === undefined) return claim(build);   // older schema: guard in memory
+  if (!game) return false;
+
+  const won = await db.claimBuild(game);
+  if (won === undefined) return claim(build);
+  if (!won) return false;
+
   build.claimed = true;
   builds.set(build.buildId, build);
   return true;

@@ -90,6 +90,10 @@ app.get('/api/status', (req, res) => {
     showcase: config.showcaseTemplate,
     storage: db.kind,
     storageDurable: db.durable !== false,
+    /* False when the 20260905 build-coordination migration has not been run.
+       Builds still work, from per-instance state, which is the behaviour that
+       produced "Build not found" - so it is worth being able to see. */
+    buildCoordination: db.buildCoordination !== false,
     serverless: config.serverless,
     ...access.describe(),
     unlimited: config.quotas.unlimited,

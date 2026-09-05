@@ -91,20 +91,33 @@ function createSupabaseStore(config) {
     return cache.get(collection) || [];
   }
 
-  /**
-   * Read one row straight from Postgres, ignoring the cache.
-   *
-   * The cache is filled once at boot and never refreshed, which is fine for
-   * data this instance itself wrote and useless for anything another instance
-   * wrote after this one started. On a serverless host that is most things: a
-   * build created while answering one request is invisible to the instance that
-   * answers the next, which is exactly what "Build not found" was - a running
-   * build, reported as though it had never existed.
-   *
-   * @param {string} collection
-   * @param {string} filter a PostgREST filter, e.g. `data->build->>buildId=eq.x`
-   * @returns {Promise<object|null>} the document, also merged into the cache
-   */
+  /* The build-coordination tables arrived in a later migration
+     (supabase/migrations/20260905_build_coordination.sql). A deployment whose
+     database has not had it applied is not a broken deployment - it is a
+     deployment one SQL file behind - and it must degrade to the in-memory path
+     rather than answer 502 to every build. Production did exactly that: every
+     /build/plan came back "Could not find the table 'public.meamus_build_plans'
+     in the schema cache", which is not a thing the founder did or can read.
+
+     Checked once. When the schema is missing it stays missing until someone
+     runs the migration and the process restarts, so re-discovering it on every
+     call would only add a round trip to each failure. */
+  let coordination = true;
+
+  const SCHEMA_MISSING = /PGRST205|PGRST204|42703|42P01|schema cache|does not exist/i;
+
+  async function coordinated(work, description) {
+    if (!coordination) return undefined;
+    try {
+      return await work();
+    } catch (err) {
+      if (!SCHEMA_MISSING.test(String(err && err.message))) throw err;
+      coordination = false;
+      console.error(`[store] build coordination is OFF - ${description} needs the `
+        + `20260905 migration. Builds fall back to per-instance state. (${err.message})`);
+      return undefined;
+    }
+  }
 
   /** Track the write so flush() can await it, and log rather than crash. */
   function write(operation, description) {
@@ -180,43 +193,62 @@ function createSupabaseStore(config) {
 
 
     // Build plans must survive a different serverless instance handling /start.
-    async saveBuildPlan(plan) {
-      await request('/meamus_build_plans', {
+    /* Every one of these returns undefined when the migration is missing, which
+       is deliberately different from null: null is "no such plan", undefined is
+       "this database cannot answer that question". The caller falls back on
+       undefined and reports not-found on null. */
+    saveBuildPlan(plan) {
+      return coordinated(async () => {
+        await request('/meamus_build_plans', {
         method: 'POST', headers: { prefer: 'return=minimal' },
-        body: JSON.stringify({ id: plan.planId, user_id: plan.userId,
-          expires_at: new Date(plan.createdAt + config.build.planTtlMs).toISOString(), data: plan })
-      });
+          body: JSON.stringify({ id: plan.planId, user_id: plan.userId,
+            expires_at: new Date(plan.createdAt + config.build.planTtlMs).toISOString(), data: plan })
+        });
+        return true;
+      }, 'saving a build plan');
     },
-    async takeBuildPlan(planId, userId) {
-      // DELETE RETURNING consumes the approval atomically, including across instances.
-      const found = await request(`/meamus_build_plans?id=eq.${encodeURIComponent(planId)}&user_id=eq.${encodeURIComponent(userId)}`, {
-        method: 'DELETE', headers: { prefer: 'return=representation' }
-      });
-      const row = (found || [])[0];
-      return row && Date.parse(row.expires_at) > Date.now() ? row.data : null;
+    takeBuildPlan(planId, userId) {
+      return coordinated(async () => {
+        // DELETE RETURNING consumes the approval atomically, across instances.
+        const found = await request(`/meamus_build_plans?id=eq.${encodeURIComponent(planId)}&user_id=eq.${encodeURIComponent(userId)}`, {
+          method: 'DELETE', headers: { prefer: 'return=representation' }
+        });
+        const row = (found || [])[0];
+        return row && Date.parse(row.expires_at) > Date.now() ? row.data : null;
+      }, 'taking a build plan');
     },
-    async gameForBuild(buildId, userId) {
-      const found = await request(`/meamus_games?data->build->>buildId=eq.${encodeURIComponent(buildId)}&data->>userId=eq.${encodeURIComponent(userId)}&select=id,data,stop_requested`);
-      const game = found && found[0] && found[0].data;
-      if (!game) return null;
-      game.build.stopRequested = game.build.stopRequested || found[0].stop_requested === true;
-      const list = rows('games');
-      const index = list.findIndex((g) => g.id === game.id);
-      if (index < 0) list.push(game); else list[index] = game;
-      return game;
+    gameForBuild(buildId, userId) {
+      return coordinated(async () => {
+        const found = await request(`/meamus_games?data->build->>buildId=eq.${encodeURIComponent(buildId)}&data->>userId=eq.${encodeURIComponent(userId)}&select=id,data,stop_requested`);
+        const game = found && found[0] && found[0].data;
+        if (!game) return null;
+        game.build.stopRequested = game.build.stopRequested || found[0].stop_requested === true;
+        const list = rows('games');
+        const index = list.findIndex((g) => g.id === game.id);
+        if (index < 0) list.push(game); else list[index] = game;
+        return game;
+      }, 'reading a build row');
     },
-    async stopBuild(buildId, userId) {
-      await request(`/meamus_games?data->build->>buildId=eq.${encodeURIComponent(buildId)}&data->>userId=eq.${encodeURIComponent(userId)}&data->build->>state=eq.running`, {
-        method: 'PATCH', headers: { prefer: 'return=minimal' }, body: JSON.stringify({ stop_requested: true })
-      });
+    stopBuild(buildId, userId) {
+      return coordinated(async () => {
+        await request(`/meamus_games?data->build->>buildId=eq.${encodeURIComponent(buildId)}&data->>userId=eq.${encodeURIComponent(userId)}&data->build->>state=eq.running`, {
+          method: 'PATCH', headers: { prefer: 'return=minimal' }, body: JSON.stringify({ stop_requested: true })
+        });
+        return true;
+      }, 'requesting a stop');
     },
-    async claimBuild(game) {
-      const next = { ...game, build: { ...game.build, claimed: true } };
-      const found = await request(`/meamus_games?id=eq.${encodeURIComponent(game.id)}&data->build->>claimed=eq.false&data->build->>state=eq.running`, {
-        method: 'PATCH', headers: { prefer: 'return=representation' }, body: JSON.stringify({ data: next, stop_requested: false })
-      });
-      return Boolean(found && found.length);
+    claimBuild(game) {
+      return coordinated(async () => {
+        const next = { ...game, build: { ...game.build, claimed: true } };
+        const found = await request(`/meamus_games?id=eq.${encodeURIComponent(game.id)}&data->build->>claimed=eq.false&data->build->>state=eq.running`, {
+          method: 'PATCH', headers: { prefer: 'return=representation' }, body: JSON.stringify({ data: next, stop_requested: false })
+        });
+        return Boolean(found && found.length);
+      }, 'claiming a build');
     },
+
+    /** False when the 20260905 migration has not been applied. For /api/status. */
+    get buildCoordination() { return coordination; },
 
     /** Connectivity probe used by `npm run db:check`. */
     async ping() {
